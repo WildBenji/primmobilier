@@ -290,6 +290,7 @@ _Avoid_: ajustement obligatoire, reglage par facteur uniquement
 - Une **Table large orientee requete** peut etre ajoutee a la **Base de service DuckDB** si les jointures repetitives deviennent le cout dominant
 - BAN, DVF et Cadastre sont des **Sources socle**
 - La premiere version utilise l'**API BAN directe** pour la recherche d'adresse
+- Les sources socle sont deja geolocalisees (DVF, DPE, RNB, Cadastre) ; seule l'**Adresse cible** saisie est geocodee, sans ingestion BAN locale en premiere version
 - La **Recherche d'adresse BAN** produit une **Adresse resolue**
 - DPE et les donnees de proximite sont des **Enrichissements optionnels**
 - Les donnees de proximite alimentent le **Contexte de proximite**
@@ -526,3 +527,5 @@ _Avoid_: ajustement obligatoire, reglage par facteur uniquement
 - "Lookalike" est compris comme **Comparable retenu** dans le langage du produit.
 - "DPE du bien" et "moyenne des DPE a l'adresse" ne sont pas equivalentes : le premier est un **DPE officiel du bien**, la seconde est un **Profil DPE d'adresse**.
 - "DPE" ne doit pas etre confondu avec un diagnostic complet de l'etat du bati : il est utilise comme **Signal energetique**, pas comme preuve certaine de tous les travaux a prevoir.
+- Le **pivot de rattachement** entre sources (parcelle cadastrale via `id_parcelle` vs batiment via `rnb_id` du RNB) n'est **pas tranche** : la decision est reportee a une mesure des taux de match sur un departement temoin (33). Voir [docs/SOURCES_DONNEES.md](docs/SOURCES_DONNEES.md).
+- L'**Appariement DPE** etait suppose purement probabiliste (jointure par adresse). Or le DPE porte desormais `Identifiant__BAN`, `rnb_id` et l'identifiant parcelle : une jointure par identifiant est possible, sous reserve du taux de remplissage reel a mesurer sur le dept 33.
