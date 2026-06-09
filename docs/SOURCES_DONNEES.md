@@ -57,11 +57,11 @@ Suivi d'exploration des sources publiques candidates au **socle immobilier carto
 | Format Addok | addok | Moteur de géocodage Addok auto-hébergé |
 | WFS/WMS/MVT | tuiles | Cartographie (hors socle serveur) |
 
-**Champs clés retenus** _(à confirmer sur échantillon)_ : `id` / `cle_interop` (clé d'interopérabilité BAN), `numero`, `rep`, `nom_voie`, `code_postal`, `code_insee`, `nom_commune`, `lon`, `lat`, `x`, `y`, `type_position`, `source`, et le champ de **lien cadastral** (`cad_parcelles`, liste de parcelles) — à vérifier.
+**Champs clés retenus** (CSV départemental, séparateur `;`, vérifié sur dept 48) : **`id`** (cle_interop, 100% rempli, ex. `48002_0021_00301`), **`id_fantoir`** (~44% rempli, ex. `48002_0021`), `numero`, `rep`, `nom_voie`, `code_postal`, `code_insee`, `nom_commune`, `lon`, `lat`, `type_position`, **`cad_parcelles`** (parcelle(s) cadastrale(s), ex. `48002000ZL0057`, multi possible `|`-séparé).
 
-**Superflu / doublon** : alias et libellés AFNOR/acheminement multiples (`nom_afnor`, `libelle_acheminement`…) redondants pour nos besoins ; coordonnées projetées `x`/`y` (Lambert) doublon de `lon`/`lat` si on travaille en WGS84.
+**Superflu / doublon** : `x`/`y` (Lambert) doublon de `lon`/`lat` ; `nom_afnor`, `libelle_acheminement`, `alias`, `nom_ld` redondants ; `id_fantoir` = legacy, utile seulement comme pont vers d'anciennes clés.
 
-**Clés de jointure** : `cle_interop` ↔ RNB (`addresses[].cle_interop`) et ↔ DPE (`Identifiant__BAN`) · `cad_parcelles` ↔ Cadastre/DVF (`id_parcelle`) _(à confirmer)_ · `code_insee` ↔ communes.
+**Clés de jointure (BAN = crosswalk déterministe)** : `id` ↔ RNB (`addresses[].cle_interop_ban`) et ↔ DPE (`identifiant_ban`) — **même namespace, confirmé** · `cad_parcelles` ↔ Cadastre/DVF (`id_parcelle`) — **confirmé** · `code_insee` ↔ communes. ⇒ BAN relie à elle seule les 3 keyspaces (adresse / parcelle), mais reste un **secours** : RNB porte déjà `addresses` (cle_interop) ET `plots` (parcelle) → on mesurera si RNB seul suffit avant d'ingérer la BAN (cf. décision API-only).
 
 ## 1.3 Cadastre (Etalab)
 
@@ -132,13 +132,15 @@ Suivi d'exploration des sources publiques candidates au **socle immobilier carto
 
 **Fichiers / accès** : données hébergées par l'**ADEME** (`data.ademe.fr/datasets/dpe03existant`) — consultation, **description des champs** et **API** documentées là-bas (pas de fichier tabulaire data.gouv direct).
 
-**Champs clés retenus** :
-- Identification / jointure : `N°DPE`, `Identifiant__BAN`, adresse brute + adresse BAN, `Code INSEE (BAN)`, `Code postal (BAN)`, `geopoint`/`latitude`/`longitude`, **identifiant parcelle cadastrale**, **identifiant RNB**.
-- Métier : `Etiquette_DPE`, `Etiquette_GES`, `Surface_habitable_logement`, `Type_bâtiment`, `année de construction`, `date d'établissement du DPE`.
+**Champs clés retenus** (noms réels de l'API ADEME, vérifiés — 145 champs au total) :
+- Identification / jointure : `numero_dpe`, **`identifiant_ban`** (clé BAN cle_interop, ex. `48027_z3ta9n_00091`), `code_departement_ban`, `code_insee_ban`, `code_postal_ban`, `nom_commune_ban`, `nom_rue_ban`, `numero_voie_ban`, `adresse_ban`, `_geopoint` (lat,lon), `score_ban` + `statut_geocodage` (qualité géocodage).
+- Métier : `etiquette_dpe`, `etiquette_ges`, `type_batiment` (maison/appartement/immeuble), `date_reception_dpe`, `version_dpe`.
 
-**Superflu pour le départ** : la masse des champs techniques de calcul réglementaire (parois, ponts thermiques, systèmes…) — on ne retient que classe, GES, surface, type, dates, ids.
+> **Correction** : contrairement à une lecture optimiste de la doc ADEME, le DPE existant en open data **ne porte NI `rnb_id` NI identifiant parcelle**. Le seul lien sortant est `identifiant_ban`.
 
-**Clés de jointure** : `Identifiant__BAN` ↔ BAN ; **`identifiant RNB` ↔ RNB** ; `parcelle` ↔ Cadastre/DVF. ⇒ contrairement au notebook (jointure adresse approximative), la jointure par **ID** est possible → revoir la « jointure DPE imparfaite » à la hausse, à quantifier sur échantillon (taux de remplissage réel des ids BAN/RNB).
+**Superflu pour le départ** : la masse des champs techniques de calcul réglementaire (parois, ponts thermiques, systèmes, consos…) — on ne retient que clé BAN, classe, GES, type, géopoint, qualité géocodage, dates.
+
+**Clés de jointure** : `identifiant_ban` ↔ **même namespace que `BAN.id` et `RNB.cle_interop_ban`** → jointure directe par clé viable (vérifié : formats compatibles). ⚠️ Caveat à mesurer : une partie des `identifiant_ban` est **au niveau voie sans numéro** (ex. `48002_koo2vl`) → ne matche pas une adresse à la maison ; + qualité variable (`score_ban`). Pas de lien parcelle direct → passer par BAN (`cad_parcelles`) ou RNB (`plots`).
 
 ## 3.2 DPE Logements neufs (depuis juillet 2021)
 
@@ -208,28 +210,48 @@ Le **RNB (`rnb_id`) est le pivot bâtiment** qui relie les sources entre elles :
 └───────────────┘   (DVF↔DPE : pas d'id commun → via parcelle ou adresse)
 ```
 
+> **Correction du modèle** (vérifié via le catalogue) : le DPE ne porte **que** `identifiant_ban` (pas de `rnb_id` ni parcelle). Le lien bâtiment passe par la **clé BAN cle_interop** (DPE ↔ RNB.addresses) ou par les coordonnées. BAN porte en plus `cad_parcelles` → crosswalk adresse↔parcelle.
+
 **Chaînes de jointure exploitables**
-1. **Adresse → bien** : BAN (`cle_interop`) → RNB (`addresses`) → `plots` → Cadastre (`id_parcelle`) → DVF.
-2. **DVF → bâtiment/DPE** : DVF (`id_parcelle`) → Cadastre / RNB (`plots`) → `rnb_id` → DPE (`rnb_id`). Attention : 1 parcelle peut porter N bâtiments → jointure parcelle imparfaite pour cibler le bon logement.
-3. **DPE → tout** : DPE porte directement `Identifiant__BAN`, `rnb_id` et `parcelle` → jointure par ID (à quantifier : taux de remplissage réel).
+1. **Adresse → bien** : adresse cible → API BAN → `id` (cle_interop) → RNB (`addresses.cle_interop_ban`) → `plots` → Cadastre (`id_parcelle`) → DVF.
+2. **DVF → bâtiment** : DVF (`id_parcelle`) → RNB (`plots`) → `rnb_id`. Attention : 1 parcelle peut porter N bâtiments → ambiguïté à mesurer.
+3. **DPE → bâtiment** : DPE (`identifiant_ban`) → RNB (`addresses.cle_interop_ban`) → `rnb_id`. Fallback : spatial (DPE `_geopoint` ↔ RNB `point`) ou BAN crosswalk.
 
 **Points durs à valider sur échantillon (dépt 33)**
-- Taux de remplissage de `Identifiant__BAN` et `rnb_id` dans le DPE existant.
-- Présence/fiabilité du lien cadastral dans la BAN (`cad_parcelles`).
-- Couverture des `plots` RNB (ratio de recouvrement) sur parcelles DVF.
-- Cardinalité parcelle ↔ bâtiment (combien de logements/bâtiments par parcelle) pour mesurer l'ambiguïté DVF→DPE.
+- Taux de match direct `DPE.identifiant_ban` ↔ `RNB.cle_interop_ban` (+ part des clés DPE au niveau voie sans numéro, et qualité `score_ban`).
+- Couverture des `plots` RNB sur les parcelles DVF (`id_parcelle`).
+- Cardinalité parcelle ↔ bâtiment (combien de bâtiments par parcelle) → ambiguïté DVF→bâtiment→DPE.
+- Apport réel de la BAN (`cad_parcelles`) en plus de RNB : nécessaire ou redondant ?
+- Taux de couverture du fallback spatial (distance DPE↔RNB) quand la clé échoue.
 
 ---
 
-# 6. Statut global & prochaines étapes
+# 6. Résultats de mesure — spike dept 33 (exécuté 2026-06-09)
+
+Notebook : [notebooks/spike_jointures_33.ipynb](../notebooks/spike_jointures_33.ipynb). Volumes : 525 352 lignes DVF, 1 134 596 bâtiments RNB, 376 409 DPE.
+
+| Mesure | Résultat | Conclusion |
+| --- | --- | --- |
+| Qualité clé DPE | `identifiant_ban` 100% rempli, **93,1% avec numéro**, score_ban 0,66 | clé adresse propre |
+| **DPE ↔ RNB** (clé `cle_interop_ban`) | **87,0%** des clés DPE matchent | jointure énergétique par clé **viable** (pas de re-géocodage ; la crainte FANTOIR était infondée) |
+| **DVF logement → RNB** (parcelle) | **95,0% des ventes** (Maison 96,8% / Appart 96,3%) | couverture parcelle excellente sur le bâti (le 52% global est plombé par les terrains/`(vide)` à 27%) |
+| Cardinalité parcelle ↔ bâtiment | 2,26 moy, **max 769**, 38,1% mono-bâti | parcelle **ambiguë pour cibler 1 bâtiment** |
+| DVF logement → DPE via RNB | **62,3%** | ~2/3 des ventes enrichissables DPE |
+| Apport BAN vs RNB | BAN 16,2% / RNB 52,2% / union 54,5% (**+2,3 pts**) | BAN inutile comme crosswalk parcelle |
+
+**Décisions éclairées** (cf. [ADR 0003](adr/0003-rnb-pivot-batiment.md)) : RNB `rnb_id` = **pivot bâtiment** ; parcelle = lien secondaire (fiable mais ambigu à l'unité) ; **BAN reste API-only** (validé par les chiffres) ; enrichissement DPE par clé d'adresse retenu. Restent à creuser : départage bâtiment/logement sur parcelles multi-bâtiments, et les ~13% de DPE non matchés (clés voie-seule, millésime BAN).
+
+---
+
+# 7. Statut global & prochaines étapes
 
 | Source | Rôle | Statut |
 | --- | --- | --- |
-| DVF géolocalisé | Socle — comparables | ✅ |
-| BAN | Socle — adresse/géocodage | 🔎 |
+| DVF géolocalisé | Socle — comparables | ✅ mesuré (33) |
+| BAN | Socle — adresse/géocodage | ✅ API-only (validé) |
 | Cadastre | Socle — parcelle/section | 🔎 |
-| RNB | Pivot bâtiment | ✅ |
-| DPE existants | Enrichissement — signal énergétique | 🔎 |
+| RNB | Pivot bâtiment | ✅ mesuré (33) |
+| DPE existants | Enrichissement — signal énergétique | ✅ mesuré (33) |
 | DPE neufs | Enrichissement | ⏳ |
 | BDNB | Enrichissement lourd | ⏳ |
 | Adresses cadastre | Appoint jointure | ⏳ |
@@ -238,7 +260,7 @@ Le **RNB (`rnb_id`) est le pivot bâtiment** qui relie les sources entre elles :
 | APIs (BAN, Cadastre, GPU) | Géocodage / géométrie / urbanisme | ⏳ |
 
 **Prochaines étapes**
-1. Échantillonner le dépt 33 (DVF déjà en main + RNB_33 + DPE 33) et **mesurer les taux de match** des chaînes ci-dessus.
-2. Confirmer les noms de colonnes marqués _(à confirmer)_ sur extraits réels (BAN, Cadastre parcelles, DPE).
-3. Approfondir les dataservices (specs OpenAPI) pour le géocodage et la géométrie parcellaire.
-4. Décider du périmètre d'ingestion (national direct vs progressif) **après** mesure de joignabilité.
+1. ~~Échantillonner le dépt 33 et mesurer les taux de match~~ → **fait** (cf. §6).
+2. Départager bâtiment/logement quand une parcelle porte N bâtiments (surface, adresse, `bdg_cover_ratio`) ; comprendre les ~13% de DPE non matchés.
+3. Confirmer les colonnes _(à confirmer)_ du Cadastre (parcelles/sections) sur extrait réel.
+4. Décider du périmètre d'ingestion (national direct vs progressif) — désormais possible sur la base des taux mesurés.
