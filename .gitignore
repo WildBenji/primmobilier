@@ -8,3 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Données brutes / préparées (téléchargées localement)
+data/
+
+# Notebooks
+.ipynb_checkpoints/
