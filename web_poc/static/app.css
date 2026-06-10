@@ -415,6 +415,7 @@ body.dragging {
   top: 16px;
   right: 16px;
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 10px 12px;
   border: 1px solid rgba(34, 48, 43, 0.14);
