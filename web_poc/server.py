@@ -157,6 +157,16 @@ def scope_label(scope_mode: str, radius_m: int, postcode: str | None, section: d
     return radius_label(radius_m)
 
 
+def refine_scope_city(scope: str, scope_mode: str, citycode: str | None, rows: list[dict]) -> str:
+    """Emprise commune : affiche « Nom (code INSEE) » plutôt que « commune entière »."""
+    if scope_mode != "city" or not rows:
+        return scope
+    name = rows[0].get("nom_commune")
+    if not name:
+        return scope
+    return f"{name} ({citycode})" if citycode else name
+
+
 def distance_sql() -> str:
     return """
         2 * 6371000 * asin(sqrt(
@@ -260,13 +270,64 @@ def resolve_section(dept: str, lon: float, lat: float) -> dict | None:
     return {"id": row[0], "geojson": json.loads(row[1])}
 
 
+POSTCODE_CONTOURS_PATH = INTERIM / "contours_codes_postaux.parquet"
+
+
+def postcode_contour(postcode: str) -> dict | None:
+    """Contour calculé d'une zone code postal (BAN). Renvoie id + géométrie GeoJSON.
+
+    Source : « Contours calculés des zones codes postaux » (adresse.data.gouv.fr),
+    référentiel national qui découpe les grandes villes par code postal (vs limites
+    communales). Acquis par telechargement/preparer_codes_postaux.py.
+    """
+    if not re.fullmatch(r"\d{5}", postcode or ""):
+        return None
+    if not POSTCODE_CONTOURS_PATH.exists():
+        return None
+    con = duckdb.connect()
+    try:
+        load_spatial(con)
+        row = con.execute(
+            """
+            SELECT codePostal, ST_AsGeoJSON(ST_GeomFromWKB(geom_wkb))
+            FROM read_parquet(?)
+            WHERE codePostal = ?
+            LIMIT 1
+            """,
+            [str(POSTCODE_CONTOURS_PATH), postcode],
+        ).fetchone()
+    finally:
+        con.close()
+    if not row:
+        return None
+    return {"id": row[0], "geojson": json.loads(row[1])}
+
+
+def postcode_rows(params: dict[str, list[str]]) -> dict:
+    """Emprise GeoJSON d'un code postal pour le tracé de la zone sur la carte."""
+    code = params.get("code", [""])[0]
+    contour = postcode_contour(code)
+    if not contour:
+        return {"type": "FeatureCollection", "features": []}
+    return {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "geometry": contour["geojson"],
+            "properties": {"codePostal": code},
+        }],
+    }
+
+
 def parcelles_rows(params: dict[str, list[str]]) -> dict:
     """Géométries de parcelles cadastrales en GeoJSON, soit par `ids`, soit par `bbox` (centroïde)."""
     empty = {"type": "FeatureCollection", "features": []}
     dept = params.get("dept", [""])[0]
     if not re.fullmatch(r"\d{2,3}|2[AB]", dept):
         return empty
-    path = INTERIM / f"cadastre_parcelles_{dept}.parquet"
+    path = INTERIM / f"cadastre_parcelles_service_{dept}.parquet"
+    if not path.exists():
+        path = INTERIM / f"cadastre_parcelles_{dept}.parquet"
     if not path.exists():
         return empty
     ids = [x for x in (params.get("ids", [""])[0] or "").split(",") if x][:PARCELLE_IDS_CAP]
@@ -310,6 +371,87 @@ def parcelles_rows(params: dict[str, list[str]]) -> dict:
     }
 
 
+BATIMENT_TYPE_LABELS = {"01": "Bâti en dur", "02": "Bâti léger"}
+# Marge du préfiltre bbox des bâtiments (~0,002° ≈ 160-220 m) : couvre tout footprint
+# qui intersecte la parcelle même si son centroïde tombe hors de la bbox parcelle.
+BATIMENT_BBOX_MARGIN_DEG = 0.002
+
+
+def batiments_rows(params: dict[str, list[str]]) -> dict:
+    """Empreintes des bâtiments cadastraux rattachés à une parcelle (intersection spatiale).
+
+    Renvoie une FeatureCollection : le contour de la parcelle (`kind=parcelle`) + chaque
+    bâtiment (`kind=batiment`, `type_label`, `surface_m2`). Permet de dessiner maison /
+    garage / annexes distinctement plutôt que le seul contour parcellaire.
+    """
+    empty = {"type": "FeatureCollection", "features": []}
+    dept = params.get("dept", [""])[0]
+    parcelle = params.get("parcelle", [""])[0]
+    if not re.fullmatch(r"\d{2,3}|2[AB]", dept) or not re.fullmatch(r"[0-9A-Z]{10,16}", parcelle or ""):
+        return empty
+    parc_path = INTERIM / f"cadastre_parcelles_service_{dept}.parquet"
+    if not parc_path.exists():
+        parc_path = INTERIM / f"cadastre_parcelles_{dept}.parquet"
+    bat_path = INTERIM / f"cadastre_batiments_{dept}.parquet"
+    if not parc_path.exists() or not bat_path.exists():
+        return empty
+    con = duckdb.connect()
+    try:
+        load_spatial(con)
+        # Parcelle lue une seule fois : GeoJSON pour le tracé, WKB + bbox pour la jointure.
+        parc = con.execute(
+            """
+            SELECT ST_AsGeoJSON(g), geom_wkb,
+                   ST_XMin(g), ST_YMin(g), ST_XMax(g), ST_YMax(g)
+            FROM (SELECT geom_wkb, ST_GeomFromWKB(geom_wkb) AS g
+                  FROM read_parquet(?) WHERE id = ? LIMIT 1)
+            """,
+            [str(parc_path), parcelle],
+        ).fetchone()
+        if not parc:
+            return empty
+        parc_geojson, parc_wkb, xmin, ymin, xmax, ymax = parc
+        # Préfiltre bbox élargi (clon/clat = centroïde du bâtiment) puis intersection exacte.
+        # La marge évite de jeter un bâtiment qui déborde la parcelle (footprint plus grand
+        # que la parcelle, mitoyens…) dont le centroïde tombe hors de la bbox parcelle.
+        # Le ST_Intersects reste le filtre exact : la marge ne fait qu'élargir les candidats.
+        m = BATIMENT_BBOX_MARGIN_DEG
+        rows = con.execute(
+            """
+            SELECT b.type, b.created,
+                   ST_AsGeoJSON(ST_GeomFromWKB(b.geom_wkb)),
+                   ST_Area_Spheroid(ST_GeomFromWKB(b.geom_wkb))
+            FROM read_parquet(?) b
+            WHERE b.clon BETWEEN ? AND ?
+              AND b.clat BETWEEN ? AND ?
+              AND ST_Intersects(ST_GeomFromWKB(b.geom_wkb), ST_GeomFromWKB(?))
+            ORDER BY 4 DESC
+            """,
+            [str(bat_path), xmin - m, xmax + m, ymin - m, ymax + m, parc_wkb],
+        ).fetchall()
+    finally:
+        con.close()
+    features = [{
+        "type": "Feature",
+        "properties": {"kind": "parcelle", "id": parcelle},
+        "geometry": json.loads(parc_geojson),
+    }]
+    for i, (btype, created, geo, surface) in enumerate(rows):
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "kind": "batiment",
+                "idx": i + 1,
+                "type": btype,
+                "type_label": BATIMENT_TYPE_LABELS.get(btype, "Bâti"),
+                "surface_m2": round(surface) if surface is not None else None,
+                "annee": str(created)[:4] if created else None,
+            },
+            "geometry": json.loads(geo),
+        })
+    return {"type": "FeatureCollection", "features": features}
+
+
 def comparable_rows(params: dict[str, list[str]]) -> dict:
     dept = params.get("dept", [""])[0]
     scope_mode = params.get("scope_mode", ["radius"])[0]
@@ -347,6 +489,29 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
     con = duckdb.connect()
     comp = INTERIM / f"comparables_{dept}.parquet"
     dvf = INTERIM / f"dvf_{dept}.parquet"
+    comp_columns = {
+        row[0]
+        for row in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(comp)]).fetchall()
+    }
+    def optional_comp_col(name: str) -> str:
+        return f"c.{name}" if name in comp_columns else f"NULL AS {name}"
+
+    bdnb_select = ", ".join(optional_comp_col(name) for name in [
+        "batiment_groupe_id",
+        "resolution_statut",
+        "usage_principal_bdnb_open",
+        "usage_niveau_1_txt",
+        "nb_log",
+        "nb_lot_garpark_rnc",
+        "nb_lot_tertiaire_rnc",
+        "surface_emprise_sol",
+        "hauteur_mean",
+        "nb_niveau",
+        "annee_construction",
+        "type_batiment_dpe",
+        "fiabilite_emprise_sol",
+        "fiabilite_hauteur",
+    ])
     coords_filters = ["longitude IS NOT NULL", "latitude IS NOT NULL"]
     coords_args: list[object] = []
     add_scope_filter(
@@ -415,7 +580,7 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
                        TRY_CAST(c.surface_reelle_bati AS DOUBLE) AS surface,
                        TRY_CAST(c.nombre_pieces_principales AS INTEGER) AS pieces,
                        TRY_CAST(c.valeur_fonciere AS DOUBLE) AS prix,
-                       coords.lon, coords.lat, c.rnb_id, c.confiance, c.source,
+                       coords.lon, coords.lat, c.rnb_id, {bdnb_select},
                        c.flag_multi_bien, c.flag_multi_adresse
                 FROM read_parquet(?) c
                 JOIN coords USING (id_mutation, id_parcelle)
@@ -438,6 +603,7 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
     finally:
         con.close()
     all_rows = [dict(zip(columns, row)) for row in rows]
+    scope = refine_scope_city(scope, scope_mode, citycode, all_rows)
     if len(all_rows) < MIN_COMPARABLES:
         return {
             "error": "Pas assez de ventes comparables dans les données locales avec ces critères.",
@@ -551,8 +717,20 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
                 "lon": r["lon"],
                 "lat": r["lat"],
                 "rnb_id": r["rnb_id"],
-                "confiance": r["confiance"],
-                "source": r["source"],
+                "batiment_groupe_id": r["batiment_groupe_id"],
+                "resolution_statut": r["resolution_statut"],
+                "usage_principal_bdnb_open": r["usage_principal_bdnb_open"],
+                "usage_niveau_1_txt": r["usage_niveau_1_txt"],
+                "nb_log": r["nb_log"],
+                "nb_lot_garpark_rnc": r["nb_lot_garpark_rnc"],
+                "nb_lot_tertiaire_rnc": r["nb_lot_tertiaire_rnc"],
+                "surface_emprise_sol": r["surface_emprise_sol"],
+                "hauteur_mean": r["hauteur_mean"],
+                "nb_niveau": r["nb_niveau"],
+                "annee_construction": r["annee_construction"],
+                "type_batiment_dpe": r["type_batiment_dpe"],
+                "fiabilite_emprise_sol": r["fiabilite_emprise_sol"],
+                "fiabilite_hauteur": r["fiabilite_hauteur"],
                 "similarity": r["sim"],
             }
             for r in detailed
@@ -740,6 +918,7 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     finally:
         con.close()
     all_rows = [dict(zip(columns, row)) for row in rows]
+    scope = refine_scope_city(scope, scope_mode, citycode, all_rows)
     reference_date = latest_mutation_date(all_rows)
 
     cohort = all_rows
@@ -873,7 +1052,9 @@ class Handler(BaseHTTPRequestHandler):
             "/api/estimate": comparable_rows,
             "/api/market": market_rows,
             "/api/parcelles": parcelles_rows,
+            "/api/batiments": batiments_rows,
             "/api/panoramax": panoramax_rows,
+            "/api/codepostal": postcode_rows,
         }
         fn = api.get(parsed.path)
         if fn:
@@ -905,6 +1086,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", mimetypes.guess_type(file_path)[0] or "application/octet-stream")
         self.send_header("Content-Length", str(len(body)))
+        # POC servi en local : on évite le cache navigateur pour que les éditions JS/CSS prennent effet.
+        # Limité au service local pour ne pas dégrader un éventuel hébergement réel.
+        if HOST in ("127.0.0.1", "localhost"):
+            self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 

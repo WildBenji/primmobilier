@@ -7,6 +7,9 @@ Suivi d'exploration des sources publiques candidates au **socle immobilier carto
 - **Date de cadrage** : 2026-06-09
 - **Méthode** : exploration via le MCP `datagouv` (catalogue data.gouv.fr) + lecture des documentations fournies avec les fichiers. Le champ **Définition** de chaque source est construit à partir de ces docs.
 - **Cadre métier** : voir le langage du domaine dans [CONTEXT.md](../CONTEXT.md). On distingue les **Sources socle** (attendues dans toute estimation : BAN, DVF, Cadastre) des **Enrichissements optionnels** (DPE, RNB/BDNB, copropriétés, risques, urbanisme).
+- **Principe de volumétrie** : l'application chiffre depuis DVF. Les fichiers bruts peuvent être
+  complets pour audit/reconstruction, mais les artefacts opérationnels sont réduits aux parcelles,
+  adresses et bâtiments reliés à une vente DVF.
 
 ## Légende statut d'exploration
 
@@ -71,15 +74,35 @@ Suivi d'exploration des sources publiques candidates au **socle immobilier carto
 - **Statut** : ✅ **Catalogué & mesuré (33 + 47)** — parcelles + sections ingérées en GeoParquet, schéma et clés confirmés (cf. mesures §10).
 - **Définition** : découpage parcellaire du territoire au format géo simplifié (vs PCI Vecteur EDIGÉO brut). Fournit les **géométries de parcelles et sections** et la clé de rattachement `id_parcelle`.
 
-**Fichiers / accès** : hébergés sur `cadastre.data.gouv.fr/data/etalab-cadastre/latest/geojson/departements/{dept}/` (pas de ressource tabulaire data.gouv directe ; GeoParquet **non publié** → on convertit le GeoJSON nous-mêmes). Acquisition : [`telechargement/preparer_cadastre.py`](../telechargement/preparer_cadastre.py) (idempotent, GeoJSON.gz → GeoParquet WKB via DuckDB spatial). Tailles 33 : parcelles 235 Mo gz / sections 9,6 Mo gz.
+**Fichiers / accès** : hébergés sur `cadastre.data.gouv.fr/data/etalab-cadastre/latest/geojson/departements/{dept}/` (pas de ressource tabulaire data.gouv directe ; GeoParquet **non publié** → on convertit le GeoJSON nous-mêmes). Acquisition : [`telechargement/preparer_cadastre.py`](../telechargement/preparer_cadastre.py) (idempotent, GeoJSON.gz → GeoParquet WKB via DuckDB spatial, couches `sections` + `parcelles` + `batiments`). Tailles 33 : parcelles 235 Mo gz / sections 9,6 Mo gz / bâtiments 82 Mo gz (→ `cadastre_batiments_33.parquet` 177 Mo, 1,43 M empreintes).
 
 **Champs réels confirmés (DuckDB spatial sur 33/47)** :
 - Couche **parcelles** : `id` (= commune + préfixe + section + numéro, ex. `33063000KE0083`), `commune`, `prefixe`, `section`, `numero`, `contenance` (surface terrain m², dispo à **99,97%**), `arpente`, `created`, `updated`, géométrie. Ajout calculé à l'ingestion : `clon`/`clat` (centroïde, pour filtre bbox rapide).
 - Couche **sections** : `id` (commune + préfixe + section, ex. `33063000KE`), `commune`, `code`, géométrie — **emprise d'analyse** (cf. CONTEXT « Section cadastrale »).
+- Couche **bâtiments** : empreintes au sol (MultiPolygon), `type` (`01` bâti en dur / `02` bâti léger : garage, abri…), `nom` (souvent nul), `commune`, `created`/`updated`, `clon`/`clat`. **Pas d'id parcelle** → rattachement par intersection spatiale (empreinte ∩ parcelle). Sert à dessiner le détail intérieur d'une parcelle (maison + annexes) là où RNB n'expose qu'un point et BDNB que des attributs.
 
-**Superflu / à différer** : couches `subdivisions_fiscales`, `lieux_dits`, `prefixes_sections`, `feuilles` — peu utiles à l'estimation. Couche `batiments` cadastrale : redondante avec RNB pour la maille bâtiment → préférer RNB.
+**Superflu / à différer** : couches `subdivisions_fiscales`, `lieux_dits`, `prefixes_sections`, `feuilles` — peu utiles à l'estimation.
 
 **Clés de jointure (confirmées)** : `parcelles.id` ↔ DVF (`id_parcelle`) [**97,89%** des parcelles DVF logement présentes] ↔ RNB (`plots[].id`) · `sections.id` ↔ `substr(id_parcelle, 1, 10)` [**99,84%**]. Format GeoParquet (WKB) = idéal pour DuckDB spatial (`ST_GeomFromWKB`, `ST_Contains`).
+
+**Artefact service** : `cadastre_parcelles_service_{dept}.parquet` ne garde que les parcelles
+présentes dans DVF. Les sections et bâtiments restent complets : les bâtiments sont interrogés
+à la demande par parcelle (endpoint `/api/batiments`, préfiltre bbox `clon`/`clat` puis
+`ST_Intersects`), pas réduits au graphe DVF.
+
+## 1.4 Contours codes postaux (adresse.data.gouv.fr)
+
+- **ID data.gouv** : `600010bb10532cc0d7363fc0` · Organisation : adresse.data.gouv.fr · Licence : `fr-lo` · Millésime : **2021** (référentiel **national et statique**)
+- **Statut** : ✅ **Catalogué & intégré** — converti en GeoParquet, servi par le POC.
+- **Définition** : zones **codes postaux calculées** à partir des numéros BAN. Contrairement aux limites communales (geo.api.gouv.fr), ces contours **découpent les grandes villes par code postal** (ex. Bordeaux 33000 / 33200 / 33800 sont des polygones distincts), ce qui en fait la bonne emprise pour le scope « code postal » du service carto.
+
+**Fichiers / accès** : un seul GeoJSON national (~3 Mo, 6158 zones, propriété `codePostal`). Pas de GeoParquet publié → conversion locale. Acquisition : [`telechargement/preparer_codes_postaux.py`](../telechargement/preparer_codes_postaux.py) (idempotent, GeoJSON → GeoParquet WKB via DuckDB spatial). Référentiel **national** : acquis une seule fois, hors de la boucle départementale (appelé en étape 1 du pipeline).
+
+**Champs réels** : `codePostal` (string, ex. `33000`), `nbNumeros` (compte d'adresses BAN agrégées), géométrie (Polygon/MultiPolygon WGS84, stockée en WKB).
+
+**Clé de service** : `codePostal` ↔ BAN/DVF `code_postal`. Lecture côté POC par `ST_GeomFromWKB` filtrée sur `codePostal` (endpoint `/api/codepostal`), cohérente avec la résolution des sections cadastrales.
+
+**Artefact** : `data/interim/contours_codes_postaux.parquet` (~1,5 Mo, non réduit — national, sert tous les départements).
 
 ---
 
@@ -110,17 +133,32 @@ Suivi d'exploration des sources publiques candidates au **socle immobilier carto
 
 **Superflu / doublon** : `shape` peut être omis si seul `point` suffit (allège fortement). `status` filtrable en amont.
 
-**Clés de jointure** : c'est le **hub** — `addresses.cle_interop` ↔ BAN, `plots.id` ↔ Cadastre/DVF, `ext_ids` ↔ BDNB. À relier à DPE via `rnb_id`.
+**Clés de jointure** : c'est le **hub** — `addresses.cle_interop` ↔ BAN, `plots.id` ↔ Cadastre/DVF. `ext_ids` peut contenir des identifiants externes, dont BDNB construction, mais **ne doit pas être utilisé comme conversion implicite vers `batiment_groupe_id` BDNB** sans table officielle. À relier à DPE via `rnb_id`.
+
+**Artefacts service** : après récupération des non-matchs, `rnb_plots_service_{dept}`,
+`rnb_adr_service_{dept}` et `rnb_points_service_{dept}` ne gardent que les parcelles DVF et les
+`rnb_id` récupérés. Les exports RNB complets restent nécessaires en amont pour retrouver les
+parcelles renumérotées et les rattachements par adresse/spatial.
 
 ## 2.2 BDNB — Base de Données Nationale des Bâtiments
 
 - **ID data.gouv** : `61dc7157488f8cdb4283e3c3` · Organisation : CSTB · Licence : `lov2` · Fréquence : **semestrielle** · MàJ catalogue : 2026-05-22
-- **Statut** : ⏳ À approfondir (enrichissement lourd, optionnel)
+- **Statut** : ✅ Ciblé pour les fiches détail et la résolution groupe bâtiment par parcelle
 - **Définition** : carte d'identité agrégée des **~32 M de bâtiments** (croisement d'une vingtaine de bases publiques), à la maille bâtiment : âge, typologie, énergie/DPE, rénovation.
 
-**Fichiers / accès** : exports France **très volumineux** — CSV 36,7 Go, GPKG 47,5 Go, pgdump 37,7 Go ; **API** (portail BDNB) ; **dictionnaire de données** xlsx (`documentation.xlsx`, v0.7.11). Pas d'export départemental sur data.gouv (dispo sur bdnb.io).
+**Fichiers / accès** : exports France **très volumineux** — CSV 36,7 Go, GPKG 47,5 Go, pgdump 37,7 Go ; exports **départementaux** sur `bdnb.io/download` / S3 `open-data.s3.fr-par.scw.cloud` ; **API BDNB Open** `69427c378a39a6a5051349e7`, base `https://api.bdnb.io/v1/bdnb` ; **dictionnaire de données** xlsx (`documentation.xlsx`, v0.7.11).
 
-**Position dans le socle** : redondant en partie avec RNB (maille bâtiment) + DPE (énergie). **À ne pas ingérer en masse au départ** — n'apporter que des champs ciblés (année de construction, type, copropriété) si le besoin se confirme, via API ou extraction. Pivot bâtiment = RNB, pas BDNB.
+**Route / tables officielles retenues** : la spec API expose `/donnees/batiment_groupe_complet_parcelle`, décrite comme une jointure `batiment_groupe` avec les tables métier faisant le lien avec les parcelles. En production locale, on reconstruit cette vue depuis les ZIP départementaux avec `rel_batiment_groupe_parcelle`, `batiment_groupe`, `batiment_groupe_synthese_propriete_usage`, `batiment_groupe_ffo_bat`, `batiment_groupe_rnc`, `batiment_groupe_geospx` et `batiment_groupe_bdtopo_bat`.
+
+**Position dans le socle** : BDNB enrichit les fiches détail et peut résoudre un `batiment_groupe_id` quand une parcelle n'a qu'un groupe BDNB. Le pivot bâtiment reste RNB quand un `rnb_id` est résolu ; on ne remplace pas RNB par BDNB via inférence.
+
+**Champs ciblés retenus** : `batiment_groupe_id`, `parcelle_id`, `code_departement_insee`, `code_commune_insee`, `usage_principal_bdnb_open`, `usage_niveau_1_txt`, `nb_log`, `nb_log_rnc`, `nb_lot_garpark_rnc`, `nb_lot_tertiaire_rnc`, `surface_emprise_sol`, `hauteur_mean`, `nb_niveau`, `annee_construction`, `mat_mur_txt`, `mat_toit_txt`, `type_batiment_dpe`, `fiabilite_emprise_sol`, `fiabilite_hauteur`, `fiabilite_cr_adr_niv_1`, `fiabilite_cr_adr_niv_2`, `s_geom_groupe`.
+
+**Règle de précision** : si la route renvoie plusieurs `batiment_groupe_id` pour une parcelle, la fiche reste au niveau parcelle enrichie. Aucun choix par "plus grande emprise", distance ou surface n'est appliqué sans source officielle.
+
+**Artefact service** : `bdnb_batiments_service_{dept}.parquet` est filtré sur les `parcelle_id`
+présents dans DVF. L'ingestion départementale filtre également les tables BDNB dès que possible
+sur ces parcelles puis sur les `batiment_groupe_id` restants.
 
 ---
 
@@ -181,6 +219,7 @@ Suivi d'exploration des sources publiques candidates au **socle immobilier carto
 | API Cadastre data.gouv (bundler Etalab) | `6661eadade5469423f58a6b4` | Exports parcelle/commune/EPCI | ⏳ |
 | API Carto Cadastre (IGN) | `672cf6658e2b8878bf0a5e6c` | Géométrie/centroïde de parcelle, divisions cadastrales | ⏳ |
 | API Carto GPU (urbanisme, IGN) | `672cf67520c9ae9747b4015c` | Zonage, servitudes, prescriptions intersectant un point/parcelle | ⏳ |
+| API BDNB Open | `69427c378a39a6a5051349e7` | Bâtiments groupes par parcelle et attributs métier | ✅ |
 
 > Note notebook : l'API actuelle (`api-adresse.data.gouv.fr`) doit être testée vs l'API Géoplateforme (`data.geopf.fr/geocodage/`).
 
@@ -203,7 +242,7 @@ Le **RNB (`rnb_id`) est le pivot bâtiment** qui relie les sources entre elles :
 │   id_parcelle │           │   bâtiment) │          │   neuf)     │
 └───────────────┘           │  ext_ids    │          └─────────────┘
         ▲                   └─────────────┘                ▲
-        │ id_parcelle              │ ext_ids               │ parcelle
+        │ id_parcelle              │ parcelle_id           │ parcelle
         │                          ▼                       │
 ┌───────────────┐           ┌─────────────┐                │
 │      DVF      │           │    BDNB     │                │
@@ -216,7 +255,7 @@ Le **RNB (`rnb_id`) est le pivot bâtiment** qui relie les sources entre elles :
 
 **Chaînes de jointure exploitables**
 1. **Adresse → bien** : adresse cible → API BAN → `id` (cle_interop) → RNB (`addresses.cle_interop_ban`) → `plots` → Cadastre (`id_parcelle`) → DVF.
-2. **DVF → bâtiment** : DVF (`id_parcelle`) → RNB (`plots`) → `rnb_id`. Attention : 1 parcelle peut porter N bâtiments → ambiguïté à mesurer.
+2. **DVF → bâtiment/groupe** : DVF (`id_parcelle`) → RNB (`plots`) → `rnb_id` quand la parcelle ou l'adresse tranche ; DVF (`id_parcelle`) → BDNB (`parcelle_id`) → `batiment_groupe_id` quand la parcelle BDNB n'a qu'un groupe. Si plusieurs groupes restent possibles, on conserve le niveau parcelle.
 3. **DPE → bâtiment** : DPE (`identifiant_ban`) → RNB (`addresses.cle_interop_ban`) → `rnb_id`. Fallback : spatial (DPE `_geopoint` ↔ RNB `point`) ou BAN crosswalk.
 
 **Points durs à valider sur échantillon (dépt 33)**

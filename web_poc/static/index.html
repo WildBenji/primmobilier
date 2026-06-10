@@ -60,6 +60,11 @@
           <button type="button" data-scope="city">Commune</button>
         </div>
 
+        <label class="zone-toggle">
+          <input type="checkbox" id="zoneToggle" checked>
+          <span>Afficher la zone sur la carte</span>
+        </label>
+
         <div id="radiusControl" class="radius-control">
           <div class="radius-head">
             <span>Rayon</span>
@@ -128,25 +133,57 @@
       <div id="map"></div>
 
       <aside class="map-controls" aria-label="Contrôles de carte">
-        <label class="layer-select">
+        <div class="layer-select layer-menu" id="baseLayerMenu">
           <span>Fond de carte</span>
-          <select id="baseLayer">
-            <option value="ignplan">IGN Plan</option>
-            <option value="carto">CARTO Positron</option>
-            <option value="voyager">CARTO Voyager</option>
-            <option value="osm">OSM standard</option>
-            <option value="ign">IGN Satellite</option>
-            <option value="stadiasat">Stadia Satellite</option>
-          </select>
-        </label>
-        <label class="layer-select">
-          <span>Cadastre</span>
-          <select id="cadastreMode">
-            <option value="none">Masqué</option>
-            <option value="biens">Biens affichés</option>
-            <option value="all">Tout (zoom ≥ 15)</option>
-          </select>
-        </label>
+          <div class="layer-menu-trigger">
+            <button type="button" class="layer-menu-current">
+              <span id="baseLayerLabel">IGN Plan</span>
+              <span class="layer-menu-caret">▾</span>
+            </button>
+            <div class="layer-menu-providers">
+              <div class="layer-provider">
+                <button type="button" class="layer-provider-name">IGN<span class="layer-menu-caret">‹</span></button>
+                <div class="layer-submenu">
+                  <button type="button" data-layer="ignplan" class="active">IGN Plan</button>
+                  <button type="button" data-layer="ign">IGN Satellite</button>
+                </div>
+              </div>
+              <div class="layer-provider">
+                <button type="button" class="layer-provider-name">CARTO<span class="layer-menu-caret">‹</span></button>
+                <div class="layer-submenu">
+                  <button type="button" data-layer="carto">Positron</button>
+                  <button type="button" data-layer="voyager">Voyager</button>
+                </div>
+              </div>
+              <div class="layer-provider">
+                <button type="button" class="layer-provider-name">OSM<span class="layer-menu-caret">‹</span></button>
+                <div class="layer-submenu">
+                  <button type="button" data-layer="osm">OSM standard</button>
+                </div>
+              </div>
+              <div class="layer-provider">
+                <button type="button" class="layer-provider-name">Stadia<span class="layer-menu-caret">‹</span></button>
+                <div class="layer-submenu">
+                  <button type="button" data-layer="stadiasat">Stadia Satellite</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="layer-select layer-menu" id="cadastreMenu">
+          <span>Grille cadastre</span>
+          <div class="layer-menu-trigger">
+            <button type="button" class="layer-menu-current">
+              <span id="cadastreLabel">Masqué</span>
+              <span class="layer-menu-caret">▾</span>
+            </button>
+            <div class="layer-menu-providers">
+              <button type="button" data-cadastre="none" class="active">Masqué</button>
+              <button type="button" data-cadastre="biens">Biens affichés</button>
+              <button type="button" data-cadastre="all">Tout (zoom ≥ 15)</button>
+            </div>
+          </div>
+        </div>
       </aside>
 
       <aside id="streetViewPanel" class="street-panel" hidden aria-label="Vue rue">
@@ -176,6 +213,7 @@
               <div class="sort-menu">
                 <button id="sortToggle" type="button" aria-expanded="false">Trier</button>
                 <div id="sortOptions" class="sort-options">
+                  <button type="button" data-sort="similarity">Similarité</button>
                   <button type="button" data-sort="price">Prix</button>
                   <button type="button" data-sort="date">Date</button>
                   <button type="button" data-sort="surface">m²</button>

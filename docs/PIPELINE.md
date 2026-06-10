@@ -3,7 +3,7 @@
 Ce document décrit le pipeline **actuel** : ce qu'il fait, comment il s'enchaîne, les
 **choix** qui le structurent et ses **limites**. Pour le *pourquoi* détaillé de chaque
 décision, voir les ADR liés ([0001](adr/0001-valider-joignabilite-avant-de-figer-le-socle.md)
-→ [0005](adr/0005-organisation-des-donnees-table-comparables.md)).
+→ [0006](adr/0006-bdnb-parcelle-pour-resolution-batiment.md)).
 
 ## But
 
@@ -19,17 +19,22 @@ qui n'est pas rattachable de façon défendable est soit localisé à la **parce
 | --- | --- | --- |
 | **DVF géolocalisé** (Etalab) | les ventes (prix, surface, type, parcelle, coords) | `geo-dvf` CSV/dept/an (2021–2025) |
 | **RNB** (IGN/CSTB) | le pivot bâtiment (`rnb_id`), empreinte, parcelles, adresses | export S3 par département |
+| **BDNB Open** (CSTB) | enrichissement bâtiment groupe par parcelle | ZIP CSV départemental `bdnb_millesime_2026-02-a` |
 | **BAN** (DINUM) | crosswalk parcelle↔adresse + géocodage | fichier dept + API `api-adresse` |
+| **Contours codes postaux** (adresse.data.gouv.fr) | emprise « code postal » du service carto | GeoJSON **national** (millésime 2021) |
 
 ## Architecture
 
 ```
-telechargement/      preparer_donnees.py     # acquisition + parsing brut -> interim
+telechargement/      preparer_donnees.py        # acquisition + parsing brut -> interim (par dept)
+                     preparer_cadastre.py       # cadastre Etalab (parcelles/sections/bâtiments) -> GeoParquet (par dept)
+                     preparer_codes_postaux.py  # contours codes postaux -> GeoParquet (national)
 pipeline/
   commun.py          # chemins, points RNB, table mutations (partagés)
   qualite_jointure.py        # [diagnostic] mesure du taux de match
   recuperation_non_match.py  # cascade de récupération A/B/C
   geocodage_residuel.py      # géocodage BAN des résiduels + pertes
+  reduire_referentiels.py    # filtre RNB/BAN/BDNB/Cadastre au graphe DVF utile
   construire_comparables.py  # table comparables + pont + adresses_ref
 lancer_pipeline.py   # orchestre tout pour un département
 ```
@@ -41,21 +46,24 @@ flowchart TD
     subgraph SRC[Sources opendata]
         DVF[(DVF geo)]
         RNB[(RNB dept)]
+        BDNB[(BDNB Open dept CSV)]
         BAN[(BAN dept + API)]
     end
 
     DVF --> PREP[telechargement.preparer_donnees]
     RNB --> PREP
+    BDNB --> PREP
     BAN --> PREP
     PREP --> I1[/dvf_DEPT.parquet/]
     PREP --> I2[/rnb_plots_DEPT.parquet/]
     PREP --> I3[/rnb_adr_DEPT.parquet/]
-    PREP --> I4[/ban_DEPT.csv.gz/]
+    PREP --> I4[/bdnb_batiments_DEPT.parquet/]
+    PREP --> I5[/ban_DEPT.csv.gz/]
 
     I1 --> REC[recuperation_non_match]
     I2 --> REC
     I3 --> REC
-    I4 --> REC
+    I5 --> REC
     REC --> RL[/recup_liens_DEPT.parquet/]
 
     RL --> GEO[geocodage_residuel]
@@ -64,11 +72,25 @@ flowchart TD
     GEO --> RLF[/recup_liens_final_DEPT.parquet/]
     GEO --> PERTES[/pertes_DEPT.parquet/]
 
+    RLF --> RED[reduire_referentiels]
+    I1 --> RED
+    I2 --> RED
+    I3 --> RED
+    I4 --> RED
+    I5 --> RED
+    RED --> S1[/rnb_plots_service_DEPT.parquet/]
+    RED --> S2[/rnb_adr_service_DEPT.parquet/]
+    RED --> S3[/rnb_points_service_DEPT.parquet/]
+    RED --> S4[/ban_service_DEPT.parquet/]
+    RED --> S5[/bdnb_batiments_service_DEPT.parquet/]
+    RED --> S6[/cadastre_parcelles_service_DEPT.parquet/]
+
     RLF --> CMP[construire_comparables]
     I1 --> CMP
-    I2 --> CMP
-    I3 --> CMP
-    I4 --> CMP
+    S1 --> CMP
+    S2 --> CMP
+    S4 --> CMP
+    S5 --> CMP
     CMP --> C1[/comparables_DEPT.parquet/]
     CMP --> C2[/pont_batiment_DEPT.parquet/]
     CMP --> C3[/adresses_ref_DEPT.parquet/]
@@ -82,11 +104,12 @@ flowchart TD
 
 | # | Module | Entrée | Sortie | Rôle |
 | --- | --- | --- | --- | --- |
-| 1 | `telechargement.preparer_donnees` | URLs opendata | `dvf_`, `rnb_plots_`, `rnb_adr_` (parquet) + bruts | télécharge DVF (2021-25), parse le JSON RNB (`plots`, `addresses`), récupère la BAN |
+| 1 | `telechargement.preparer_donnees` | URLs opendata + ZIP BDNB dept | `dvf_`, `rnb_plots_`, `rnb_adr_`, `bdnb_batiments_` (parquet) + bruts | télécharge DVF (2021-25), parse le JSON RNB (`plots`, `addresses`), extrait la BDNB départementale par parcelle, récupère la BAN |
 | — | `pipeline.qualite_jointure` *(diagnostic)* | interim | (stdout) | mesure le % de match DVF→RNB par parcelle et décompose les non-matchs |
 | 2 | `pipeline.recuperation_non_match` | interim + BAN | `recup_liens_` | récupère les ~2–5% de ventes dont la parcelle est absente du RNB |
 | 3 | `pipeline.geocodage_residuel` | `recup_liens_` + DVF + API BAN | `recup_liens_final_`, `pertes_` | géocode le résiduel (score ≥ 0,95) ; le reste = perdu |
-| 4 | `pipeline.construire_comparables` | interim + `recup_liens_final_` | `comparables_`, `pont_batiment_`, `adresses_ref_` | assemble la table de service |
+| 4 | `pipeline.reduire_referentiels` | interim complet + `recup_liens_final_` | `*_service_` | réduit RNB, BAN, BDNB et Cadastre aux parcelles DVF + bâtiments récupérés |
+| 5 | `pipeline.construire_comparables` | DVF + artefacts service + `recup_liens_final_` | `comparables_`, `pont_batiment_`, `adresses_ref_` | assemble la table de service |
 
 ### Le cœur : résolution `rnb_id` + confiance
 
@@ -108,7 +131,8 @@ flowchart TD
     Q -- oui --> M{combien de bâtiments ?}
     M -- "1 (mono)" --> H1[rnb_id, confiance haute]
     M -- "N + adresse tranche 1 bâtiment" --> H2[rnb_id, confiance haute]
-    M -- "N, indéterminé" --> P[rnb_id NULL, lien parcelle, confiance parcelle]
+    M -- "N + BDNB groupe unique" --> BG[batiment_groupe_id, resolution_statut bdnb_groupe_resolu]
+    M -- "N, non résolu par source officielle" --> P[lien parcelle, resolution_statut parcelle_seule]
 
     style PERTE fill:#f5d8d8
     style P fill:#fff2cc
@@ -119,12 +143,16 @@ flowchart TD
 - **`comparables_{dept}`** — 1 ligne par **bien logement vendu** (dédoublonné des lignes DVF
   éclatées). Colonnes : `id_mutation, date_mutation, nature_mutation, code_commune, nom_commune,
   id_parcelle, adresse_dvf, type_local, surface_reelle_bati, nombre_pieces_principales,
-  valeur_fonciere, rnb_id, confiance, source, flag_multi_bien, flag_multi_adresse`.
-- **`pont_batiment_{dept}`** — `(id_mutation, id_parcelle) → rnb_id, confiance, source`. Autorité
-  du rattachement, **unique par couple** (aucune duplication de ligne en aval).
+  valeur_fonciere, rnb_id, batiment_groupe_id, resolution_statut, confiance, source,
+  flag_multi_bien, flag_multi_adresse`.
+- **`pont_batiment_{dept}`** — `(id_mutation, id_parcelle) → rnb_id, batiment_groupe_id,
+  resolution_statut, confiance, source`. Autorité du rattachement, **unique par couple**
+  (aucune duplication de ligne en aval).
 - **`adresses_ref_{dept}`** — `rnb_id, cle_interop_ban, adresse_normalisee, code_postal,
   nom_commune, lon, lat`, **élagué** aux `rnb_id` réellement référencés (~5-6 % du RNB).
 - **`pertes_{dept}`** — ventes non rattachables + `raison`.
+- **`*_service_{dept}`** — projections de RNB/BAN/BDNB/Cadastre limitées au graphe DVF utile :
+  parcelles présentes dans DVF et `rnb_id` récupérés par la cascade.
 
 ## Choix structurants
 
@@ -139,7 +167,12 @@ flowchart TD
    `code_commune`, préfixe section cadastrale sur `id_parcelle`). Les filtres métier récurrents
    (catégorie, bornes €/m², ventes mono-mutation) se matérialisent ou se calculent côté DuckDB,
    pas par scan départemental suivi d'un filtrage Python.
-6. **Pas de désambiguïsation par surface au sol ni BDNB** : mesuré, gain marginal (cf. limites).
+6. **BDNB seulement par clé officielle parcelle** : pas de relation RNB ext_ids -> BDNB groupe
+   inventée. Une parcelle BDNB à groupe unique résout `batiment_groupe_id`; sinon la parcelle
+   reste un contexte sourcé ([ADR 0006](adr/0006-bdnb-parcelle-pour-resolution-batiment.md)).
+7. **Les référentiels de service sont réduits à DVF.** L'application chiffre depuis les ventes
+   DVF ; les référentiels complets ne servent qu'en cache brut ou pendant la récupération des
+   non-matchs. Les requêtes de service consomment les artefacts `*_service_{dept}`.
 
 ## Conventions de service web
 
@@ -155,13 +188,23 @@ Le POC web (`web_poc/`) sert de modèle pour les futures fonctions interactives 
   par département, indexé par taille + date de modification du fichier DVF source.
 - Les handlers API renvoient toujours du JSON, y compris en erreur serveur, afin que l'interface
   affiche un état explicite au lieu de rester bloquée sur un calcul en cours.
+- Les endpoints cartographiques utilisent les référentiels `*_service` quand ils existent. Par
+  exemple, l'overlay parcellaire ne charge que les parcelles présentes dans le graphe DVF.
+- Le détail d'un comparable dessine la **parcelle + ses bâtiments cadastraux** (endpoint
+  `/api/batiments` : rattachement spatial empreinte ∩ parcelle, préfiltre bbox puis `ST_Intersects`),
+  pour distinguer maison / annexes / garage là où RNB n'a qu'un point et BDNB que des attributs.
+  Les empreintes et leur surface au sol (`ST_Area_Spheroid`) sont aussi listées dans la fiche détail.
+- Les **emprises** tracées sur la carte proviennent de référentiels géométriques, pas d'enveloppes
+  approximatives : rayon (cercle calculé), section cadastrale (`cadastre_sections_{dept}`, point-dans-polygone),
+  **code postal** (`contours_codes_postaux.parquet`, endpoint `/api/codepostal`, lecture DuckDB
+  `ST_GeomFromWKB` filtrée par `codePostal`), commune (limites administratives via geo.api.gouv.fr).
 
 ## Limites (assumées)
 
-- **Précision bâtiment plafonnée à ~60 %.** Sur parcelle multi-bâtiments (62 % des parcelles),
-  l'adresse ne tranche que ~46 % et la surface au sol ~33 % ; au-delà = sur-ingénierie. Les
-  ~40 % restants sont **localisés à la parcelle** (`confiance=parcelle`, `rnb_id` NULL), souvent
-  un cas bénin (maison + son garage au même endroit).
+- **Pas de sélection arbitraire sur parcelle multi-bâtiments.** RNB adresse/mono-bâtiment et
+  BDNB groupe unique peuvent résoudre un identifiant. Quand plusieurs groupes restent possibles,
+  le pipeline conserve la parcelle et ses attributs sourcés sans choisir par surface, distance ou
+  taille apparente.
 - **Pas de niveau appartement.** DVF n'a pas de n° d'appartement (seulement le lot de copro,
   non joignable). Départager les logements d'un immeuble = itération future (DPE/surface).
 - **`valeur_fonciere` est un total de mutation**, répété par ligne — **ne jamais sommer** ;
@@ -177,10 +220,14 @@ Le POC web (`web_poc/`) sert de modèle pour les futures fonctions interactives 
 uv run python lancer_pipeline.py 47
 uv run python lancer_pipeline.py 47 --mesure      # + diagnostic de joignabilité
 
+# référentiels nationaux (idempotents, une seule fois — déjà inclus dans l'étape 1)
+uv run python -m telechargement.preparer_codes_postaux
+
 # ou étape par étape
 uv run python -m telechargement.preparer_donnees 47
 uv run python -m pipeline.recuperation_non_match 47
 uv run python -m pipeline.geocodage_residuel 47 0.95
+uv run python -m pipeline.reduire_referentiels 47
 uv run python -m pipeline.construire_comparables 47
 ```
 

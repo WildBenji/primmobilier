@@ -1,12 +1,14 @@
-"""Télécharge le cadastre Etalab (parcelles + sections) d'un département et le convertit en GeoParquet.
+"""Télécharge le cadastre Etalab (parcelles + sections + bâtiments) d'un département et le convertit en GeoParquet.
 
 Source : https://cadastre.data.gouv.fr/data/etalab-cadastre/latest/geojson/departements/{dept}/
 Produit (idempotent) :
-  data/raw/      cadastre-{dept}-parcelles.json.gz, cadastre-{dept}-sections.json.gz
-  data/interim/  cadastre_parcelles_{dept}.parquet, cadastre_sections_{dept}.parquet
+  data/raw/      cadastre-{dept}-{parcelles,sections,batiments}.json.gz
+  data/interim/  cadastre_{parcelles,sections,batiments}_{dept}.parquet
                  (attributs + géométrie WGS84 stockée en WKB ; relire avec ST_GeomFromWKB(geom_wkb))
 
 Clés de jointure : `id` parcelle == DVF `id_parcelle` ; `id` section == substr(id_parcelle, 1, 10).
+Les bâtiments cadastraux n'ont pas d'id parcelle : on les rattache par intersection spatiale
+(empreinte ∩ parcelle). `type` = 01 (bâti en dur) / 02 (bâti léger : garage, abri…).
 
 Usage : uv run python -m telechargement.preparer_cadastre [DEPT]   (défaut 33)
 """
@@ -57,7 +59,7 @@ def main(dept: str) -> None:
     INTERIM.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect()
     con.execute("INSTALL spatial; LOAD spatial;")
-    for layer in ("sections", "parcelles"):
+    for layer in ("sections", "parcelles", "batiments"):
         src = download(f"{BASE}/{dept}/cadastre-{dept}-{layer}.json.gz",
                        RAW / f"cadastre-{dept}-{layer}.json.gz")
         convertir(src, INTERIM / f"cadastre_{layer}_{dept}.parquet", con)
