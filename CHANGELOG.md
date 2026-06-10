@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.0 - 2026-06-10
+
+- Optimisation des endpoints Estimation et Exploration : les emprises (rayon, code postal, commune, section cadastrale) sont poussées dans DuckDB avant matérialisation Python, avec préfiltre bbox puis distance exacte pour les rayons.
+- Exploration marché accélérée : filtres catégorie/bornes €/m² appliqués en SQL, DVF scoped une seule fois, et mutations DVF mono-ligne matérialisées en parquet temporaire réutilisable par département.
+- Robustesse API/UI : validation stricte du département pour `/api/parcelles`, erreurs serveur JSON au lieu de connexions coupées, gestion frontend des erreurs réseau/serveur et garde contre les réponses obsolètes.
+- Hygiène du POC web : connexions DuckDB fermées explicitement, chargement spatial mutualisé, dérivation département centralisée, chaînes serveur échappées dans les rendus HTML, et détails Exploration sans champs Similarité/Confiance absents.
+- Documentation des conventions de service web : les futures fonctions interactives doivent filtrer tôt côté DuckDB et matérialiser les scans coûteux réutilisables.
+
 ## v0.7.0 - 2026-06-10
 
 - Acquisition cadastre (Etalab) pour les départements 33 et 47 : nouveau module `telechargement/preparer_cadastre.py` qui télécharge parcelles + sections (GeoJSON.gz) et les convertit en **GeoParquet** (géométrie WKB, centroïde `clon`/`clat` précalculé) via DuckDB spatial. GeoParquet non publié par Etalab → conversion maison.
