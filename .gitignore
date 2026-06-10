@@ -14,3 +14,6 @@ data/
 
 # Notebooks
 .ipynb_checkpoints/
+
+# Outils locaux (artefacts daemon lean-ctx)
+.lean-ctx/
