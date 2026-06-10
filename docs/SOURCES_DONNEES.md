@@ -281,3 +281,38 @@ Les 6 274 ventes de logement (4,96%) non rattachées par la parcelle ont *toutes
 2. Départager bâtiment/logement sur parcelle multi-bâtiments : **plafond mesuré ~60%** (adresse 46%, surface 33% — cf. ADR 0005) → escalade DPE/BDNB seulement si un usage l'exige. Comprendre les ~13% de DPE non matchés.
 3. Confirmer les colonnes _(à confirmer)_ du Cadastre (parcelles/sections) sur extrait réel.
 4. Décider du périmètre d'ingestion (national direct vs progressif) — désormais possible sur la base des taux mesurés.
+
+---
+
+# 8. Fonds de carte (rendu web POC)
+
+Fonds raster utilisés par le sélecteur « Fond de carte » du POC web ([web_poc/static/app.js](../web_poc/static/app.js)). Ce sont des **tuiles d'affichage**, pas des données du socle — aucune jointure, seulement le rendu.
+
+**Galerie de référence pour choisir/comparer des fonds** : <https://leaflet-extras.github.io/leaflet-providers/preview/> — aperçu live de ~40 fournisseurs avec le template d'URL `{z}/{x}/{y}` copiable. ⚠️ Beaucoup de fournisseurs listés exigent désormais une **clé API** (Thunderforest, MapTiler, Stadia/Stamen) — vérifier au cas par cas avant d'intégrer.
+
+| Fond (valeur sélecteur) | Fournisseur | URL | Clé / inscription | Attribution |
+| --- | --- | --- | --- | --- |
+| `ignplan` *(défaut)* | IGN Géoplateforme | WMTS `GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2` | Non | © IGN / cartes.gouv.fr |
+| `carto` | CARTO Positron (`light_all`) | `basemaps.cartocdn.com/light_all/...` | Non | © OSM contributors © CARTO |
+| `voyager` | CARTO Voyager | `basemaps.cartocdn.com/rastertiles/voyager/...` | Non | © OSM contributors © CARTO |
+| `osm` | OpenStreetMap standard | `tile.openstreetmap.org/...` | Non | © OSM contributors |
+| `ign` | IGN Géoplateforme | WMTS `ORTHOIMAGERY.ORTHOPHOTOS` (satellite) | Non | © IGN / cartes.gouv.fr |
+| `stadiasat` | Stadia AlidadeSatellite | `tiles.stadiamaps.com/tiles/alidade_satellite/{z}/{x}/{y}.jpg` | **Localhost seulement** (voir ⚠️) | © Stadia Maps © OpenMapTiles © OSM contributors |
+
+> ⚠️ **Stadia.AlidadeSatellite — auth par domaine.** Vérifié 2026-06-10 : sans clé, une requête serveur→serveur renvoie **401**, mais avec un `Origin`/`Referer` en `localhost`/`127.0.0.1` elle renvoie **200**. Donc **utilisable sans clé ni inscription tant que le POC tourne en local**. Pour un déploiement sur un vrai domaine, il faut un compte Stadia (gratuit) pour enregistrer le domaine ou obtenir une clé API, sinon les tuiles renverront 401. C'est la seule entrée du sélecteur soumise à cette condition.
+
+---
+
+# 9. Mode Exploration (panorama de marché) — usage des données DVF
+
+Le POC web a deux modes : **Estimation** (comparables d'un bien cible, via `comparables_{dept}`) et **Exploration** (`/api/market`), qui affiche le **prix de tous les biens dans une emprise**, indépendamment d'un bien cible. Deux qualités de prix selon la source, par construction :
+
+| Catégorie | Source | €/m² | Qualité |
+| --- | --- | --- | --- |
+| Maison, Appartement | `comparables_{dept}` (mono-bien, propre) | `valeur_fonciere / surface_reelle_bati` | **logement** (fiable) |
+| Terrain | DVF brut, **mutations mono-ligne** | `valeur_fonciere / surface_terrain` | indicatif |
+| Dépendance, Local | DVF brut, **mutations mono-ligne** | `valeur_fonciere / surface_reelle_bati` | indicatif |
+
+**Pourquoi mono-ligne** : dans DVF brut, `valeur_fonciere` est au grain **mutation** (dupliquée sur chaque ligne bâti + terrain d'une même vente). Calculer un €/m² par ligne sur les ventes multi-lignes fausserait le prix. On ne retient donc, pour terrain/dépendance/local, que les **mutations à une seule ligne** (≈ 68 k sur le 33) où `valeur_fonciere` = prix d'un bien unique sans ambiguïté. **Limite assumée** : les terrains/dépendances vendus dans des mutations multi-lignes sont écartés → panorama indicatif, non exhaustif.
+
+**Découplage carte / liste** (perf) : `/api/market` et `/api/estimate` renvoient deux tableaux — `points` (tous les biens de l'emprise, payload allégé : coords + type + prix, plafond de sécurité 20 000) pour la carte WebGL, et `comparables`/`biens` (liste détaillée plafonnée par le paramètre `max_comparables`, défaut 200) pour le tableau DOM. Les statistiques (médiane €/m²) sont calculées sur la **cohorte complète**, pas sur l'échantillon affiché.
