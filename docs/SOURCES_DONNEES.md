@@ -68,18 +68,18 @@ Suivi d'exploration des sources publiques candidates au **socle immobilier carto
 ## 1.3 Cadastre (Etalab)
 
 - **ID data.gouv** : `59b0020ec751df07d5f13bcf` · Organisation : data.gouv.fr (Etalab) · Licence : `fr-lo` · Fréquence : **trimestrielle** · MàJ catalogue : 2026-05-07
-- **Statut** : 🔎 À échantillonner (noms d'attributs exacts à confirmer)
+- **Statut** : ✅ **Catalogué & mesuré (33 + 47)** — parcelles + sections ingérées en GeoParquet, schéma et clés confirmés (cf. mesures §10).
 - **Définition** : découpage parcellaire du territoire au format géo simplifié (vs PCI Vecteur EDIGÉO brut). Fournit les **géométries de parcelles et sections** et la clé de rattachement `id_parcelle`.
 
-**Fichiers / accès** : hébergés sur `cadastre.data.gouv.fr` (pas de ressource tabulaire data.gouv directe). Formats : **GeoJSON, Shapefile, GeoParquet, MBTiles**. 8 couches : `parcelles`, `subdivisions_fiscales`, `lieux_dits`, `feuilles`, `sections`, `prefixes_sections`, `communes`, `batiments`.
+**Fichiers / accès** : hébergés sur `cadastre.data.gouv.fr/data/etalab-cadastre/latest/geojson/departements/{dept}/` (pas de ressource tabulaire data.gouv directe ; GeoParquet **non publié** → on convertit le GeoJSON nous-mêmes). Acquisition : [`telechargement/preparer_cadastre.py`](../telechargement/preparer_cadastre.py) (idempotent, GeoJSON.gz → GeoParquet WKB via DuckDB spatial). Tailles 33 : parcelles 235 Mo gz / sections 9,6 Mo gz.
 
-**Champs clés retenus** :
-- Couche **parcelles** _(à confirmer)_ : `id` (= code dépt + commune + préfixe + section + numéro), `commune`, `prefixe`, `section`, `numero`, `contenance` (surface), géométrie.
-- Couche **sections** : `code`, `commune`, géométrie — pertinent comme **emprise d'analyse intermédiaire** (cf. CONTEXT « Section cadastrale »).
+**Champs réels confirmés (DuckDB spatial sur 33/47)** :
+- Couche **parcelles** : `id` (= commune + préfixe + section + numéro, ex. `33063000KE0083`), `commune`, `prefixe`, `section`, `numero`, `contenance` (surface terrain m², dispo à **99,97%**), `arpente`, `created`, `updated`, géométrie. Ajout calculé à l'ingestion : `clon`/`clat` (centroïde, pour filtre bbox rapide).
+- Couche **sections** : `id` (commune + préfixe + section, ex. `33063000KE`), `commune`, `code`, géométrie — **emprise d'analyse** (cf. CONTEXT « Section cadastrale »).
 
-**Superflu / à différer** : couches `subdivisions_fiscales`, `lieux_dits`, `prefixes_sections`, `feuilles` — peu utiles à l'estimation au départ. Couche `batiments` cadastrale : redondante avec RNB/BDNB pour la maille bâtiment → préférer RNB.
+**Superflu / à différer** : couches `subdivisions_fiscales`, `lieux_dits`, `prefixes_sections`, `feuilles` — peu utiles à l'estimation. Couche `batiments` cadastrale : redondante avec RNB pour la maille bâtiment → préférer RNB.
 
-**Clés de jointure** : `parcelles.id` ↔ DVF (`id_parcelle`) ↔ RNB (`plots[].id`). Format **GeoParquet** = idéal pour DuckDB spatial.
+**Clés de jointure (confirmées)** : `parcelles.id` ↔ DVF (`id_parcelle`) [**97,89%** des parcelles DVF logement présentes] ↔ RNB (`plots[].id`) · `sections.id` ↔ `substr(id_parcelle, 1, 10)` [**99,84%**]. Format GeoParquet (WKB) = idéal pour DuckDB spatial (`ST_GeomFromWKB`, `ST_Contains`).
 
 ---
 
@@ -316,3 +316,25 @@ Le POC web a deux modes : **Estimation** (comparables d'un bien cible, via `comp
 **Pourquoi mono-ligne** : dans DVF brut, `valeur_fonciere` est au grain **mutation** (dupliquée sur chaque ligne bâti + terrain d'une même vente). Calculer un €/m² par ligne sur les ventes multi-lignes fausserait le prix. On ne retient donc, pour terrain/dépendance/local, que les **mutations à une seule ligne** (≈ 68 k sur le 33) où `valeur_fonciere` = prix d'un bien unique sans ambiguïté. **Limite assumée** : les terrains/dépendances vendus dans des mutations multi-lignes sont écartés → panorama indicatif, non exhaustif.
 
 **Découplage carte / liste** (perf) : `/api/market` et `/api/estimate` renvoient deux tableaux — `points` (tous les biens de l'emprise, payload allégé : coords + type + prix, plafond de sécurité 20 000) pour la carte WebGL, et `comparables`/`biens` (liste détaillée plafonnée par le paramètre `max_comparables`, défaut 200) pour le tableau DOM. Les statistiques (médiane €/m²) sont calculées sur la **cohorte complète**, pas sur l'échantillon affiché.
+
+---
+
+# 10. Cadastre — mesures de croisement et intégration POC (33)
+
+Spike exécuté 2026-06-10 (DuckDB spatial sur `cadastre_parcelles_33` ≈ 1,99 M parcelles, `cadastre_sections_33` = 6 987 sections).
+
+| Croisement | Mesure (33) | Conclusion |
+| --- | --- | --- |
+| DVF logement `id_parcelle` ∈ cadastre | **97,89%** | Jointure parcelle fiable ; 2,11% manquants = renumérotation (cf. ADR 0004) |
+| DVF → section (`substr(id,1,10)`) ∈ cadastre | **99,84%** · 4 145 sections ≥5 ventes (76%) · 30,8 ventes/section | **Emprise Section pleinement exploitable** |
+| Point DVF ∈ parcelle déclarée | **97,12%** | Cohérence coords ↔ parcelle validée |
+| Recovery spatiale renumérotation (avec coords) | **98,67%** | Assignation parcelle par point-dans-polygone, robuste à l'`id` — complète la cascade RNB d'ADR 0004 |
+| `contenance` (surface parcelle) | **99,97%** dispo · 98 600 maisons enrichies · terrain médian 776 m² | **Feature prédictive** « surface terrain » pour la maison |
+
+**Caveat** : la recovery spatiale ne couvre que les parcelles renumérotées **disposant de coordonnées DVF** ; le reste passe par la cascade adresse RNB (ADR 0004). Le cadastre est un **complément/validateur**, pas un remplaçant du pivot RNB.
+
+**Intégration POC web (v0.6.x)** :
+- **Emprise « Section »** : `resolve_section()` résout la section contenant l'adresse (point-dans-polygone), filtre les comparables/biens sur `substr(id_parcelle,1,10)` et renvoie le polygone pour l'affichage.
+- **Overlay cadastre** (`/api/parcelles`) : lignes de parcelles, soit par `ids` (parcelles des biens listés), soit par `bbox` (vue courante, filtre sur centroïde `clon`/`clat` précalculé, plafonné). Indépendant du fond de carte.
+
+**Pistes ouvertes (cf. HAND-OFF)** : exposer **tous les bâtiments d'une parcelle** (maison + dépendances : garage, abri, jardin) via RNB `plots`/`shape`, et enrichir le **détail du comparable** (contenance, section, nb de bâtiments sur la parcelle, etc.).

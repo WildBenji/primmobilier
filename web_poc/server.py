@@ -27,6 +27,8 @@ DEFAULT_MAX_COMPARABLES = 200
 MAX_COMPARABLES_LIMIT = 1000
 # Plafond de sécurité des points carte (payload allégé) : en pratique = « tous les points ».
 POINTS_HARD_CAP = 20000
+PARCELLE_IDS_CAP = 2000
+PARCELLE_BBOX_CAP = 4000
 DEFAULT_RADIUS_M = 1500
 MIN_RADIUS_M = 100
 MAX_RADIUS_M = 20_000
@@ -133,6 +135,72 @@ def similarity_score(row: dict, target_surface: float, target_rooms: int | None,
     return round((0.50 * surface_score + 0.25 * rooms_score + 0.25 * distance_score) * 100, 1)
 
 
+def resolve_section(dept: str, lon: float, lat: float) -> dict | None:
+    """Section cadastrale contenant le point (point-dans-polygone). Renvoie id + géométrie GeoJSON."""
+    path = INTERIM / f"cadastre_sections_{dept}.parquet"
+    if not path.exists():
+        return None
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial;")
+    row = con.execute(
+        """
+        SELECT id, ST_AsGeoJSON(ST_GeomFromWKB(geom_wkb))
+        FROM read_parquet(?)
+        WHERE ST_Contains(ST_GeomFromWKB(geom_wkb), ST_Point(?, ?))
+        LIMIT 1
+        """,
+        [str(path), lon, lat],
+    ).fetchone()
+    if not row:
+        return None
+    return {"id": row[0], "geojson": json.loads(row[1])}
+
+
+def parcelles_rows(params: dict[str, list[str]]) -> dict:
+    """Géométries de parcelles cadastrales en GeoJSON, soit par `ids`, soit par `bbox` (centroïde)."""
+    empty = {"type": "FeatureCollection", "features": []}
+    dept = params.get("dept", [""])[0]
+    path = INTERIM / f"cadastre_parcelles_{dept}.parquet"
+    if not path.exists():
+        return empty
+    ids = [x for x in (params.get("ids", [""])[0] or "").split(",") if x][:PARCELLE_IDS_CAP]
+    bbox = params.get("bbox", [""])[0]
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial;")
+    if ids:
+        placeholders = ",".join(["?"] * len(ids))
+        rows = con.execute(
+            f"""
+            SELECT id, ST_AsGeoJSON(ST_GeomFromWKB(geom_wkb))
+            FROM read_parquet(?) WHERE id IN ({placeholders})
+            """,
+            [str(path), *ids],
+        ).fetchall()
+    elif bbox:
+        try:
+            minlon, minlat, maxlon, maxlat = (float(x) for x in bbox.split(","))
+        except ValueError:
+            return empty
+        rows = con.execute(
+            """
+            SELECT id, ST_AsGeoJSON(ST_GeomFromWKB(geom_wkb))
+            FROM read_parquet(?)
+            WHERE clon BETWEEN ? AND ? AND clat BETWEEN ? AND ?
+            LIMIT ?
+            """,
+            [str(path), minlon, maxlon, minlat, maxlat, PARCELLE_BBOX_CAP],
+        ).fetchall()
+    else:
+        return empty
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "properties": {"id": r[0]}, "geometry": json.loads(r[1])}
+            for r in rows
+        ],
+    }
+
+
 def comparable_rows(params: dict[str, list[str]]) -> dict:
     dept = params.get("dept", [""])[0]
     scope_mode = params.get("scope_mode", ["radius"])[0]
@@ -152,16 +220,6 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
     max_comparables = min(MAX_COMPARABLES_LIMIT, max(MIN_COMPARABLES, max_comparables))
     if scope_mode not in {"radius", "cadastre", "postcode", "city"}:
         scope_mode = "radius"
-    if scope_mode == "cadastre":
-        # TODO: activer quand les géométries cadastrales seront ingérées :
-        # - contours de sections cadastrales ou parcelles (GeoParquet/PMTiles) ;
-        # - résolution point adresse -> section/parcelle ;
-        # - filtre spatial ou jointure id_parcelle -> géométrie de section.
-        return {
-            "error": "Emprise cadastrale à brancher quand les géométries cadastrales seront disponibles.",
-            "count": 0,
-            "scope": "cadastre",
-        }
 
     if dept not in available_departements():
         return {
@@ -170,6 +228,12 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
         }
     if lon is None or lat is None or surface is None or surface <= 0:
         return {"error": "Adresse résolue et surface cible sont requises."}
+
+    section = None
+    if scope_mode == "cadastre":
+        section = resolve_section(dept, lon, lat)
+        if not section:
+            return {"error": "Aucune section cadastrale trouvée à cette adresse (cadastre du département requis)."}
 
     con = duckdb.connect()
     comp = INTERIM / f"comparables_{dept}.parquet"
@@ -237,6 +301,9 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
     elif scope_mode == "city":
         scope = "commune entière"
         cohort = [r for r in all_rows if citycode and r["code_commune"] == citycode]
+    elif scope_mode == "cadastre":
+        scope = f"section {section['id']}"
+        cohort = [r for r in all_rows if r["id_parcelle"] and r["id_parcelle"][:10] == section["id"]]
     else:
         scope = radius_label(radius_m)
         cohort = [r for r in all_rows if r["distance_m"] <= radius_m]
@@ -289,6 +356,7 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
             "scope_mode": scope_mode,
             "radius_m": radius_m,
             "history_years": history_years,
+            "section": section,
         },
         "summary": {
             "scope": scope,
@@ -379,12 +447,18 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     requested = [c for c in (params.get("types", [""])[0] or "").split(",") if c in MARKET_BOUNDS]
     wanted = set(requested) if requested else set(MARKET_CATEGORIES)
 
-    if scope_mode not in {"radius", "postcode", "city"}:
+    if scope_mode not in {"radius", "cadastre", "postcode", "city"}:
         scope_mode = "radius"
     if dept not in available_departements():
         return {"error": f"Département {dept or 'inconnu'} indisponible dans data/interim."}
     if lon is None or lat is None:
         return {"error": "Adresse, code postal ou commune résolus sont requis."}
+
+    section = None
+    if scope_mode == "cadastre":
+        section = resolve_section(dept, lon, lat)
+        if not section:
+            return {"error": "Aucune section cadastrale trouvée à cette adresse (cadastre du département requis)."}
 
     con = duckdb.connect()
     comp = str(INTERIM / f"comparables_{dept}.parquet")
@@ -456,6 +530,9 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     elif scope_mode == "city":
         scope = "commune entière"
         cohort = [r for r in all_rows if citycode and r["code_commune"] == citycode]
+    elif scope_mode == "cadastre":
+        scope = f"section {section['id']}"
+        cohort = [r for r in all_rows if r["id_parcelle"] and r["id_parcelle"][:10] == section["id"]]
     else:
         scope = radius_label(radius_m)
         cohort = [r for r in all_rows if r["distance_m"] <= radius_m]
@@ -501,6 +578,7 @@ def market_rows(params: dict[str, list[str]]) -> dict:
             "dept": dept, "lon": lon, "lat": lat,
             "postcode": postcode, "citycode": citycode,
             "scope_mode": scope_mode, "radius_m": radius_m, "history_years": history_years,
+            "section": section,
         },
         "summary": {
             "scope": scope,
@@ -597,6 +675,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/market":
             self.json(market_rows(parse_qs(parsed.query)))
+            return
+        if parsed.path == "/api/parcelles":
+            self.json(parcelles_rows(parse_qs(parsed.query)))
             return
         if parsed.path == "/api/panoramax":
             self.json(panoramax_rows(parse_qs(parsed.query)))

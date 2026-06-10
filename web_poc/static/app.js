@@ -9,6 +9,7 @@ const estimationPanel = document.querySelector("#estimationPanel");
 const toggleEstimation = document.querySelector("#toggleEstimation");
 const expandEstimation = document.querySelector("#expandEstimation");
 const baseLayerSelect = document.querySelector("#baseLayer");
+const cadastreModeSelect = document.querySelector("#cadastreMode");
 const comparablesList = document.querySelector("#comparablesList");
 const tableMeta = document.querySelector("#tableMeta");
 const comparableDetail = document.querySelector("#comparableDetail");
@@ -135,6 +136,10 @@ const map = new maplibregl.Map({
       targetRadius: {
         type: "geojson",
         data: emptyFeatureCollection()
+      },
+      cadastre: {
+        type: "geojson",
+        data: emptyFeatureCollection()
       }
     },
     layers: [
@@ -144,6 +149,12 @@ const map = new maplibregl.Map({
       { id: "base-ignplan", type: "raster", source: "ignplan" },
       { id: "base-ign", type: "raster", source: "ign", layout: { visibility: "none" } },
       { id: "base-stadiasat", type: "raster", source: "stadiasat", layout: { visibility: "none" } },
+      {
+        id: "cadastre-lines",
+        type: "line",
+        source: "cadastre",
+        paint: { "line-color": "#7048e8", "line-width": 1.2, "line-opacity": 0.85 }
+      },
       {
         id: "target-radius-fill",
         type: "fill",
@@ -245,6 +256,72 @@ baseLayerSelect.addEventListener("change", () => {
     map.setLayoutProperty(`base-${id}`, "visibility", id === baseLayerSelect.value ? "visible" : "none");
   }
 });
+
+let cadastreTimer = null;
+cadastreModeSelect.addEventListener("change", applyCadastre);
+map.on("moveend", () => {
+  if (cadastreModeSelect.value !== "all") return;
+  clearTimeout(cadastreTimer);
+  cadastreTimer = setTimeout(loadCadastreViewport, 250);
+});
+
+function currentDept() {
+  if (!selectedAddress) return null;
+  const cc = selectedAddress.properties.citycode || "";
+  return cc.startsWith("97") ? cc.slice(0, 3) : cc.slice(0, 2);
+}
+
+function setCadastre(featureCollection) {
+  const source = map.getSource("cadastre");
+  if (source) source.setData(featureCollection || emptyFeatureCollection());
+}
+
+function applyCadastre() {
+  const mode = cadastreModeSelect.value;
+  if (mode === "biens") {
+    loadCadastreBiens();
+  } else if (mode === "all") {
+    loadCadastreViewport();
+  } else {
+    setCadastre(null);
+  }
+}
+
+async function loadCadastreBiens() {
+  const dept = currentDept();
+  const ids = [...new Set(currentComparables.map((r) => r.id_parcelle).filter(Boolean))];
+  if (!dept || !ids.length) {
+    setCadastre(null);
+    setStatus("Cadastre « Biens » : lance d'abord une estimation ou une exploration.");
+    return;
+  }
+  const url = new URL("/api/parcelles", window.location.origin);
+  url.searchParams.set("dept", dept);
+  url.searchParams.set("ids", ids.join(","));
+  const response = await fetch(url);
+  setCadastre(await response.json());
+}
+
+async function loadCadastreViewport() {
+  if (cadastreModeSelect.value !== "all") return;
+  const dept = currentDept();
+  if (!dept) {
+    setCadastre(null);
+    setStatus("Cadastre « Tout » : sélectionne d'abord une adresse (pour connaître le département).");
+    return;
+  }
+  if (map.getZoom() < 14) {
+    setCadastre(null);
+    setStatus("Cadastre « Tout » : zoome (niveau 14+) pour afficher les parcelles.");
+    return;
+  }
+  const b = map.getBounds();
+  const url = new URL("/api/parcelles", window.location.origin);
+  url.searchParams.set("dept", dept);
+  url.searchParams.set("bbox", [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(","));
+  const response = await fetch(url);
+  setCadastre(await response.json());
+}
 
 const appEl = document.querySelector(".app");
 
@@ -622,6 +699,8 @@ function resetAll() {
     targetMarker = null;
   }
   clearScopeGeojson();
+  cadastreModeSelect.value = "none";
+  setCadastre(null);
 
   // Vide la carte, les résultats et les comparables (via applyMode), puis les panneaux annexes
   applyMode();
@@ -713,7 +792,7 @@ async function runMarket() {
     lat,
     postcode: props.postcode || "",
     citycode: props.citycode || "",
-    scope_mode: selectedScope === "cadastre" ? "radius" : selectedScope,
+    scope_mode: selectedScope,
     radius_m: String(selectedRadius),
     history_years: String(selectedHistoryYears),
     max_comparables: maxComparablesInput.value || "200",
@@ -739,6 +818,8 @@ async function runMarket() {
     return;
   }
   renderMarket(data);
+  drawScope(data.target);
+  if (cadastreModeSelect.value === "biens") loadCadastreBiens();
   setStatus(`Marché local — ${data.summary.scope}, ${data.summary.history}.`);
 }
 
@@ -807,6 +888,8 @@ async function estimate() {
   }
   renderResult(data);
   renderComparables(data.comparables, data.points, data.summary.count);
+  drawScope(data.target);
+  if (cadastreModeSelect.value === "biens") loadCadastreBiens();
   setStatus(`Calcul terminé sur ${data.target.dept}.`);
 }
 
@@ -946,6 +1029,34 @@ function setRadiusGeojson(lon, lat, radiusM) {
   });
 }
 
+function setScopePolygon(geometry) {
+  const source = map.getSource("targetRadius");
+  if (source) {
+    source.setData({ type: "Feature", geometry, properties: {} });
+  }
+}
+
+function fitToGeometry(geometry) {
+  const bounds = new maplibregl.LngLatBounds();
+  const extend = (coords) => {
+    if (typeof coords[0] === "number") {
+      bounds.extend(coords);
+    } else {
+      for (const c of coords) extend(c);
+    }
+  };
+  extend(geometry.coordinates);
+  map.fitBounds(bounds, { padding: 60, maxZoom: 17, duration: 500 });
+}
+
+// L'emprise section est un polygone résolu côté serveur : on le dessine depuis la réponse.
+function drawScope(target) {
+  if (target && target.section) {
+    setScopePolygon(target.section.geojson);
+    fitToGeometry(target.section.geojson);
+  }
+}
+
 function updateScopeGeometry(rows = []) {
   if (!selectedAddress) return;
   const [lon, lat] = selectedAddress.geometry.coordinates;
@@ -953,6 +1064,9 @@ function updateScopeGeometry(rows = []) {
     setRadiusGeojson(lon, lat, selectedRadius);
     map.easeTo({ center: [lon, lat], zoom: zoomForRadius(selectedRadius), duration: 450 });
     return;
+  }
+  if (selectedScope === "cadastre") {
+    return; // polygone dessiné par drawScope() depuis la réponse serveur
   }
   // TODO: dessiner les vraies emprises quand les géométries seront disponibles :
   // - contours communaux pour `city` ;

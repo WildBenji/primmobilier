@@ -55,7 +55,7 @@
 
         <div class="scope-control" aria-label="Emprise de comparaison">
           <button type="button" data-scope="radius" class="active">Rayon</button>
-          <button type="button" data-scope="cadastre" disabled>Cadastre</button>
+          <button type="button" data-scope="cadastre">Section</button>
           <button type="button" data-scope="postcode">Code postal</button>
           <button type="button" data-scope="city">Commune</button>
         </div>
@@ -137,6 +137,14 @@
             <option value="osm">OSM standard</option>
             <option value="ign">IGN Satellite</option>
             <option value="stadiasat">Stadia Satellite</option>
+          </select>
+        </label>
+        <label class="layer-select">
+          <span>Cadastre</span>
+          <select id="cadastreMode">
+            <option value="none">Masqué</option>
+            <option value="biens">Biens affichés</option>
+            <option value="all">Tout (zoom ≥ 15)</option>
           </select>
         </label>
       </aside>
