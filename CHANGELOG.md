@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.6.0 - 2026-06-10
+
+- Mode **Exploration** (panorama de marché) dans le POC web, en plus de l'Estimation : nouvel endpoint `/api/market` affichant le prix de **tous les biens** d'une emprise (maison, appartement, terrain, dépendance, local), indépendamment d'un bien cible — seules comptent la localisation (adresse, code postal ou commune) et l'emprise. Médiane €/m² et prix médian par type.
+- Qualité des prix par construction (cf. `docs/SOURCES_DONNEES.md` §9) : logement (Maison/Appartement) depuis la table `comparables` propre ; terrain/dépendance/local depuis les **mutations DVF mono-ligne** uniquement (évite le `valeur_fonciere` dupliqué des ventes multi-lignes), étiquetés « indicatif ».
+- Bascule de mode via un **switch segmenté** Estimation/Exploration ; en Exploration, **chips** de filtre par type de bien ; les champs propres à chaque mode (caractéristiques du bien d'un côté, filtres de l'autre) sont masqués dans l'autre mode.
+- **Sélecteur de fonds de carte** (6 couches) : IGN Plan (défaut), CARTO Positron, CARTO Voyager, OpenStreetMap, IGN Satellite, Stadia Satellite. Stadia utilisable sans clé en local uniquement (auth par domaine) — documenté dans `docs/SOURCES_DONNEES.md` §8.
+- **Panneaux déplaçables** (estimation, fond de carte, comparables, vue rue) par leur en-tête, en état ouvert comme replié ; double-clic sur l'en-tête pour remettre à la position d'origine.
+- Bouton **Reset** qui remet l'interface à l'état initial (carte, points, estimation, comparables, formulaire).
+- Nombre de comparables affichés **paramétrable** (défaut 200, validé par Entrée, plafonné automatiquement au nombre réellement disponible) et compteur `affichés/total`.
+- Découplage carte/liste pour la performance : la carte reçoit **tous les points** de l'emprise en payload allégé (coords + type + prix), la liste DOM reste plafonnée ; les statistiques restent calculées sur la cohorte complète.
+- Correctif d'affichage : les sections masquées par l'attribut `hidden` (`.grid`, `.result`) étaient neutralisées par `display: grid` — les blocs spécifiques à un mode persistaient à tort en changeant de mode.
+
 ## v0.5.0 - 2026-06-10
 
 - Ajout d'un POC web local `web_poc/` pour tester l'usage final de l'estimation par comparables : serveur HTTP local, API d'estimation DuckDB, carte MapLibre, recherche d'adresse BAN et couche IGN optionnelle.
