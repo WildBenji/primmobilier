@@ -2,6 +2,8 @@
 
 Suivi d'exploration des sources publiques candidates au **socle immobilier cartographique** (cf. [CONTEXT.md](../CONTEXT.md)). Objectif : savoir précisément, pour chaque source, **où sont les données, ce qu'on récupère, ce qui est superflu/doublon, et par quelles clés elle se joint aux autres** — avant de décider ce qui est réalisable.
 
+> **Le pipeline qui exploite ces sources est décrit dans [PIPELINE.md](PIPELINE.md)** (étapes, schéma mermaid, choix, limites).
+
 - **Date de cadrage** : 2026-06-09
 - **Méthode** : exploration via le MCP `datagouv` (catalogue data.gouv.fr) + lecture des documentations fournies avec les fichiers. Le champ **Définition** de chaque source est construit à partir de ces docs.
 - **Cadre métier** : voir le langage du domaine dans [CONTEXT.md](../CONTEXT.md). On distingue les **Sources socle** (attendues dans toute estimation : BAN, DVF, Cadastre) des **Enrichissements optionnels** (DPE, RNB/BDNB, copropriétés, risques, urbanisme).
@@ -241,6 +243,19 @@ Notebook : [notebooks/spike_jointures_33.ipynb](../notebooks/spike_jointures_33.
 
 **Décisions éclairées** (cf. [ADR 0003](adr/0003-rnb-pivot-batiment.md)) : RNB `rnb_id` = **pivot bâtiment** ; parcelle = lien secondaire (fiable mais ambigu à l'unité) ; **BAN reste API-only** (validé par les chiffres) ; enrichissement DPE par clé d'adresse retenu. Restent à creuser : départage bâtiment/logement sur parcelles multi-bâtiments, et les ~13% de DPE non matchés (clés voie-seule, millésime BAN).
 
+## 6.1 Récupération des 4,96% non-matchs DVF → RNB
+
+Les 6 274 ventes de logement (4,96%) non rattachées par la parcelle ont *toutes* une parcelle valide en DVF **absente de `RNB.plots`** ; ~100% des bâtiments existent dans le RNB sur une **autre parcelle** → **renumérotation cadastrale**, pas un trou de couverture. Une cascade de récupération (cf. [ADR 0004](adr/0004-recuperation-non-matchs-dvf-rnb.md)) les rattache par fiabilité décroissante :
+
+| Étape | Mécanisme | Récupérés (cumul) |
+| --- | --- | --- |
+| A — clé adresse | `insee_codevoie_numero` reconstruite → `RNB.adresses` | 4 811 |
+| B — pont parcelle BAN | parcelle → `BAN.cad_parcelles` → clé → RNB | 4 903 |
+| C — plus proche bâtiment | coords DVF → bâtiment RNB ≤ 50 m | 5 667 |
+| D — géocodage BAN | api-adresse, **score ≥ 0,95** + type précis + bâtiment ≤ 50 m | **5 733** |
+
+**Entonnoir : 120 119 match direct + 5 733 récupérées = 99,57% exploitable, 541 perdues (0,43%)**, ces dernières dominées par adresses lieu-dit / numéros fictifs absentes de toute référence. Artefacts : `data/interim/recup_liens_final_{dept}.parquet` (autorité, avec `methode`/`confiance`) + `pertes_{dept}.parquet` (raison de perte).
+
 ---
 
 # 7. Statut global & prochaines étapes
@@ -261,6 +276,8 @@ Notebook : [notebooks/spike_jointures_33.ipynb](../notebooks/spike_jointures_33.
 
 **Prochaines étapes**
 1. ~~Échantillonner le dépt 33 et mesurer les taux de match~~ → **fait** (cf. §6).
-2. Départager bâtiment/logement quand une parcelle porte N bâtiments (surface, adresse, `bdg_cover_ratio`) ; comprendre les ~13% de DPE non matchés.
+1bis. ~~Récupérer les ~5% de non-matchs DVF→RNB~~ → **fait** : 99,57% exploitable sur 33 (cf. §6.1, [ADR 0004](adr/0004-recuperation-non-matchs-dvf-rnb.md)).
+1ter. ~~Figer l'organisation des données (table comparables)~~ → **fait** : grain bien logement + pont parcelle→bâtiment + ref adresses élagué ([ADR 0005](adr/0005-organisation-des-donnees-table-comparables.md)). Sur 33 : 138 804 biens, **57% rattachés au bâtiment sûr**, 39% à la parcelle. Artefacts : `comparables_{dept}`, `pont_batiment_{dept}`, `adresses_ref_{dept}`.
+2. Départager bâtiment/logement sur parcelle multi-bâtiments : **plafond mesuré ~60%** (adresse 46%, surface 33% — cf. ADR 0005) → escalade DPE/BDNB seulement si un usage l'exige. Comprendre les ~13% de DPE non matchés.
 3. Confirmer les colonnes _(à confirmer)_ du Cadastre (parcelles/sections) sur extrait réel.
 4. Décider du périmètre d'ingestion (national direct vs progressif) — désormais possible sur la base des taux mesurés.
