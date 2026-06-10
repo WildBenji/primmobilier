@@ -30,7 +30,8 @@ const sortButtons = document.querySelectorAll("#sortOptions button");
 const radiusSlider = document.querySelector("#radiusSlider");
 const radiusLabel = document.querySelector("#radiusLabel");
 const radiusControl = document.querySelector("#radiusControl");
-const historySlider = document.querySelector("#historySlider");
+const historyMinInput = document.querySelector("#historyMin");
+const historyMaxInput = document.querySelector("#historyMax");
 const historyLabel = document.querySelector("#historyLabel");
 const scopeButtons = document.querySelectorAll(".scope-control button");
 const zoneToggle = document.querySelector("#zoneToggle");
@@ -38,6 +39,12 @@ const modeButtons = document.querySelectorAll(".mode-control button");
 const estimationFields = document.querySelector("#estimationFields");
 const explorationFilters = document.querySelector("#explorationFilters");
 const typeChips = document.querySelectorAll("#explorationFilters button");
+const priceControl = document.querySelector("#priceControl");
+const priceMinInput = document.querySelector("#priceMin");
+const priceMaxInput = document.querySelector("#priceMax");
+const priceLabel = document.querySelector("#priceLabel");
+const priceScaleMin = document.querySelector("#priceScaleMin");
+const priceScaleMax = document.querySelector("#priceScaleMax");
 const marketResult = document.querySelector("#marketResult");
 const marketStats = document.querySelector("#marketStats");
 const marketCount = document.querySelector("#marketCount");
@@ -67,7 +74,8 @@ let selectedScope = "radius";
 let showZone = true;
 let scopeDrawSeq = 0;
 let selectedRadius = 1500;
-let selectedHistoryYears = 5;
+let selectedHistoryMinYears = 0;
+let selectedHistoryMaxYears = 5;
 let selectedComparableUid = null;
 let lastSelectedUid = null;
 let selectedAddressSeq = 0;
@@ -76,6 +84,12 @@ let comparableSortDirection = "desc";
 let selectedMode = "estimation";
 let activeCategories = new Set(MARKET_CATEGORIES);
 let runSeq = 0;
+const DEFAULT_PRICE_BOUNDS = { min: 0, max: 1000000, step: 10000 };
+let priceBounds = { ...DEFAULT_PRICE_BOUNDS };
+let selectedPriceMin = priceBounds.min;
+let selectedPriceMax = priceBounds.max;
+let priceFilterTouched = false;
+let priceTimer = null;
 
 const map = new maplibregl.Map({
   container: "map",
@@ -615,6 +629,7 @@ for (const chip of typeChips) {
       activeCategories.add(cat);
     }
     updateChips();
+    resetPriceFilterForScope();
     if (selectedAddress) runMarket();
   });
 }
@@ -629,6 +644,7 @@ for (const button of scopeButtons) {
       other.classList.toggle("active", other === button);
     }
     radiusControl.hidden = selectedScope !== "radius";
+    resetPriceFilterForScope();
     if (selectedAddress) {
       updateScopeGeometry();
       run();
@@ -649,6 +665,7 @@ radiusSlider.addEventListener("input", () => {
     const [lon, lat] = selectedAddress.geometry.coordinates;
     setRadiusGeojson(lon, lat, selectedRadius);
     map.easeTo({ center: [lon, lat], zoom: zoomForRadius(selectedRadius), duration: 250 });
+    resetPriceFilterForScope();
     radiusTimer = setTimeout(run, 300);
   }
 });
@@ -665,14 +682,107 @@ maxComparablesInput.addEventListener("keydown", (event) => {
   maxComparablesInput.blur();
 });
 
-historySlider.addEventListener("input", () => {
-  selectedHistoryYears = Number(historySlider.value);
-  historyLabel.textContent = formatHistory(selectedHistoryYears);
+function onHistoryInput() {
+  let lo = Number(historyMinInput.value);
+  let hi = Number(historyMaxInput.value);
+  if (lo > hi) {
+    if (document.activeElement === historyMinInput) hi = lo;
+    else lo = hi;
+    historyMinInput.value = String(lo);
+    historyMaxInput.value = String(hi);
+  }
+  selectedHistoryMinYears = lo;
+  selectedHistoryMaxYears = hi;
+  historyLabel.textContent = formatHistoryRange(selectedHistoryMinYears, selectedHistoryMaxYears);
   clearTimeout(historyTimer);
   if (selectedAddress) {
+    resetPriceFilterForScope();
     historyTimer = setTimeout(run, 300);
   }
-});
+}
+historyMinInput.addEventListener("input", onHistoryInput);
+historyMaxInput.addEventListener("input", onHistoryInput);
+
+// Slider prix à deux poignées (Exploration). Les poignées ne se croisent pas.
+function onPriceInput() {
+  priceFilterTouched = true;
+  let lo = Number(priceMinInput.value);
+  let hi = Number(priceMaxInput.value);
+  if (lo > hi) {
+    // On garde la poignée qu'on bouge du bon côté de l'autre.
+    if (document.activeElement === priceMinInput) hi = lo;
+    else lo = hi;
+    priceMinInput.value = String(lo);
+    priceMaxInput.value = String(hi);
+  }
+  selectedPriceMin = lo;
+  selectedPriceMax = hi;
+  priceLabel.textContent = priceText();
+  clearTimeout(priceTimer);
+  if (selectedMode === "exploration" && selectedAddress) {
+    priceTimer = setTimeout(runMarket, 300);
+  }
+}
+priceMinInput.addEventListener("input", onPriceInput);
+priceMaxInput.addEventListener("input", onPriceInput);
+
+function resetPriceFilterForScope() {
+  priceFilterTouched = false;
+  selectedPriceMin = priceBounds.min;
+  selectedPriceMax = priceBounds.max;
+  priceMinInput.value = String(selectedPriceMin);
+  priceMaxInput.value = String(selectedPriceMax);
+  priceLabel.textContent = priceText();
+}
+
+function applyPriceBounds(bounds) {
+  if (!bounds || !Number.isFinite(Number(bounds.min)) || !Number.isFinite(Number(bounds.max))) {
+    return;
+  }
+  const nextMin = Number(bounds.min);
+  const nextMax = Number(bounds.max);
+  const nextStep = Math.max(1, Number(bounds.step) || DEFAULT_PRICE_BOUNDS.step);
+  priceBounds = { min: nextMin, max: nextMax, step: nextStep };
+
+  for (const input of [priceMinInput, priceMaxInput]) {
+    input.min = String(nextMin);
+    input.max = String(nextMax);
+    input.step = String(nextStep);
+    input.disabled = nextMin === nextMax;
+  }
+
+  if (!priceFilterTouched) {
+    selectedPriceMin = nextMin;
+    selectedPriceMax = nextMax;
+  } else {
+    selectedPriceMin = Math.min(Math.max(selectedPriceMin, nextMin), nextMax);
+    selectedPriceMax = Math.min(Math.max(selectedPriceMax, nextMin), nextMax);
+    if (selectedPriceMin > selectedPriceMax) {
+      selectedPriceMin = nextMin;
+      selectedPriceMax = nextMax;
+    }
+  }
+  priceMinInput.value = String(selectedPriceMin);
+  priceMaxInput.value = String(selectedPriceMax);
+  priceScaleMin.textContent = formatPrice(nextMin);
+  priceScaleMax.textContent = formatPrice(nextMax);
+  priceLabel.textContent = priceText();
+}
+
+function priceText() {
+  if (selectedPriceMin <= priceBounds.min && selectedPriceMax >= priceBounds.max) return "Tous";
+  const lo = formatPrice(selectedPriceMin);
+  const hi = formatPrice(selectedPriceMax);
+  return `${lo} – ${hi}`;
+}
+
+function formatPrice(value) {
+  if (value >= 1000000) {
+    const millions = value / 1000000;
+    return `${millions >= 10 ? Math.round(millions) : Math.round(millions * 10) / 10} M€`;
+  }
+  return `${Math.round(value / 1000)} k€`;
+}
 
 closeDetail.addEventListener("click", () => {
   comparableDetail.hidden = true;
@@ -816,6 +926,7 @@ function showSuggestions(features) {
 function selectAddress(feature) {
   selectedAddress = feature;
   selectedAddressSeq += 1;
+  resetPriceFilterForScope();
   const addressSeq = selectedAddressSeq;
   addressInput.value = feature.properties.label;
   suggestions.hidden = true;
@@ -848,9 +959,11 @@ function resetAll() {
   radiusSlider.value = "7";
   selectedRadius = radiusSteps[7];
   radiusLabel.textContent = formatRadius(selectedRadius);
-  historySlider.value = "5";
-  selectedHistoryYears = 5;
-  historyLabel.textContent = formatHistory(selectedHistoryYears);
+  historyMinInput.value = "0";
+  historyMaxInput.value = "5";
+  selectedHistoryMinYears = 0;
+  selectedHistoryMaxYears = 5;
+  historyLabel.textContent = formatHistoryRange(selectedHistoryMinYears, selectedHistoryMaxYears);
 
   // Emprise -> rayon
   selectedScope = "radius";
@@ -871,6 +984,11 @@ function resetAll() {
   }
   activeCategories = new Set(MARKET_CATEGORIES);
   updateChips();
+
+  // Prix -> aucune limite
+  priceBounds = { ...DEFAULT_PRICE_BOUNDS };
+  applyPriceBounds(priceBounds);
+  resetPriceFilterForScope();
 
   // Adresse / marqueur / géométries
   selectedAddress = null;
@@ -897,6 +1015,7 @@ function applyMode() {
   const explore = selectedMode === "exploration";
   estimationFields.hidden = explore;
   explorationFilters.hidden = !explore;
+  priceControl.hidden = !explore;
   limitControl.hidden = false;
   addressLabel.textContent = explore ? "Adresse, code postal ou commune" : "Adresse";
   estimateBtn.textContent = explore ? "Explorer" : "Estimer";
@@ -975,16 +1094,25 @@ async function runMarket() {
     citycode: props.citycode || "",
     scope_mode: selectedScope,
     radius_m: String(selectedRadius),
-    history_years: String(selectedHistoryYears),
+    history_min_years: String(selectedHistoryMinYears),
+    history_max_years: String(selectedHistoryMaxYears),
     max_comparables: maxComparablesInput.value || "200",
     types
   });
+  // Bornes de prix : envoyées seulement si l'utilisateur a resserré le slider.
+  if (priceFilterTouched && selectedPriceMin > priceBounds.min) {
+    params.set("prix_min", String(selectedPriceMin));
+  }
+  if (priceFilterTouched && selectedPriceMax < priceBounds.max) {
+    params.set("prix_max", String(selectedPriceMax));
+  }
 
   updateScopeGeometry();
   resultEl.hidden = true;
   setStatus("Lecture du marché local...");
   const data = await fetchJson(`/api/market?${params}`);
   if (seq !== runSeq) return;
+  applyPriceBounds(data.summary?.price_bounds);
   if (data.error) {
     marketResult.hidden = true;
     setComparableGeojson([]);
@@ -1044,7 +1172,8 @@ async function estimate() {
     asked_price: document.querySelector("#askedPrice").value,
     scope_mode: selectedScope,
     radius_m: String(selectedRadius),
-    history_years: String(selectedHistoryYears),
+    history_min_years: String(selectedHistoryMinYears),
+    history_max_years: String(selectedHistoryMaxYears),
     max_comparables: maxComparablesInput.value || "200"
   });
 
@@ -1370,8 +1499,10 @@ function formatRadius(radiusM) {
   return `${radiusM} m`;
 }
 
-function formatHistory(years) {
-  return years === 1 ? "12 mois" : `${years} ans`;
+function formatHistoryRange(minYears, maxYears) {
+  const fmt = (years) => years === 0 ? "0" : years === 1 ? "12 mois" : `${years} ans`;
+  if (minYears === maxYears) return fmt(maxYears);
+  return `${fmt(minYears)} – ${fmt(maxYears)}`;
 }
 
 function setComparableGeojson(points) {

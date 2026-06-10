@@ -36,7 +36,7 @@ DEFAULT_RADIUS_M = 1500
 MIN_RADIUS_M = 100
 MAX_RADIUS_M = 20_000
 DEFAULT_HISTORY_YEARS = 5
-MIN_HISTORY_YEARS = 1
+MIN_HISTORY_YEARS = 0
 MAX_HISTORY_YEARS = 5
 PANORAMAX_ENDPOINT = "https://panoramax.openstreetmap.fr"
 SPATIAL_INSTALLED = False
@@ -138,7 +138,24 @@ def radius_label(radius_m: int) -> str:
 
 
 def history_label(years: int) -> str:
+    if years == 0:
+        return "0"
     return f"{years} an" if years == 1 else f"{years} ans"
+
+
+def history_window_label(min_years: int, max_years: int) -> str:
+    def part(years: int) -> str:
+        if years == 0:
+            return "0"
+        if years == 1:
+            return "12 mois"
+        return f"{years} ans"
+
+    if min_years == 0:
+        return history_label(max_years)
+    if min_years == max_years:
+        return part(max_years)
+    return f"{part(min_years)} à {part(max_years)}"
 
 
 def radius_bbox(lon: float, lat: float, radius_m: int) -> tuple[float, float, float, float]:
@@ -221,6 +238,30 @@ def latest_mutation_date(rows: list[dict]) -> date | None:
 
 
 def filter_history(rows: list[dict], years: int, reference_date: date | None) -> list[dict]:
+    return filter_history_window(rows, 0, years, reference_date)
+
+
+def history_window_from_params(params: dict[str, list[str]]) -> tuple[int, int]:
+    legacy_years = as_int(params, "history_years", DEFAULT_HISTORY_YEARS)
+    max_years = as_int(params, "history_max_years")
+    min_years = as_int(params, "history_min_years", 0)
+    if max_years is None:
+        max_years = legacy_years if legacy_years is not None else DEFAULT_HISTORY_YEARS
+    min_years = min(MAX_HISTORY_YEARS, max(MIN_HISTORY_YEARS, min_years if min_years is not None else 0))
+    max_years = min(MAX_HISTORY_YEARS, max(MIN_HISTORY_YEARS, max_years))
+    if min_years > max_years:
+        min_years, max_years = max_years, min_years
+    return min_years, max_years
+
+
+def shift_years(day: date, years: int) -> date:
+    try:
+        return date(day.year - years, day.month, day.day)
+    except ValueError:
+        return date(day.year - years, 2, 28)
+
+
+def filter_history_window(rows: list[dict], min_years: int, max_years: int, reference_date: date | None) -> list[dict]:
     dated_rows = []
     for row in rows:
         try:
@@ -229,11 +270,33 @@ def filter_history(rows: list[dict], years: int, reference_date: date | None) ->
             pass
     if not dated_rows or reference_date is None:
         return rows
-    try:
-        cutoff = date(reference_date.year - years, reference_date.month, reference_date.day)
-    except ValueError:
-        cutoff = date(reference_date.year - years, 2, 28)
-    return [row for row, row_date in dated_rows if row_date >= cutoff]
+    oldest = shift_years(reference_date, max_years)
+    newest = shift_years(reference_date, min_years)
+    return [row for row, row_date in dated_rows if oldest <= row_date <= newest]
+
+
+def price_step(min_price: float, max_price: float) -> int:
+    span = max(0, max_price - min_price)
+    if span <= 100_000:
+        return 1_000
+    if span <= 500_000:
+        return 5_000
+    if span <= 2_000_000:
+        return 10_000
+    return 50_000
+
+
+def price_bounds(rows: list[dict]) -> dict | None:
+    prices = [float(row["prix"]) for row in rows if row.get("prix") is not None]
+    if not prices:
+        return None
+    min_price = math.floor(min(prices))
+    max_price = math.ceil(max(prices))
+    return {
+        "min": min_price,
+        "max": max_price,
+        "step": price_step(min_price, max_price),
+    }
 
 
 def similarity_score(row: dict, target_surface: float, target_rooms: int | None, max_distance: float) -> float:
@@ -463,8 +526,7 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
     surface = as_float(params, "surface")
     rooms = as_int(params, "rooms")
     asked_price = as_float(params, "asked_price")
-    history_years = as_int(params, "history_years", DEFAULT_HISTORY_YEARS) or DEFAULT_HISTORY_YEARS
-    history_years = min(MAX_HISTORY_YEARS, max(MIN_HISTORY_YEARS, history_years))
+    history_min_years, history_max_years = history_window_from_params(params)
     radius_m = as_int(params, "radius_m", DEFAULT_RADIUS_M) or DEFAULT_RADIUS_M
     radius_m = min(MAX_RADIUS_M, max(MIN_RADIUS_M, radius_m))
     max_comparables = as_int(params, "max_comparables", DEFAULT_MAX_COMPARABLES) or DEFAULT_MAX_COMPARABLES
@@ -620,10 +682,10 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
             "scope": scope,
         }
 
-    cohort = filter_history(cohort, history_years, reference_date)
+    cohort = filter_history_window(cohort, history_min_years, history_max_years, reference_date)
     if len(cohort) < MIN_COMPARABLES:
         return {
-            "error": f"Seulement {len(cohort)} comparables sur {history_label(history_years)} dans l'emprise « {scope} ». Minimum requis : {MIN_COMPARABLES}. Augmente l'historique ou change d'emprise.",
+            "error": f"Seulement {len(cohort)} comparables sur {history_window_label(history_min_years, history_max_years)} dans l'emprise « {scope} ». Minimum requis : {MIN_COMPARABLES}. Élargis l'historique ou change d'emprise.",
             "count": len(cohort),
             "scope": scope,
         }
@@ -661,12 +723,13 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
             "citycode": citycode,
             "scope_mode": scope_mode,
             "radius_m": radius_m,
-            "history_years": history_years,
+            "history_min_years": history_min_years,
+            "history_max_years": history_max_years,
             "section": section,
         },
         "summary": {
             "scope": scope,
-            "history": history_label(history_years),
+            "history": history_window_label(history_min_years, history_max_years),
             "count": len(cohort),
             "median_m2": round(median_m2),
             "q10_m2": round(q10) if q10 is not None else None,
@@ -756,8 +819,7 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     citycode = params.get("citycode", [""])[0] or None
     lon = as_float(params, "lon")
     lat = as_float(params, "lat")
-    history_years = as_int(params, "history_years", DEFAULT_HISTORY_YEARS) or DEFAULT_HISTORY_YEARS
-    history_years = min(MAX_HISTORY_YEARS, max(MIN_HISTORY_YEARS, history_years))
+    history_min_years, history_max_years = history_window_from_params(params)
     radius_m = as_int(params, "radius_m", DEFAULT_RADIUS_M) or DEFAULT_RADIUS_M
     radius_m = min(MAX_RADIUS_M, max(MIN_RADIUS_M, radius_m))
     max_biens = as_int(params, "max_comparables", DEFAULT_MAX_COMPARABLES) or DEFAULT_MAX_COMPARABLES
@@ -826,7 +888,10 @@ def market_rows(params: dict[str, list[str]]) -> dict:
         bounds_filters.append("(categorie = ? AND prix / surface BETWEEN ? AND ?)")
         bounds_args.extend([category, low, high])
     final_filters = ["prix > 0", "surface > 0", f"({' OR '.join(bounds_filters)})"]
-    final_args = bounds_args
+    final_args = list(bounds_args)
+    # Filtre prix total (€) optionnel — appliqué après calcul des bornes réelles du cohort.
+    prix_min = as_float(params, "prix_min")
+    prix_max = as_float(params, "prix_max")
     if scope_mode == "radius":
         final_filters.append("distance_m <= ?")
         final_args.append(radius_m)
@@ -921,13 +986,32 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     scope = refine_scope_city(scope, scope_mode, citycode, all_rows)
     reference_date = latest_mutation_date(all_rows)
 
-    cohort = all_rows
-    cohort = filter_history(cohort, history_years, reference_date)
+    base_cohort = filter_history_window(all_rows, history_min_years, history_max_years, reference_date)
+    bounds = price_bounds(base_cohort)
+    if not base_cohort:
+        return {
+            "error": f"Aucune vente dans l'emprise « {scope} » sur {history_window_label(history_min_years, history_max_years)} pour les types choisis.",
+            "summary": {
+                "count": 0,
+                "scope": scope,
+                "history": history_window_label(history_min_years, history_max_years),
+                "price_bounds": bounds,
+            },
+        }
+    cohort = [
+        r for r in base_cohort
+        if (prix_min is None or r["prix"] >= prix_min)
+        and (prix_max is None or r["prix"] <= prix_max)
+    ]
     if not cohort:
         return {
-            "error": f"Aucune vente dans l'emprise « {scope} » sur {history_label(history_years)} pour les types choisis.",
-            "count": 0,
-            "scope": scope,
+            "error": f"Aucune vente dans l'emprise « {scope} » sur {history_window_label(history_min_years, history_max_years)} pour cette plage de prix.",
+            "summary": {
+                "count": 0,
+                "scope": scope,
+                "history": history_window_label(history_min_years, history_max_years),
+                "price_bounds": bounds,
+            },
         }
 
     types_summary = []
@@ -957,16 +1041,18 @@ def market_rows(params: dict[str, list[str]]) -> dict:
         "target": {
             "dept": dept, "lon": lon, "lat": lat,
             "postcode": postcode, "citycode": citycode,
-            "scope_mode": scope_mode, "radius_m": radius_m, "history_years": history_years,
+            "scope_mode": scope_mode, "radius_m": radius_m,
+            "history_min_years": history_min_years, "history_max_years": history_max_years,
             "section": section,
         },
         "summary": {
             "scope": scope,
-            "history": history_label(history_years),
+            "history": history_window_label(history_min_years, history_max_years),
             "count": len(cohort),
             "shown": len(points),
             "list": len(detailed),
             "types": types_summary,
+            "price_bounds": bounds,
         },
         "points": [
             {
