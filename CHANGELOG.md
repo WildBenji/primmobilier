@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.0 - 2026-06-10
+
+- **Exploration filtrable par prix réel** : le slider de prix à deux poignées s'aligne sur les min/max DVF réels du cohort courant (emprise, rayon/zone, types et historique), sans borne artificielle `0 → 1 M€+`; les bornes sont calculées avant filtre prix afin que la plage affichée reste celle du marché observé.
+- **Historique en plage temporelle** : remplacement du slider historique simple par un double slider `0 – 5 ans`; Estimation et Exploration acceptent désormais `history_min_years` / `history_max_years` et filtrent les ventes par fenêtre d'âge réelle.
+- **Ergonomie Exploration** : le filtre prix remonte sous l'historique, au-dessus du choix d'emprise; les filtres prix se réinitialisent quand l'adresse, l'emprise, le rayon, les types ou l'historique changent pour éviter de réutiliser une ancienne plage sur une nouvelle zone.
+- **Finition UI** : correction de l'alignement visuel des doubles sliders afin que les poignées atteignent les extrémités de piste attendues.
+
 ## v0.9.0 - 2026-06-10
 
 - **Résolution bâtiment par BDNB** ([ADR 0006](docs/adr/0006-bdnb-parcelle-pour-resolution-batiment.md)) : extraction BDNB Open départementale dans `preparer_donnees.py`, et `construire_comparables.py` résout `batiment_groupe_id` + attributs (usage, logements, hauteur, niveaux, emprise, année…) quand une parcelle porte un groupe BDNB unique, sans relation RNB↔BDNB inventée. Nouvelle étape `pipeline/reduire_referentiels.py` qui réduit RNB/BAN/BDNB/Cadastre au graphe DVF, câblée dans `lancer_pipeline.py`.
