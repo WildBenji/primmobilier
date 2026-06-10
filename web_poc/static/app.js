@@ -70,6 +70,7 @@ let comparableSortKey = null;
 let comparableSortDirection = "desc";
 let selectedMode = "estimation";
 let activeCategories = new Set(MARKET_CATEGORIES);
+let runSeq = 0;
 
 const map = new maplibregl.Map({
   container: "map",
@@ -781,10 +782,9 @@ async function runMarket() {
   }
   const props = selectedAddress.properties;
   const [lon, lat] = selectedAddress.geometry.coordinates;
-  const dept = (props.citycode || "").startsWith("97")
-    ? (props.citycode || "").slice(0, 3)
-    : (props.citycode || "").slice(0, 2);
+  const dept = currentDept() || "";
   const types = activeCategories.size === MARKET_CATEGORIES.length ? "" : [...activeCategories].join(",");
+  const seq = ++runSeq;
 
   const params = new URLSearchParams({
     dept,
@@ -802,8 +802,8 @@ async function runMarket() {
   updateScopeGeometry();
   resultEl.hidden = true;
   setStatus("Lecture du marché local...");
-  const response = await fetch(`/api/market?${params}`);
-  const data = await response.json();
+  const data = await fetchJson(`/api/market?${params}`);
+  if (seq !== runSeq) return;
   if (data.error) {
     marketResult.hidden = true;
     setComparableGeojson([]);
@@ -832,7 +832,7 @@ function renderMarket(data) {
     const row = document.createElement("div");
     row.className = `market-row${t.qualite === "indicatif" ? " indicatif" : ""}`;
     row.innerHTML = `
-      <span class="cat"><span class="dot" style="background:${CATEGORY_COLORS[t.categorie] || "#66736d"}"></span>${t.categorie}</span>
+      <span class="cat"><span class="dot" style="background:${CATEGORY_COLORS[t.categorie] || "#66736d"}"></span>${escapeHtml(String(t.categorie || ""))}</span>
       <span class="sub">${int(t.count)} ventes · ${euro(t.median_prix)} médian${t.qualite === "indicatif" ? " · indicatif" : ""}</span>
       <span class="m2">${int(t.median_m2)} €/m²</span>
     `;
@@ -848,9 +848,8 @@ async function estimate() {
   }
   const props = selectedAddress.properties;
   const [lon, lat] = selectedAddress.geometry.coordinates;
-  const dept = (props.citycode || "").startsWith("97")
-    ? (props.citycode || "").slice(0, 3)
-    : (props.citycode || "").slice(0, 2);
+  const dept = currentDept() || "";
+  const seq = ++runSeq;
 
   const params = new URLSearchParams({
     dept,
@@ -870,8 +869,8 @@ async function estimate() {
 
   updateScopeGeometry();
   setStatus("Calcul des comparables...");
-  const response = await fetch(`/api/estimate?${params}`);
-  const data = await response.json();
+  const data = await fetchJson(`/api/estimate?${params}`);
+  if (seq !== runSeq) return;
   if (data.error) {
     resultEl.hidden = true;
     targetStreetView.hidden = true;
@@ -924,7 +923,7 @@ function renderComparables(rows, points, total) {
   updateSortControl();
   renderComparableList();
   if (selectedAddress) {
-    updateScopeGeometry(rows);
+    updateScopeGeometry();
   }
 }
 
@@ -939,8 +938,8 @@ function renderComparableList() {
     item.innerHTML = `
       <b>${int(row.prix_m2)} €/m²</b>
       <b>${euro(row.prix)}</b>
-      <span>${row.commune} · ${int(row.distance_m)} m · ${row.surface} m² · ${row.pieces || "-"} p.</span>
-      <span>${row.date_mutation}</span>
+      <span>${escapeHtml(row.commune || "")} · ${int(row.distance_m)} m · ${escapeHtml(String(row.surface ?? "-"))} m² · ${escapeHtml(String(row.pieces || "-"))} p.</span>
+      <span>${escapeHtml(row.date_mutation || "")}</span>
     `;
     item.addEventListener("click", () => selectComparable(row.uid, { fit: true }));
     comparablesList.append(item);
@@ -1057,7 +1056,7 @@ function drawScope(target) {
   }
 }
 
-function updateScopeGeometry(rows = []) {
+function updateScopeGeometry() {
   if (!selectedAddress) return;
   const [lon, lat] = selectedAddress.geometry.coordinates;
   if (selectedScope === "radius") {
@@ -1194,6 +1193,8 @@ function selectComparable(uid, options = { fit: false }, fallbackRow = null) {
 }
 
 function renderDetail(row) {
+  const similarityField = row.similarity != null ? detailField("Similarité", `${int(row.similarity)} %`) : "";
+  const confidenceField = row.confiance != null ? detailField("Confiance", row.confiance) : "";
   detailBody.innerHTML = `
     <div class="detail-title">
       <strong>${int(row.prix_m2)} €/m² · ${euro(row.prix)}</strong>
@@ -1206,8 +1207,8 @@ function renderDetail(row) {
       ${detailField("Type", row.type_local)}
       ${detailField("Surface", `${row.surface} m²`)}
       ${detailField("Pièces", row.pieces || "-")}
-      ${detailField("Similarité", `${int(row.similarity)} %`)}
-      ${detailField("Confiance", row.confiance)}
+      ${similarityField}
+      ${confidenceField}
       ${detailField("Source", row.source)}
       ${detailField("Nature", row.nature_mutation)}
       ${detailField("Mutation", row.id_mutation)}
@@ -1276,6 +1277,19 @@ async function findPanoramaxImage(lon, lat) {
   } catch {
     streetViewCache.set(key, null);
     return null;
+  }
+}
+
+async function fetchJson(url) {
+  try {
+    const response = await fetch(url);
+    const data = await response.json();
+    if (!response.ok && !data.error) {
+      return { error: "Erreur réseau ou serveur. Réessaie." };
+    }
+    return data;
+  } catch {
+    return { error: "Erreur réseau ou serveur. Réessaie." };
   }
 }
 

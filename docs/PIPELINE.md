@@ -134,7 +134,27 @@ flowchart TD
    qu'une perte assumée ([ADR 0004](adr/0004-recuperation-non-matchs-dvf-rnb.md)).
 4. **Grain = bien logement**, `valeur_fonciere` = total mutation jamais sommé, BAN élagué
    ([ADR 0005](adr/0005-organisation-des-donnees-table-comparables.md)).
-5. **Pas de désambiguïsation par surface au sol ni BDNB** : mesuré, gain marginal (cf. limites).
+5. **Filtres d'emprise poussés dans DuckDB** : tout endpoint de service doit réduire le jeu
+   de données le plus tôt possible (bbox SQL avant distance exacte pour les rayons, `code_postal`,
+   `code_commune`, préfixe section cadastrale sur `id_parcelle`). Les filtres métier récurrents
+   (catégorie, bornes €/m², ventes mono-mutation) se matérialisent ou se calculent côté DuckDB,
+   pas par scan départemental suivi d'un filtrage Python.
+6. **Pas de désambiguïsation par surface au sol ni BDNB** : mesuré, gain marginal (cf. limites).
+
+## Conventions de service web
+
+Le POC web (`web_poc/`) sert de modèle pour les futures fonctions interactives :
+
+- Les requêtes Estimation et Exploration construisent d'abord une **emprise SQL** commune :
+  rayon = préfiltre bbox puis filtre exact `distance_m <= rayon`, code postal, commune, ou section
+  cadastrale (`id_parcelle LIKE section%`).
+- Les statistiques et l'historique se calculent sur la **cohorte d'emprise**, pas sur tout le
+  département. Cela évite de matérialiser des résultats inutiles et reflète mieux la lecture métier.
+- Les scans coûteux et réutilisables doivent être **matérialisés**. Exemple actuel : les mutations
+  DVF mono-ligne utilisées pour les terrains/dépendances/locaux sont exportées en parquet temporaire
+  par département, indexé par taille + date de modification du fichier DVF source.
+- Les handlers API renvoient toujours du JSON, y compris en erreur serveur, afin que l'interface
+  affiche un état explicite au lieu de rester bloquée sur un calcul en cours.
 
 ## Limites (assumées)
 

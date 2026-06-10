@@ -8,11 +8,14 @@ from __future__ import annotations
 import json
 import math
 import mimetypes
+import re
+import tempfile
 import urllib.request
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from statistics import median, pstdev
+from threading import Lock
 from urllib.parse import parse_qs, urlparse
 
 import duckdb
@@ -36,6 +39,9 @@ DEFAULT_HISTORY_YEARS = 5
 MIN_HISTORY_YEARS = 1
 MAX_HISTORY_YEARS = 5
 PANORAMAX_ENDPOINT = "https://panoramax.openstreetmap.fr"
+SPATIAL_INSTALLED = False
+MONO_CACHE: dict[str, Path] = {}
+MONO_CACHE_LOCK = Lock()
 
 
 def available_departements() -> list[str]:
@@ -44,6 +50,42 @@ def available_departements() -> list[str]:
         for p in INTERIM.glob("comparables_*.parquet")
         if (INTERIM / f"dvf_{p.stem.removeprefix('comparables_')}.parquet").exists()
     )
+
+
+def load_spatial(con: duckdb.DuckDBPyConnection) -> None:
+    global SPATIAL_INSTALLED
+    if not SPATIAL_INSTALLED:
+        con.execute("INSTALL spatial;")
+        SPATIAL_INSTALLED = True
+    con.execute("LOAD spatial;")
+
+
+def mono_mutations_path(dept: str, dvf: Path) -> Path:
+    stat = dvf.stat()
+    key = f"{dept}:{stat.st_mtime_ns}:{stat.st_size}"
+    with MONO_CACHE_LOCK:
+        cached = MONO_CACHE.get(key)
+        if cached and cached.exists():
+            return cached
+        path = Path(tempfile.gettempdir()) / f"primmobilier_mono_{dept}_{stat.st_mtime_ns}_{stat.st_size}.parquet"
+        if not path.exists():
+            con = duckdb.connect()
+            try:
+                con.execute(
+                    """
+                    CREATE TEMP TABLE mono_mutations AS
+                        SELECT id_mutation
+                        FROM read_parquet(?)
+                        GROUP BY 1
+                        HAVING count(*) = 1
+                    """,
+                    [str(dvf)],
+                )
+                con.execute("COPY mono_mutations TO ? (FORMAT PARQUET)", [str(path)])
+            finally:
+                con.close()
+        MONO_CACHE[key] = path
+        return path
 
 
 def as_float(values: dict[str, list[str]], key: str, default: float | None = None) -> float | None:
@@ -99,6 +141,65 @@ def history_label(years: int) -> str:
     return f"{years} an" if years == 1 else f"{years} ans"
 
 
+def radius_bbox(lon: float, lat: float, radius_m: int) -> tuple[float, float, float, float]:
+    d_lat = radius_m / 111_320
+    d_lon = radius_m / (111_320 * max(math.cos(math.radians(lat)), 0.01))
+    return lon - d_lon, lat - d_lat, lon + d_lon, lat + d_lat
+
+
+def scope_label(scope_mode: str, radius_m: int, postcode: str | None, section: dict | None) -> str:
+    if scope_mode == "postcode":
+        return f"code postal {postcode}" if postcode else "code postal"
+    if scope_mode == "city":
+        return "commune entière"
+    if scope_mode == "cadastre" and section:
+        return f"section {section['id']}"
+    return radius_label(radius_m)
+
+
+def distance_sql() -> str:
+    return """
+        2 * 6371000 * asin(sqrt(
+            power(sin(radians(lat - ?) / 2), 2)
+            + cos(radians(?)) * cos(radians(lat))
+            * power(sin(radians(lon - ?) / 2), 2)
+        ))
+    """
+
+
+def add_scope_filter(
+    filters: list[str],
+    args: list[object],
+    scope_mode: str,
+    *,
+    postcode: str | None,
+    citycode: str | None,
+    section: dict | None,
+    lon: float,
+    lat: float,
+    radius_m: int,
+    postcode_expr: str | None = None,
+    citycode_expr: str | None = None,
+    parcelle_expr: str | None = None,
+    lon_expr: str | None = None,
+    lat_expr: str | None = None,
+) -> None:
+    if scope_mode == "postcode" and postcode and postcode_expr:
+        filters.append(f"{postcode_expr} = ?")
+        args.append(postcode)
+    elif scope_mode == "city" and citycode and citycode_expr:
+        filters.append(f"{citycode_expr} = ?")
+        args.append(citycode)
+    elif scope_mode == "cadastre" and section and parcelle_expr:
+        filters.append(f"{parcelle_expr} LIKE ?")
+        args.append(f"{section['id']}%")
+    elif scope_mode == "radius" and lon_expr and lat_expr:
+        minlon, minlat, maxlon, maxlat = radius_bbox(lon, lat, radius_m)
+        filters.append(f"{lon_expr} BETWEEN ? AND ?")
+        filters.append(f"{lat_expr} BETWEEN ? AND ?")
+        args.extend([minlon, maxlon, minlat, maxlat])
+
+
 def latest_mutation_date(rows: list[dict]) -> date | None:
     dates = []
     for row in rows:
@@ -141,16 +242,19 @@ def resolve_section(dept: str, lon: float, lat: float) -> dict | None:
     if not path.exists():
         return None
     con = duckdb.connect()
-    con.execute("INSTALL spatial; LOAD spatial;")
-    row = con.execute(
-        """
-        SELECT id, ST_AsGeoJSON(ST_GeomFromWKB(geom_wkb))
-        FROM read_parquet(?)
-        WHERE ST_Contains(ST_GeomFromWKB(geom_wkb), ST_Point(?, ?))
-        LIMIT 1
-        """,
-        [str(path), lon, lat],
-    ).fetchone()
+    try:
+        load_spatial(con)
+        row = con.execute(
+            """
+            SELECT id, ST_AsGeoJSON(ST_GeomFromWKB(geom_wkb))
+            FROM read_parquet(?)
+            WHERE ST_Contains(ST_GeomFromWKB(geom_wkb), ST_Point(?, ?))
+            LIMIT 1
+            """,
+            [str(path), lon, lat],
+        ).fetchone()
+    finally:
+        con.close()
     if not row:
         return None
     return {"id": row[0], "geojson": json.loads(row[1])}
@@ -160,38 +264,43 @@ def parcelles_rows(params: dict[str, list[str]]) -> dict:
     """Géométries de parcelles cadastrales en GeoJSON, soit par `ids`, soit par `bbox` (centroïde)."""
     empty = {"type": "FeatureCollection", "features": []}
     dept = params.get("dept", [""])[0]
+    if not re.fullmatch(r"\d{2,3}|2[AB]", dept):
+        return empty
     path = INTERIM / f"cadastre_parcelles_{dept}.parquet"
     if not path.exists():
         return empty
     ids = [x for x in (params.get("ids", [""])[0] or "").split(",") if x][:PARCELLE_IDS_CAP]
     bbox = params.get("bbox", [""])[0]
     con = duckdb.connect()
-    con.execute("INSTALL spatial; LOAD spatial;")
-    if ids:
-        placeholders = ",".join(["?"] * len(ids))
-        rows = con.execute(
-            f"""
-            SELECT id, ST_AsGeoJSON(ST_GeomFromWKB(geom_wkb))
-            FROM read_parquet(?) WHERE id IN ({placeholders})
-            """,
-            [str(path), *ids],
-        ).fetchall()
-    elif bbox:
-        try:
-            minlon, minlat, maxlon, maxlat = (float(x) for x in bbox.split(","))
-        except ValueError:
+    try:
+        load_spatial(con)
+        if ids:
+            placeholders = ",".join(["?"] * len(ids))
+            rows = con.execute(
+                f"""
+                SELECT id, ST_AsGeoJSON(ST_GeomFromWKB(geom_wkb))
+                FROM read_parquet(?) WHERE id IN ({placeholders})
+                """,
+                [str(path), *ids],
+            ).fetchall()
+        elif bbox:
+            try:
+                minlon, minlat, maxlon, maxlat = (float(x) for x in bbox.split(","))
+            except ValueError:
+                return empty
+            rows = con.execute(
+                """
+                SELECT id, ST_AsGeoJSON(ST_GeomFromWKB(geom_wkb))
+                FROM read_parquet(?)
+                WHERE clon BETWEEN ? AND ? AND clat BETWEEN ? AND ?
+                LIMIT ?
+                """,
+                [str(path), minlon, maxlon, minlat, maxlat, PARCELLE_BBOX_CAP],
+            ).fetchall()
+        else:
             return empty
-        rows = con.execute(
-            """
-            SELECT id, ST_AsGeoJSON(ST_GeomFromWKB(geom_wkb))
-            FROM read_parquet(?)
-            WHERE clon BETWEEN ? AND ? AND clat BETWEEN ? AND ?
-            LIMIT ?
-            """,
-            [str(path), minlon, maxlon, minlat, maxlat, PARCELLE_BBOX_CAP],
-        ).fetchall()
-    else:
-        return empty
+    finally:
+        con.close()
     return {
         "type": "FeatureCollection",
         "features": [
@@ -238,54 +347,96 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
     con = duckdb.connect()
     comp = INTERIM / f"comparables_{dept}.parquet"
     dvf = INTERIM / f"dvf_{dept}.parquet"
-    room_filter = "AND pieces = ?" if rooms else ""
-    args: list[object] = [lat, lat, lon, target_type, surface * 0.7, surface * 1.3]
+    coords_filters = ["longitude IS NOT NULL", "latitude IS NOT NULL"]
+    coords_args: list[object] = []
+    add_scope_filter(
+        coords_filters,
+        coords_args,
+        scope_mode,
+        postcode=postcode,
+        citycode=citycode,
+        section=section,
+        lon=lon,
+        lat=lat,
+        radius_m=radius_m,
+        postcode_expr="code_postal",
+        citycode_expr="code_commune",
+        parcelle_expr="id_parcelle",
+        lon_expr="TRY_CAST(longitude AS DOUBLE)",
+        lat_expr="TRY_CAST(latitude AS DOUBLE)",
+    )
+    comp_filters = [
+        "c.type_local = ?",
+        "TRY_CAST(c.surface_reelle_bati AS DOUBLE) BETWEEN ? AND ?",
+        "TRY_CAST(c.valeur_fonciere AS DOUBLE) > 0",
+        "TRY_CAST(c.surface_reelle_bati AS DOUBLE) > 0",
+        "TRY_CAST(c.valeur_fonciere AS DOUBLE) / TRY_CAST(c.surface_reelle_bati AS DOUBLE) BETWEEN 500 AND 20000",
+        "c.flag_multi_bien = false",
+        "c.flag_multi_adresse = false",
+    ]
+    comp_args: list[object] = [target_type, surface * 0.7, surface * 1.3]
     if rooms:
-        args.append(rooms)
+        comp_filters.append("TRY_CAST(c.nombre_pieces_principales AS INTEGER) = ?")
+        comp_args.append(rooms)
+    add_scope_filter(
+        comp_filters,
+        comp_args,
+        scope_mode,
+        postcode=postcode,
+        citycode=citycode,
+        section=section,
+        lon=lon,
+        lat=lat,
+        radius_m=radius_m,
+        citycode_expr="c.code_commune",
+        parcelle_expr="c.id_parcelle",
+    )
+    final_filters = ["distance_m <= ?"] if scope_mode == "radius" else []
+    final_args: list[object] = [radius_m] if scope_mode == "radius" else []
+    scope = scope_label(scope_mode, radius_m, postcode, section)
+    args: list[object] = [str(dvf), *coords_args, str(comp), *comp_args, lat, lat, lon, *final_args]
 
-    rows = con.execute(
-        f"""
-        WITH coords AS (
-            SELECT id_mutation, id_parcelle,
-                   any_value(code_postal) AS code_postal,
-                   any_value(TRY_CAST(longitude AS DOUBLE)) AS lon,
-                   any_value(TRY_CAST(latitude AS DOUBLE)) AS lat
-            FROM read_parquet(?)
-            WHERE longitude IS NOT NULL AND latitude IS NOT NULL
-            GROUP BY 1, 2
-        ),
-        base AS (
-            SELECT c.id_mutation, c.date_mutation, c.nature_mutation,
-                   c.code_departement, c.code_commune, c.nom_commune,
-                   coords.code_postal, c.id_parcelle, c.adresse_dvf, c.type_local,
-                   TRY_CAST(c.surface_reelle_bati AS DOUBLE) AS surface,
-                   TRY_CAST(c.nombre_pieces_principales AS INTEGER) AS pieces,
-                   TRY_CAST(c.valeur_fonciere AS DOUBLE) AS prix,
-                   coords.lon, coords.lat, c.rnb_id, c.confiance, c.source,
-                   c.flag_multi_bien, c.flag_multi_adresse
-            FROM read_parquet(?) c
-            JOIN coords USING (id_mutation, id_parcelle)
-        )
-        SELECT *,
-               prix / surface AS prix_m2,
-               2 * 6371000 * asin(sqrt(
-                   power(sin(radians(lat - ?) / 2), 2)
-                   + cos(radians(?)) * cos(radians(lat))
-                   * power(sin(radians(lon - ?) / 2), 2)
-               )) AS distance_m
-        FROM base
-        WHERE type_local = ?
-          AND surface BETWEEN ? AND ?
-          {room_filter}
-          AND prix > 0 AND surface > 0
-          AND prix / surface BETWEEN 500 AND 20000
-          AND flag_multi_bien = false
-          AND flag_multi_adresse = false
-        ORDER BY distance_m ASC, date_mutation DESC
-        """,
-        [str(dvf), str(comp), *args],
-    ).fetchall()
-    columns = [c[0] for c in con.description]
+    try:
+        rows = con.execute(
+            f"""
+            WITH coords AS (
+                SELECT id_mutation, id_parcelle,
+                       any_value(code_postal) AS code_postal,
+                       any_value(TRY_CAST(longitude AS DOUBLE)) AS lon,
+                       any_value(TRY_CAST(latitude AS DOUBLE)) AS lat
+                FROM read_parquet(?)
+                WHERE {" AND ".join(coords_filters)}
+                GROUP BY 1, 2
+            ),
+            base AS (
+                SELECT c.id_mutation, c.date_mutation, c.nature_mutation,
+                       c.code_departement, c.code_commune, c.nom_commune,
+                       coords.code_postal, c.id_parcelle, c.adresse_dvf, c.type_local,
+                       TRY_CAST(c.surface_reelle_bati AS DOUBLE) AS surface,
+                       TRY_CAST(c.nombre_pieces_principales AS INTEGER) AS pieces,
+                       TRY_CAST(c.valeur_fonciere AS DOUBLE) AS prix,
+                       coords.lon, coords.lat, c.rnb_id, c.confiance, c.source,
+                       c.flag_multi_bien, c.flag_multi_adresse
+                FROM read_parquet(?) c
+                JOIN coords USING (id_mutation, id_parcelle)
+                WHERE {" AND ".join(comp_filters)}
+            ),
+            scored AS (
+                SELECT *,
+                       prix / surface AS prix_m2,
+                       {distance_sql()} AS distance_m
+                FROM base
+            )
+            SELECT *
+            FROM scored
+            {"WHERE " + " AND ".join(final_filters) if final_filters else ""}
+            ORDER BY distance_m ASC, date_mutation DESC
+            """,
+            args,
+        ).fetchall()
+        columns = [c[0] for c in con.description]
+    finally:
+        con.close()
     all_rows = [dict(zip(columns, row)) for row in rows]
     if len(all_rows) < MIN_COMPARABLES:
         return {
@@ -295,18 +446,7 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
         }
     reference_date = latest_mutation_date(all_rows)
 
-    if scope_mode == "postcode":
-        scope = f"code postal {postcode}" if postcode else "code postal"
-        cohort = [r for r in all_rows if postcode and r["code_postal"] == postcode]
-    elif scope_mode == "city":
-        scope = "commune entière"
-        cohort = [r for r in all_rows if citycode and r["code_commune"] == citycode]
-    elif scope_mode == "cadastre":
-        scope = f"section {section['id']}"
-        cohort = [r for r in all_rows if r["id_parcelle"] and r["id_parcelle"][:10] == section["id"]]
-    else:
-        scope = radius_label(radius_m)
-        cohort = [r for r in all_rows if r["distance_m"] <= radius_m]
+    cohort = all_rows
     if len(cohort) < MIN_COMPARABLES:
         return {
             "error": f"Seulement {len(cohort)} comparables dans l'emprise « {scope} ». Minimum requis : {MIN_COMPARABLES}. Élargis ou change d'emprise.",
@@ -462,87 +602,148 @@ def market_rows(params: dict[str, list[str]]) -> dict:
 
     con = duckdb.connect()
     comp = str(INTERIM / f"comparables_{dept}.parquet")
-    dvf = str(INTERIM / f"dvf_{dept}.parquet")
-    rows = con.execute(
-        """
-        WITH coords AS (
-            SELECT id_mutation, id_parcelle,
-                   any_value(code_postal) AS code_postal,
-                   any_value(TRY_CAST(longitude AS DOUBLE)) AS lon,
-                   any_value(TRY_CAST(latitude AS DOUBLE)) AS lat
-            FROM read_parquet(?)
-            WHERE longitude IS NOT NULL AND latitude IS NOT NULL
-            GROUP BY 1, 2
-        ),
-        logement AS (
-            SELECT c.id_mutation, c.date_mutation, c.nature_mutation,
-                   c.code_commune, c.nom_commune, coords.code_postal,
-                   c.id_parcelle, c.adresse_dvf AS adresse, c.type_local AS categorie,
-                   TRY_CAST(c.surface_reelle_bati AS DOUBLE) AS surface,
-                   TRY_CAST(c.nombre_pieces_principales AS INTEGER) AS pieces,
-                   TRY_CAST(c.valeur_fonciere AS DOUBLE) AS prix,
-                   coords.lon, coords.lat, 'logement' AS qualite
-            FROM read_parquet(?) c
-            JOIN coords USING (id_mutation, id_parcelle)
-            WHERE c.flag_multi_bien = false AND c.flag_multi_adresse = false
-        ),
-        mono AS (
-            SELECT id_mutation FROM read_parquet(?) GROUP BY 1 HAVING count(*) = 1
-        ),
-        autres AS (
-            SELECT d.id_mutation, d.date_mutation, d.nature_mutation,
-                   d.code_commune, d.nom_commune, d.code_postal, d.id_parcelle,
-                   trim(concat_ws(' ', CAST(d.adresse_numero AS VARCHAR), d.adresse_nom_voie)) AS adresse,
-                   CASE WHEN d.type_local IS NULL THEN 'Terrain'
-                        WHEN d.type_local = 'Local industriel. commercial ou assimilé' THEN 'Local'
-                        ELSE d.type_local END AS categorie,
-                   CASE WHEN d.type_local IS NULL THEN TRY_CAST(d.surface_terrain AS DOUBLE)
-                        ELSE TRY_CAST(d.surface_reelle_bati AS DOUBLE) END AS surface,
-                   CAST(NULL AS INTEGER) AS pieces,
-                   TRY_CAST(d.valeur_fonciere AS DOUBLE) AS prix,
-                   TRY_CAST(d.longitude AS DOUBLE) AS lon, TRY_CAST(d.latitude AS DOUBLE) AS lat,
-                   'indicatif' AS qualite
-            FROM read_parquet(?) d
-            JOIN mono USING (id_mutation)
-            WHERE d.longitude IS NOT NULL AND d.latitude IS NOT NULL
-              AND (d.type_local IS NULL
-                   OR d.type_local IN ('Dépendance', 'Local industriel. commercial ou assimilé'))
-        )
-        SELECT *,
-               prix / surface AS prix_m2,
-               2 * 6371000 * asin(sqrt(
-                   power(sin(radians(lat - ?) / 2), 2)
-                   + cos(radians(?)) * cos(radians(lat))
-                   * power(sin(radians(lon - ?) / 2), 2)
-               )) AS distance_m
-        FROM (SELECT * FROM logement UNION ALL SELECT * FROM autres)
-        WHERE prix > 0 AND surface > 0
-        """,
-        [dvf, comp, dvf, dvf, lat, lat, lon],
-    ).fetchall()
-    columns = [c[0] for c in con.description]
+    dvf_path = INTERIM / f"dvf_{dept}.parquet"
+    dvf = str(dvf_path)
+    mono = str(mono_mutations_path(dept, dvf_path))
+    dvf_filters = ["longitude IS NOT NULL", "latitude IS NOT NULL"]
+    dvf_args: list[object] = []
+    add_scope_filter(
+        dvf_filters,
+        dvf_args,
+        scope_mode,
+        postcode=postcode,
+        citycode=citycode,
+        section=section,
+        lon=lon,
+        lat=lat,
+        radius_m=radius_m,
+        postcode_expr="code_postal",
+        citycode_expr="code_commune",
+        parcelle_expr="id_parcelle",
+        lon_expr="TRY_CAST(longitude AS DOUBLE)",
+        lat_expr="TRY_CAST(latitude AS DOUBLE)",
+    )
+    logement_filters = ["c.flag_multi_bien = false", "c.flag_multi_adresse = false"]
+    logement_args: list[object] = []
+    add_scope_filter(
+        logement_filters,
+        logement_args,
+        scope_mode,
+        postcode=postcode,
+        citycode=citycode,
+        section=section,
+        lon=lon,
+        lat=lat,
+        radius_m=radius_m,
+        citycode_expr="c.code_commune",
+        parcelle_expr="c.id_parcelle",
+    )
+    autres_filters = ["d.type_local IS NULL OR d.type_local IN ('Dépendance', 'Local industriel. commercial ou assimilé')"]
+    bounds_filters = []
+    bounds_args: list[object] = []
+    for category in MARKET_CATEGORIES:
+        if category not in wanted:
+            continue
+        low, high = MARKET_BOUNDS[category]
+        bounds_filters.append("(categorie = ? AND prix / surface BETWEEN ? AND ?)")
+        bounds_args.extend([category, low, high])
+    final_filters = ["prix > 0", "surface > 0", f"({' OR '.join(bounds_filters)})"]
+    final_args = bounds_args
+    if scope_mode == "radius":
+        final_filters.append("distance_m <= ?")
+        final_args.append(radius_m)
+    scope = scope_label(scope_mode, radius_m, postcode, section)
+    args: list[object] = [
+        dvf,
+        *dvf_args,
+        comp,
+        *logement_args,
+        mono,
+        lat,
+        lat,
+        lon,
+        *final_args,
+    ]
+    try:
+        rows = con.execute(
+            """
+            WITH dvf_scoped AS (
+                SELECT *
+                FROM read_parquet(?)
+                WHERE {dvf_where}
+            ),
+            coords AS (
+                SELECT id_mutation, id_parcelle,
+                       any_value(code_postal) AS code_postal,
+                       any_value(TRY_CAST(longitude AS DOUBLE)) AS lon,
+                       any_value(TRY_CAST(latitude AS DOUBLE)) AS lat
+                FROM dvf_scoped
+                GROUP BY 1, 2
+            ),
+            logement AS (
+                SELECT c.id_mutation, c.date_mutation, c.nature_mutation,
+                       c.code_commune, c.nom_commune, coords.code_postal,
+                       c.id_parcelle, c.adresse_dvf AS adresse, c.type_local AS categorie,
+                       TRY_CAST(c.surface_reelle_bati AS DOUBLE) AS surface,
+                       TRY_CAST(c.nombre_pieces_principales AS INTEGER) AS pieces,
+                       TRY_CAST(c.valeur_fonciere AS DOUBLE) AS prix,
+                       coords.lon, coords.lat, 'logement' AS qualite
+                FROM read_parquet(?) c
+                JOIN coords USING (id_mutation, id_parcelle)
+                WHERE {logement_where}
+            ),
+            autres_candidates AS (
+                SELECT d.id_mutation, d.date_mutation, d.nature_mutation,
+                       d.code_commune, d.nom_commune, d.code_postal, d.id_parcelle,
+                       trim(concat_ws(' ', CAST(d.adresse_numero AS VARCHAR), d.adresse_nom_voie)) AS adresse,
+                       CASE WHEN d.type_local IS NULL THEN 'Terrain'
+                            WHEN d.type_local = 'Local industriel. commercial ou assimilé' THEN 'Local'
+                            ELSE d.type_local END AS categorie,
+                       CASE WHEN d.type_local IS NULL THEN TRY_CAST(d.surface_terrain AS DOUBLE)
+                            ELSE TRY_CAST(d.surface_reelle_bati AS DOUBLE) END AS surface,
+                       CAST(NULL AS INTEGER) AS pieces,
+                       TRY_CAST(d.valeur_fonciere AS DOUBLE) AS prix,
+                       TRY_CAST(d.longitude AS DOUBLE) AS lon, TRY_CAST(d.latitude AS DOUBLE) AS lat,
+                       'indicatif' AS qualite
+                FROM dvf_scoped d
+                WHERE {autres_where}
+            ),
+            mono AS (
+                SELECT id_mutation
+                FROM read_parquet(?)
+                JOIN (SELECT DISTINCT id_mutation FROM autres_candidates) ids USING (id_mutation)
+            ),
+            autres AS (
+                SELECT autres_candidates.*
+                FROM autres_candidates
+                JOIN mono USING (id_mutation)
+            ),
+            scored AS (
+                SELECT *,
+                       prix / surface AS prix_m2,
+                       {distance_expr} AS distance_m
+                FROM (SELECT * FROM logement UNION ALL SELECT * FROM autres)
+            )
+            SELECT *
+            FROM scored
+            WHERE {final_where}
+            """.format(
+                dvf_where=" AND ".join(dvf_filters),
+                logement_where=" AND ".join(logement_filters),
+                autres_where=" AND ".join(autres_filters),
+                distance_expr=distance_sql(),
+                final_where=" AND ".join(final_filters),
+            ),
+            args,
+        ).fetchall()
+        columns = [c[0] for c in con.description]
+    finally:
+        con.close()
     all_rows = [dict(zip(columns, row)) for row in rows]
     reference_date = latest_mutation_date(all_rows)
 
-    if scope_mode == "postcode":
-        scope = f"code postal {postcode}" if postcode else "code postal"
-        cohort = [r for r in all_rows if postcode and r["code_postal"] == postcode]
-    elif scope_mode == "city":
-        scope = "commune entière"
-        cohort = [r for r in all_rows if citycode and r["code_commune"] == citycode]
-    elif scope_mode == "cadastre":
-        scope = f"section {section['id']}"
-        cohort = [r for r in all_rows if r["id_parcelle"] and r["id_parcelle"][:10] == section["id"]]
-    else:
-        scope = radius_label(radius_m)
-        cohort = [r for r in all_rows if r["distance_m"] <= radius_m]
-
+    cohort = all_rows
     cohort = filter_history(cohort, history_years, reference_date)
-    cohort = [
-        r for r in cohort
-        if r["categorie"] in wanted
-        and MARKET_BOUNDS[r["categorie"]][0] <= r["prix_m2"] <= MARKET_BOUNDS[r["categorie"]][1]
-    ]
     if not cohort:
         return {
             "error": f"Aucune vente dans l'emprise « {scope} » sur {history_label(history_years)} pour les types choisis.",
@@ -667,20 +868,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path == "/api/departements":
-            self.json({"departements": available_departements()})
-            return
-        if parsed.path == "/api/estimate":
-            self.json(comparable_rows(parse_qs(parsed.query)))
-            return
-        if parsed.path == "/api/market":
-            self.json(market_rows(parse_qs(parsed.query)))
-            return
-        if parsed.path == "/api/parcelles":
-            self.json(parcelles_rows(parse_qs(parsed.query)))
-            return
-        if parsed.path == "/api/panoramax":
-            self.json(panoramax_rows(parse_qs(parsed.query)))
+        api = {
+            "/api/departements": lambda _: {"departements": available_departements()},
+            "/api/estimate": comparable_rows,
+            "/api/market": market_rows,
+            "/api/parcelles": parcelles_rows,
+            "/api/panoramax": panoramax_rows,
+        }
+        fn = api.get(parsed.path)
+        if fn:
+            try:
+                self.json(fn(parse_qs(parsed.query)))
+            except Exception as exc:
+                self.json({"error": f"Erreur serveur: {exc}"}, status=500)
             return
         self.static_file(parsed.path)
 
