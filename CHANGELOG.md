@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.9.0 - 2026-06-10
+
+- **Résolution bâtiment par BDNB** ([ADR 0006](docs/adr/0006-bdnb-parcelle-pour-resolution-batiment.md)) : extraction BDNB Open départementale dans `preparer_donnees.py`, et `construire_comparables.py` résout `batiment_groupe_id` + attributs (usage, logements, hauteur, niveaux, emprise, année…) quand une parcelle porte un groupe BDNB unique, sans relation RNB↔BDNB inventée. Nouvelle étape `pipeline/reduire_referentiels.py` qui réduit RNB/BAN/BDNB/Cadastre au graphe DVF, câblée dans `lancer_pipeline.py`.
+- **Emprises réelles « code postal » et « commune »** : nouveau référentiel national des contours codes postaux (`telechargement/preparer_codes_postaux.py`, GeoJSON → GeoParquet) servi par l'endpoint `/api/codepostal` — les grandes villes sont découpées par CP, plus de tracé débordant sur la commune entière. La commune utilise les contours administratifs (geo.api.gouv.fr). Garde anti-réponse-périmée par jeton de séquence.
+- **Bâti cadastral dans le détail** : acquisition de la couche bâtiments du cadastre (`preparer_cadastre.py`), endpoint `/api/batiments` qui rattache les empreintes à la parcelle par intersection spatiale (préfiltre bbox **élargi d'une marge** pour ne pas rater un bâtiment qui déborde la parcelle, puis `ST_Intersects`) et renvoie type (en dur / léger) + surface au sol. La fiche détail dessine la parcelle et ses bâtiments distinctement (maison / annexes / garage) et les liste ; survoler une box illumine l'empreinte correspondante sur la carte. La date cadastrale (relevé) n'est plus affichée comme une année de construction — elle passe en infobulle.
+- **Définitions au survol** : un « ? » à côté de chaque label de la fiche détail explique la donnée (surface habitable DVF vs emprise au sol cadastre vs emprise BDNB, année de construction vs relevé cadastral, etc.).
+- **Focus parcelle à la sélection** : sélectionner un comparable affiche automatiquement la grille cadastre de sa parcelle seule et masque les autres ; fermer le détail rétablit l'overlay du menu « Grille cadastre » (renommé depuis « Cadastre »).
+- **Panneaux modernisés** : ouverture des panneaux détail / vue rue en glissé + fondu, blocs repliables animés (`grid-template-rows`), finition « verre » (flou d'arrière-plan, coins arrondis, ombres douces), le tout respectant `prefers-reduced-motion`.
+- **Tri des comparables** : option « Similarité » ajoutée et tri par similarité décroissante par défaut.
+- **Carte** : double-clic sur un comparable = zoom rapproché + ouverture du détail (le double-clic ailleurs garde le recentrage + géocodage inverse). Au zoom rapproché, les points/halo s'effacent (le point devient un anneau) pour ne plus masquer le bâtiment et le cadastre.
+- **UI carte** : menus « Fond de carte » et « Grille cadastre » au survol (groupés par fournisseur, accessibles au clavier via `:focus-within`) en remplacement des `<select>` ; case « Afficher la zone » pour masquer/afficher l'emprise ; type Appartement/Maison pris en compte immédiatement.
+- **Libellés d'emprise** : le message de fin et la fourchette observée reflètent l'emprise choisie (rayon, code postal, `Commune (code INSEE)`, section) au lieu du seul département.
+- Hygiène : en-tête `Cache-Control: no-store` (limité au service local), endpoints servis par les référentiels `*_service` quand ils existent.
+
 ## v0.8.0 - 2026-06-10
 
 - Optimisation des endpoints Estimation et Exploration : les emprises (rayon, code postal, commune, section cadastrale) sont poussées dans DuckDB avant matérialisation Python, avec préfiltre bbox puis distance exacte pour les rayons.
