@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.0 - 2026-06-10
+
+- Acquisition cadastre (Etalab) pour les départements 33 et 47 : nouveau module `telechargement/preparer_cadastre.py` qui télécharge parcelles + sections (GeoJSON.gz) et les convertit en **GeoParquet** (géométrie WKB, centroïde `clon`/`clat` précalculé) via DuckDB spatial. GeoParquet non publié par Etalab → conversion maison.
+- Mesures de croisement cadastre × DVF/RNB consignées dans `docs/SOURCES_DONNEES.md` (§1.3 passe à « catalogué & mesuré », nouveau §10) : parcelle 97,89%, section 99,84%, point∈parcelle 97,12%, recovery spatiale renumérotation 98,67%, contenance dispo 99,97%.
+- Emprise **Section** activée dans le POC (le mode « Cadastre » était un TODO désactivé) : `resolve_section()` résout par point-dans-polygone la section contenant l'adresse, filtre les comparables/biens sur `substr(id_parcelle, 1, 10)` et renvoie le polygone affiché sur la carte. Vaut pour Estimation et Exploration.
+- **Overlay cadastre** : nouvel endpoint `/api/parcelles` (par `ids` des biens listés, ou par `bbox` de la vue via le centroïde) et dropdown « Cadastre » (Masqué / Biens affichés / Tout au zoom ≥ 14). Lignes vectorielles indépendantes du fond de carte.
+
 ## v0.6.0 - 2026-06-10
 
 - Mode **Exploration** (panorama de marché) dans le POC web, en plus de l'Estimation : nouvel endpoint `/api/market` affichant le prix de **tous les biens** d'une emprise (maison, appartement, terrain, dépendance, local), indépendamment d'un bien cible — seules comptent la localisation (adresse, code postal ou commune) et l'emprise. Médiane €/m² et prix médian par type.
