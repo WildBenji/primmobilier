@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.5.0 - 2026-06-10
+
+- Ajout d'un POC web local `web_poc/` pour tester l'usage final de l'estimation par comparables : serveur HTTP local, API d'estimation DuckDB, carte MapLibre, recherche d'adresse BAN et couche IGN optionnelle.
+- Interface d'analyse des comparables : panneau d'estimation rétractable, panneau comparables rétractable, détail cliquable, heatmap/points proportionnés à la similarité, marqueur distinct pour l'adresse cible.
+- Emprises de comparaison : rayon logarithmique de 100 m à 20 km, code postal, commune, et mode cadastre laissé en TODO tant que les géométries ne sont pas disponibles.
+- Ajout du choix d'historique des ventes de 12 mois à 5 ans, appliqué côté serveur avec une date de référence stable.
+- Interaction carte : double-clic avec géocodage inverse BAN pour sélectionner l'adresse la plus proche et lancer l'estimation, et touche Entrée pour relancer le calcul depuis le panneau.
+- Intégration Panoramax provisoire : recherche de vue rue proche pour l'adresse cible et les comparables, avec garde-fou contre les réponses asynchrones périmées.
+- Corrections du POC : suppression du plafonnement SQL qui tronquait les scopes code postal/commune, absence d'emprises approximatives fausses, et message d'erreur quand moins de 5 comparables sont disponibles.
+
 ## v0.4.0 - 2026-06-10
 
 - Récupération des non-matchs DVF→RNB (ADR 0004) : cascade clé d'adresse / pont parcelle-BAN / plus proche bâtiment, puis géocodage BAN des résiduels (seuil de score paramétrable à 0,95, sous lequel la ligne est marquée perdue). 99,57% des ventes de logement exploitables sur le 33, 99,84% sur le 47.
