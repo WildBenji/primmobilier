@@ -4,10 +4,11 @@ const statusEl = document.querySelector("#status");
 const resultEl = document.querySelector("#result");
 const targetStreetView = document.querySelector("#targetStreetView");
 const estimateBtn = document.querySelector("#estimate");
+const resetBtn = document.querySelector("#reset");
 const estimationPanel = document.querySelector("#estimationPanel");
 const toggleEstimation = document.querySelector("#toggleEstimation");
 const expandEstimation = document.querySelector("#expandEstimation");
-const ignToggle = document.querySelector("#ignToggle");
+const baseLayerSelect = document.querySelector("#baseLayer");
 const comparablesList = document.querySelector("#comparablesList");
 const tableMeta = document.querySelector("#tableMeta");
 const comparableDetail = document.querySelector("#comparableDetail");
@@ -19,13 +20,36 @@ const closeStreetView = document.querySelector("#closeStreetView");
 const tableWrap = document.querySelector(".table-wrap");
 const toggleComparables = document.querySelector("#toggleComparables");
 const expandComparables = document.querySelector("#expandComparables");
+const sortMenu = document.querySelector(".sort-menu");
+const sortToggle = document.querySelector("#sortToggle");
+const sortOptions = document.querySelector("#sortOptions");
+const sortButtons = document.querySelectorAll("#sortOptions button");
 const radiusSlider = document.querySelector("#radiusSlider");
 const radiusLabel = document.querySelector("#radiusLabel");
 const radiusControl = document.querySelector("#radiusControl");
 const historySlider = document.querySelector("#historySlider");
 const historyLabel = document.querySelector("#historyLabel");
 const scopeButtons = document.querySelectorAll(".scope-control button");
+const modeButtons = document.querySelectorAll(".mode-control button");
+const estimationFields = document.querySelector("#estimationFields");
+const explorationFilters = document.querySelector("#explorationFilters");
+const typeChips = document.querySelectorAll("#explorationFilters button");
+const marketResult = document.querySelector("#marketResult");
+const marketStats = document.querySelector("#marketStats");
+const marketCount = document.querySelector("#marketCount");
+const marketScope = document.querySelector("#marketScope");
+const addressLabel = document.querySelector("#addressLabel");
+const maxComparablesInput = document.querySelector("#maxComparables");
+const limitControl = document.querySelector("#limitControl");
 const radiusSteps = [100, 150, 200, 300, 400, 500, 1000, 1500, 2000, 3000, 4000, 5000, 10000, 20000];
+const MARKET_CATEGORIES = ["Maison", "Appartement", "Terrain", "Dépendance", "Local"];
+const CATEGORY_COLORS = {
+  Maison: "#176b5b",
+  Appartement: "#2457c5",
+  Terrain: "#8a6d1f",
+  "Dépendance": "#9a5b9a",
+  Local: "#c4472f"
+};
 const PANORAMAX_ENDPOINT = "https://panoramax.openstreetmap.fr";
 const streetViewCache = new Map();
 
@@ -39,7 +63,12 @@ let selectedScope = "radius";
 let selectedRadius = 1500;
 let selectedHistoryYears = 5;
 let selectedComparableUid = null;
+let lastSelectedUid = null;
 let selectedAddressSeq = 0;
+let comparableSortKey = null;
+let comparableSortDirection = "desc";
+let selectedMode = "estimation";
+let activeCategories = new Set(MARKET_CATEGORIES);
 
 const map = new maplibregl.Map({
   container: "map",
@@ -48,11 +77,39 @@ const map = new maplibregl.Map({
   style: {
     version: 8,
     sources: {
+      carto: {
+        type: "raster",
+        tiles: [
+          "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+          "https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+          "https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"
+        ],
+        tileSize: 256,
+        attribution: "© OpenStreetMap contributors © CARTO"
+      },
+      voyager: {
+        type: "raster",
+        tiles: [
+          "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+          "https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+          "https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"
+        ],
+        tileSize: 256,
+        attribution: "© OpenStreetMap contributors © CARTO"
+      },
       osm: {
         type: "raster",
         tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
         tileSize: 256,
         attribution: "© OpenStreetMap contributors"
+      },
+      ignplan: {
+        type: "raster",
+        tiles: [
+          "https://data.geopf.fr/wmts?SERVICE=WMTS&VERSION=1.0.0&REQUEST=GetTile&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&FORMAT=image/png&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}"
+        ],
+        tileSize: 256,
+        attribution: "© IGN / cartes.gouv.fr"
       },
       ign: {
         type: "raster",
@@ -61,6 +118,15 @@ const map = new maplibregl.Map({
         ],
         tileSize: 256,
         attribution: "© IGN / cartes.gouv.fr"
+      },
+      // Stadia : clé non requise en local (auth par domaine, OK sur 127.0.0.1/localhost).
+      // Un déploiement sur un vrai domaine renverra 401 sans compte Stadia (gratuit). Voir docs/SOURCES_DONNEES.md §8.
+      stadiasat: {
+        type: "raster",
+        tiles: ["https://tiles.stadiamaps.com/tiles/alidade_satellite/{z}/{x}/{y}.jpg"],
+        tileSize: 256,
+        maxzoom: 20,
+        attribution: "© Stadia Maps © OpenMapTiles © OpenStreetMap contributors"
       },
       comparables: {
         type: "geojson",
@@ -72,8 +138,12 @@ const map = new maplibregl.Map({
       }
     },
     layers: [
-      { id: "osm", type: "raster", source: "osm" },
-      { id: "ign", type: "raster", source: "ign", layout: { visibility: "none" } },
+      { id: "base-carto", type: "raster", source: "carto", layout: { visibility: "none" } },
+      { id: "base-voyager", type: "raster", source: "voyager", layout: { visibility: "none" } },
+      { id: "base-osm", type: "raster", source: "osm", layout: { visibility: "none" } },
+      { id: "base-ignplan", type: "raster", source: "ignplan" },
+      { id: "base-ign", type: "raster", source: "ign", layout: { visibility: "none" } },
+      { id: "base-stadiasat", type: "raster", source: "stadiasat", layout: { visibility: "none" } },
       {
         id: "target-radius-fill",
         type: "fill",
@@ -169,10 +239,96 @@ map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom
 map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
 map.doubleClickZoom.disable();
 
-ignToggle.addEventListener("change", () => {
-  map.setLayoutProperty("ign", "visibility", ignToggle.checked ? "visible" : "none");
-  map.setPaintProperty("osm", "raster-opacity", ignToggle.checked ? 0 : 1);
+const BASE_LAYERS = ["carto", "voyager", "osm", "ignplan", "ign", "stadiasat"];
+baseLayerSelect.addEventListener("change", () => {
+  for (const id of BASE_LAYERS) {
+    map.setLayoutProperty(`base-${id}`, "visibility", id === baseLayerSelect.value ? "visible" : "none");
+  }
 });
+
+const appEl = document.querySelector(".app");
+
+// `positionedEls` move together (open panel + its collapsed button share a position);
+// `sourceEl` is the currently visible element measured for clamping and start offset.
+function makeDraggable(positionedEls, handle, sourceEl) {
+  if (!handle || !sourceEl) return;
+  handle.classList.add("drag-handle");
+  let startX = 0;
+  let startY = 0;
+  let startLeft = 0;
+  let startTop = 0;
+  let dragging = false;
+  let moved = false;
+
+  const setPosition = (left, top) => {
+    for (const el of positionedEls) {
+      el.style.left = `${left}px`;
+      el.style.top = `${top}px`;
+      el.style.right = "auto";
+      el.style.bottom = "auto";
+    }
+  };
+
+  handle.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) return;
+    const interactive = event.target.closest("button, input, select, a");
+    if (interactive && interactive !== handle) return;
+    const rect = sourceEl.getBoundingClientRect();
+    const base = appEl.getBoundingClientRect();
+    startLeft = rect.left - base.left;
+    startTop = rect.top - base.top;
+    startX = event.clientX;
+    startY = event.clientY;
+    dragging = true;
+    moved = false;
+    document.body.classList.add("dragging");
+    event.preventDefault();
+  });
+
+  window.addEventListener("mousemove", (event) => {
+    if (!dragging) return;
+    moved = true;
+    const base = appEl.getBoundingClientRect();
+    const maxLeft = Math.max(base.width - sourceEl.offsetWidth, 0);
+    const maxTop = Math.max(base.height - sourceEl.offsetHeight, 0);
+    const left = Math.min(Math.max(startLeft + event.clientX - startX, 0), maxLeft);
+    const top = Math.min(Math.max(startTop + event.clientY - startY, 0), maxTop);
+    setPosition(left, top);
+  });
+
+  window.addEventListener("mouseup", () => {
+    if (!dragging) return;
+    dragging = false;
+    document.body.classList.remove("dragging");
+  });
+
+  // Swallow the click that ends a drag so dragging a collapsed button doesn't toggle it.
+  handle.addEventListener("click", (event) => {
+    if (!moved) return;
+    event.preventDefault();
+    event.stopPropagation();
+    moved = false;
+  }, true);
+
+  handle.addEventListener("dblclick", (event) => {
+    const interactive = event.target.closest("button, input, select, a");
+    if (interactive && interactive !== handle) return;
+    for (const el of positionedEls) {
+      el.style.left = "";
+      el.style.top = "";
+      el.style.right = "";
+      el.style.bottom = "";
+    }
+  });
+}
+
+const mapControls = appEl.querySelector(".map-controls");
+makeDraggable([estimationPanel, expandEstimation], estimationPanel.querySelector(".brand"), estimationPanel);
+makeDraggable([estimationPanel, expandEstimation], expandEstimation, expandEstimation);
+makeDraggable([mapControls], mapControls, mapControls);
+makeDraggable([tableWrap], tableWrap.querySelector(".list-panel .table-head"), tableWrap);
+makeDraggable([tableWrap], expandComparables, tableWrap);
+makeDraggable([streetViewPanel], streetViewPanel.querySelector(".table-head"), streetViewPanel);
 
 addressInput.addEventListener("input", () => {
   selectedAddress = null;
@@ -192,10 +348,41 @@ estimationPanel.addEventListener("keydown", (event) => {
   const tag = event.target.tagName;
   if (!["INPUT", "SELECT"].includes(tag)) return;
   event.preventDefault();
-  estimate();
+  run();
 });
 
-estimateBtn.addEventListener("click", estimate);
+estimateBtn.addEventListener("click", run);
+resetBtn.addEventListener("click", resetAll);
+
+for (const button of modeButtons) {
+  button.addEventListener("click", () => {
+    selectedMode = button.dataset.mode;
+    for (const other of modeButtons) {
+      other.classList.toggle("active", other === button);
+    }
+    applyMode();
+    if (selectedAddress) run();
+  });
+}
+
+for (const chip of typeChips) {
+  chip.addEventListener("click", () => {
+    const cat = chip.dataset.cat;
+    if (cat === "all") {
+      activeCategories = new Set(MARKET_CATEGORIES);
+    } else if (activeCategories.size === MARKET_CATEGORIES.length) {
+      activeCategories = new Set([cat]);
+    } else if (activeCategories.has(cat)) {
+      activeCategories.delete(cat);
+      if (activeCategories.size === 0) activeCategories = new Set(MARKET_CATEGORIES);
+    } else {
+      activeCategories.add(cat);
+    }
+    updateChips();
+    if (selectedAddress) runMarket();
+  });
+}
+
 for (const button of scopeButtons) {
   button.addEventListener("click", () => {
     if (button.disabled) {
@@ -208,7 +395,7 @@ for (const button of scopeButtons) {
     radiusControl.hidden = selectedScope !== "radius";
     if (selectedAddress) {
       updateScopeGeometry();
-      estimate();
+      run();
     }
   });
 }
@@ -221,8 +408,20 @@ radiusSlider.addEventListener("input", () => {
     const [lon, lat] = selectedAddress.geometry.coordinates;
     setRadiusGeojson(lon, lat, selectedRadius);
     map.easeTo({ center: [lon, lat], zoom: zoomForRadius(selectedRadius), duration: 250 });
-    radiusTimer = setTimeout(estimate, 300);
+    radiusTimer = setTimeout(run, 300);
   }
+});
+
+maxComparablesInput.addEventListener("change", () => {
+  if (selectedAddress) run();
+});
+
+maxComparablesInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  // On retire le focus : le `change` déclenché par le blur relance une seule fois,
+  // ça enlève le caret et évite le double-run (glitch) au clic à côté.
+  maxComparablesInput.blur();
 });
 
 historySlider.addEventListener("input", () => {
@@ -230,7 +429,7 @@ historySlider.addEventListener("input", () => {
   historyLabel.textContent = formatHistory(selectedHistoryYears);
   clearTimeout(historyTimer);
   if (selectedAddress) {
-    historyTimer = setTimeout(estimate, 300);
+    historyTimer = setTimeout(run, 300);
   }
 });
 
@@ -251,6 +450,34 @@ expandComparables.addEventListener("click", () => {
   tableWrap.classList.remove("collapsed");
 });
 
+sortToggle.addEventListener("click", (event) => {
+  event.stopPropagation();
+  sortMenu.classList.add("open");
+  sortToggle.setAttribute("aria-expanded", "true");
+});
+
+for (const button of sortButtons) {
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const key = button.dataset.sort;
+    if (comparableSortKey === key) {
+      comparableSortDirection = comparableSortDirection === "desc" ? "asc" : "desc";
+    } else {
+      comparableSortKey = key;
+      comparableSortDirection = "desc";
+    }
+    sortMenu.classList.remove("open");
+    sortToggle.setAttribute("aria-expanded", "false");
+    updateSortControl();
+    renderComparableList();
+  });
+}
+
+document.addEventListener("click", () => {
+  sortMenu.classList.remove("open");
+  sortToggle.setAttribute("aria-expanded", "false");
+});
+
 toggleEstimation.addEventListener("click", () => {
   estimationPanel.classList.add("collapsed");
 });
@@ -266,7 +493,10 @@ closeStreetView.addEventListener("click", () => {
 map.on("click", "comparables-points", (event) => {
   const feature = event.features && event.features[0];
   if (!feature) return;
-  selectComparable(Number(feature.properties.uid), { fit: false });
+  // Les points hors liste (au-delà du « Max ») n'ont que les champs allégés : on bâtit
+  // un détail minimal depuis les propriétés de la feature (+ coords de la géométrie).
+  const fallbackRow = { ...feature.properties, lon: feature.geometry.coordinates[0], lat: feature.geometry.coordinates[1] };
+  selectComparable(Number(feature.properties.uid), { fit: false }, fallbackRow);
 });
 
 map.on("mouseenter", "comparables-points", () => {
@@ -342,7 +572,192 @@ function selectAddress(feature) {
   map.flyTo({ center: [lon, lat], zoom: selectedScope === "radius" ? zoomForRadius(selectedRadius) : 13.4 });
   setStatus(`${feature.properties.postcode || ""} ${feature.properties.city || ""}`.trim());
   loadTargetStreetView(lon, lat, feature.properties.label, addressSeq);
-  estimate();
+  run();
+}
+
+function run() {
+  if (selectedMode === "exploration") {
+    runMarket();
+  } else {
+    estimate();
+  }
+}
+
+function resetAll() {
+  // Formulaire -> valeurs initiales
+  addressInput.value = "";
+  suggestions.hidden = true;
+  document.querySelector("#type").value = "Appartement";
+  document.querySelector("#surface").value = "65";
+  document.querySelector("#rooms").value = "3";
+  document.querySelector("#askedPrice").value = "";
+  maxComparablesInput.value = "200";
+  radiusSlider.value = "7";
+  selectedRadius = radiusSteps[7];
+  radiusLabel.textContent = formatRadius(selectedRadius);
+  historySlider.value = "5";
+  selectedHistoryYears = 5;
+  historyLabel.textContent = formatHistory(selectedHistoryYears);
+
+  // Emprise -> rayon
+  selectedScope = "radius";
+  for (const b of scopeButtons) {
+    b.classList.toggle("active", b.dataset.scope === "radius");
+  }
+  radiusControl.hidden = false;
+
+  // Mode -> estimation, chips -> tous
+  selectedMode = "estimation";
+  for (const b of modeButtons) {
+    b.classList.toggle("active", b.dataset.mode === "estimation");
+  }
+  activeCategories = new Set(MARKET_CATEGORIES);
+  updateChips();
+
+  // Adresse / marqueur / géométries
+  selectedAddress = null;
+  selectedAddressSeq += 1;
+  if (targetMarker) {
+    targetMarker.remove();
+    targetMarker = null;
+  }
+  clearScopeGeojson();
+
+  // Vide la carte, les résultats et les comparables (via applyMode), puis les panneaux annexes
+  applyMode();
+  targetStreetView.hidden = true;
+  streetViewPanel.hidden = true;
+
+  map.flyTo({ center: [-0.5792, 44.8378], zoom: 12 });
+  setStatus("Sélectionne une adresse en Gironde ou Lot-et-Garonne.");
+}
+
+function applyMode() {
+  const explore = selectedMode === "exploration";
+  estimationFields.hidden = explore;
+  explorationFilters.hidden = !explore;
+  limitControl.hidden = false;
+  addressLabel.textContent = explore ? "Adresse, code postal ou commune" : "Adresse";
+  estimateBtn.textContent = explore ? "Explorer" : "Estimer";
+  resultEl.hidden = true;
+  marketResult.hidden = true;
+  comparableDetail.hidden = true;
+  tableWrap.classList.remove("detail-open");
+  currentComparables = [];
+  comparablesList.innerHTML = "";
+  setComparableGeojson([]);
+  tableMeta.textContent = "Aucun calcul";
+  tableWrap.classList.add("collapsed");
+  applyMapMode();
+}
+
+function applyMapMode() {
+  const explore = selectedMode === "exploration";
+  map.setLayoutProperty("comparables-heat", "visibility", explore ? "none" : "visible");
+  map.setLayoutProperty("comparables-halo", "visibility", explore ? "none" : "visible");
+  if (explore) {
+    map.setPaintProperty("comparables-points", "circle-color", [
+      "match", ["get", "categorie"],
+      "Maison", CATEGORY_COLORS.Maison,
+      "Appartement", CATEGORY_COLORS.Appartement,
+      "Terrain", CATEGORY_COLORS.Terrain,
+      "Dépendance", CATEGORY_COLORS["Dépendance"],
+      "Local", CATEGORY_COLORS.Local,
+      "#66736d"
+    ]);
+    map.setPaintProperty("comparables-points", "circle-radius",
+      ["case", ["boolean", ["feature-state", "selected"], false], 11, 6]);
+    map.setPaintProperty("comparables-points", "circle-stroke-width",
+      ["case", ["boolean", ["feature-state", "selected"], false], 3, 1.4]);
+  } else {
+    map.setPaintProperty("comparables-points", "circle-color", [
+      "case", ["boolean", ["feature-state", "selected"], false], "#0f6f9f",
+      ["interpolate", ["linear"], ["get", "similarity"], 0, "#c4472f", 60, "#eeb552", 100, "#176b5b"]
+    ]);
+    map.setPaintProperty("comparables-points", "circle-radius", [
+      "case", ["boolean", ["feature-state", "selected"], false], 12,
+      ["interpolate", ["linear"], ["get", "similarity"], 0, 5, 60, 8, 100, 13]
+    ]);
+    map.setPaintProperty("comparables-points", "circle-stroke-width",
+      ["case", ["boolean", ["feature-state", "selected"], false], 3, 1.8]);
+  }
+}
+
+function updateChips() {
+  const allActive = activeCategories.size === MARKET_CATEGORIES.length;
+  for (const chip of typeChips) {
+    const cat = chip.dataset.cat;
+    if (cat === "all") {
+      chip.classList.toggle("active", allActive);
+    } else {
+      chip.classList.toggle("active", !allActive && activeCategories.has(cat));
+    }
+  }
+}
+
+async function runMarket() {
+  if (!selectedAddress) {
+    setStatus("Choisis une adresse, un code postal ou une commune.");
+    return;
+  }
+  const props = selectedAddress.properties;
+  const [lon, lat] = selectedAddress.geometry.coordinates;
+  const dept = (props.citycode || "").startsWith("97")
+    ? (props.citycode || "").slice(0, 3)
+    : (props.citycode || "").slice(0, 2);
+  const types = activeCategories.size === MARKET_CATEGORIES.length ? "" : [...activeCategories].join(",");
+
+  const params = new URLSearchParams({
+    dept,
+    lon,
+    lat,
+    postcode: props.postcode || "",
+    citycode: props.citycode || "",
+    scope_mode: selectedScope === "cadastre" ? "radius" : selectedScope,
+    radius_m: String(selectedRadius),
+    history_years: String(selectedHistoryYears),
+    max_comparables: maxComparablesInput.value || "200",
+    types
+  });
+
+  updateScopeGeometry();
+  resultEl.hidden = true;
+  setStatus("Lecture du marché local...");
+  const response = await fetch(`/api/market?${params}`);
+  const data = await response.json();
+  if (data.error) {
+    marketResult.hidden = true;
+    setComparableGeojson([]);
+    comparableDetail.hidden = true;
+    tableWrap.classList.remove("detail-open");
+    currentComparables = [];
+    comparablesList.innerHTML = "";
+    tableMeta.textContent = "Aucun résultat";
+    tableWrap.classList.add("collapsed");
+    map.flyTo({ center: [lon, lat], zoom: selectedScope === "radius" ? zoomForRadius(selectedRadius) : 13.4 });
+    setStatus(data.error);
+    return;
+  }
+  renderMarket(data);
+  setStatus(`Marché local — ${data.summary.scope}, ${data.summary.history}.`);
+}
+
+function renderMarket(data) {
+  marketResult.hidden = false;
+  marketCount.textContent = int(data.summary.count);
+  marketScope.textContent = data.summary.scope;
+  marketStats.innerHTML = "";
+  for (const t of data.summary.types) {
+    const row = document.createElement("div");
+    row.className = `market-row${t.qualite === "indicatif" ? " indicatif" : ""}`;
+    row.innerHTML = `
+      <span class="cat"><span class="dot" style="background:${CATEGORY_COLORS[t.categorie] || "#66736d"}"></span>${t.categorie}</span>
+      <span class="sub">${int(t.count)} ventes · ${euro(t.median_prix)} médian${t.qualite === "indicatif" ? " · indicatif" : ""}</span>
+      <span class="m2">${int(t.median_m2)} €/m²</span>
+    `;
+    marketStats.append(row);
+  }
+  renderComparables(data.biens, data.points, data.summary.count);
 }
 
 async function estimate() {
@@ -368,7 +783,8 @@ async function estimate() {
     asked_price: document.querySelector("#askedPrice").value,
     scope_mode: selectedScope,
     radius_m: String(selectedRadius),
-    history_years: String(selectedHistoryYears)
+    history_years: String(selectedHistoryYears),
+    max_comparables: maxComparablesInput.value || "200"
   });
 
   updateScopeGeometry();
@@ -390,13 +806,14 @@ async function estimate() {
     return;
   }
   renderResult(data);
-  renderComparables(data.comparables);
+  renderComparables(data.comparables, data.points, data.summary.count);
   setStatus(`Calcul terminé sur ${data.target.dept}.`);
 }
 
 function renderResult(data) {
   const summary = data.summary;
   resultEl.hidden = false;
+  marketResult.hidden = true;
   document.querySelector("#estimatedPrice").textContent = euro(summary.estimated_price);
   document.querySelector("#medianM2").textContent = int(summary.median_m2);
   document.querySelector("#count").textContent = summary.count;
@@ -408,23 +825,34 @@ function renderResult(data) {
     : `Prix soumis: percentile ${summary.asked_position_pct} des comparables`;
 }
 
-function renderComparables(rows) {
+function renderComparables(rows, points, total) {
   currentComparables = rows;
-  setComparableGeojson(rows);
+  setComparableGeojson(points || rows);
   selectedComparableUid = null;
+  lastSelectedUid = null;
   comparableDetail.hidden = true;
   tableWrap.classList.remove("detail-open");
   tableWrap.classList.remove("collapsed");
-  comparablesList.innerHTML = "";
-  tableMeta.textContent = `${rows.length} affichés`;
-  const bounds = new maplibregl.LngLatBounds();
-  if (selectedAddress) bounds.extend(selectedAddress.geometry.coordinates);
+  tableMeta.textContent = `${rows.length}/${total ?? rows.length} affichés`;
+  // Si on a demandé plus de comparables qu'il n'en existe, on ramène le champ « Max » au réel disponible.
+  if (total != null) {
+    maxComparablesInput.value = String(Math.min(Number(maxComparablesInput.value) || 200, total));
+  }
+  updateSortControl();
+  renderComparableList();
+  if (selectedAddress) {
+    updateScopeGeometry(rows);
+  }
+}
 
-  for (const row of rows) {
+function renderComparableList() {
+  comparablesList.innerHTML = "";
+  for (const row of sortedComparables()) {
     const item = document.createElement("button");
     item.type = "button";
     item.className = "comparable";
     item.dataset.uid = row.uid;
+    item.classList.toggle("selected", row.uid === selectedComparableUid);
     item.innerHTML = `
       <b>${int(row.prix_m2)} €/m²</b>
       <b>${euro(row.prix)}</b>
@@ -434,9 +862,48 @@ function renderComparables(rows) {
     item.addEventListener("click", () => selectComparable(row.uid, { fit: true }));
     comparablesList.append(item);
   }
-  if (selectedAddress) {
-    updateScopeGeometry(rows);
+}
+
+function sortedComparables() {
+  if (!comparableSortKey) {
+    return currentComparables;
   }
+  const direction = comparableSortDirection === "desc" ? -1 : 1;
+  return [...currentComparables].sort((a, b) => {
+    const left = comparableSortValue(a);
+    const right = comparableSortValue(b);
+    if (left === right) return a.distance_m - b.distance_m;
+    return left > right ? direction : -direction;
+  });
+}
+
+function comparableSortValue(row) {
+  if (comparableSortKey === "price") return Number(row.prix) || 0;
+  if (comparableSortKey === "date") return Date.parse(row.date_mutation) || 0;
+  if (comparableSortKey === "surface") return Number(row.surface) || 0;
+  return Number(row.distance_m) || 0;
+}
+
+function updateSortControl() {
+  const arrow = comparableSortDirection === "desc" ? "↑" : "↓";
+  const labels = {
+    price: `Prix ${arrow}`,
+    date: `Date ${arrow}`,
+    surface: `m² ${arrow}`
+  };
+  sortToggle.textContent = comparableSortKey ? labels[comparableSortKey] : "Trier";
+  for (const button of sortButtons) {
+    button.classList.toggle("active", button.dataset.sort === comparableSortKey);
+    button.textContent = button.dataset.sort === comparableSortKey
+      ? `${sortLabel(button.dataset.sort)} ${arrow}`
+      : sortLabel(button.dataset.sort);
+  }
+}
+
+function sortLabel(key) {
+  if (key === "price") return "Prix";
+  if (key === "date") return "Date";
+  return "m²";
 }
 
 async function loadTargetStreetView(lon, lat, label, addressSeq) {
@@ -552,35 +1019,45 @@ function formatHistory(years) {
   return years === 1 ? "12 mois" : `${years} ans`;
 }
 
-function setComparableGeojson(rows) {
+function setComparableGeojson(points) {
   const source = map.getSource("comparables");
   if (!source) return;
   source.setData({
     type: "FeatureCollection",
-    features: rows.map((row) => ({
+    features: points.map((p) => ({
       type: "Feature",
-      id: row.uid,
-      geometry: { type: "Point", coordinates: [row.lon, row.lat] },
+      id: p.uid,
+      geometry: { type: "Point", coordinates: [p.lon, p.lat] },
       properties: {
-        uid: row.uid,
-        prix_m2: row.prix_m2,
-        prix: row.prix,
-        commune: row.commune,
-        distance_m: row.distance_m,
-        similarity: row.similarity
+        uid: p.uid,
+        prix_m2: p.prix_m2,
+        prix: p.prix,
+        surface: p.surface,
+        pieces: p.pieces,
+        commune: p.commune,
+        code_postal: p.code_postal,
+        distance_m: p.distance_m,
+        date_mutation: p.date_mutation,
+        type_local: p.type_local || "",
+        similarity: p.similarity ?? 0,
+        categorie: p.type_local || ""
       }
     }))
   });
 }
 
-function selectComparable(uid, options = { fit: false }) {
+function selectComparable(uid, options = { fit: false }, fallbackRow = null) {
   if (uid !== null && selectedComparableUid === uid) {
     uid = null;
   }
   selectedComparableUid = uid;
-  for (const row of currentComparables) {
-    map.setFeatureState({ source: "comparables", id: row.uid }, { selected: row.uid === uid });
+  if (lastSelectedUid !== null) {
+    map.setFeatureState({ source: "comparables", id: lastSelectedUid }, { selected: false });
   }
+  if (uid !== null) {
+    map.setFeatureState({ source: "comparables", id: uid }, { selected: true });
+  }
+  lastSelectedUid = uid;
   for (const item of comparablesList.querySelectorAll(".comparable")) {
     item.classList.toggle("selected", Number(item.dataset.uid) === uid);
   }
@@ -590,7 +1067,7 @@ function selectComparable(uid, options = { fit: false }) {
     return;
   }
 
-  const row = currentComparables.find((candidate) => candidate.uid === uid);
+  const row = currentComparables.find((candidate) => candidate.uid === uid) || fallbackRow;
   if (!row) return;
   tableWrap.classList.remove("collapsed");
   renderDetail(row);

@@ -18,15 +18,20 @@
           </div>
         </div>
 
+        <div class="mode-control" aria-label="Mode">
+          <button type="button" data-mode="estimation" class="active">Estimation</button>
+          <button type="button" data-mode="exploration">Exploration</button>
+        </div>
+
         <div class="search-wrap">
           <label class="field search-field">
-            <span>Adresse</span>
+            <span id="addressLabel">Adresse</span>
             <input id="address" autocomplete="off" placeholder="12 cours de l'Intendance, Bordeaux">
           </label>
           <div id="suggestions" class="suggestions" hidden></div>
         </div>
 
-        <div class="grid">
+        <div id="estimationFields" class="grid">
           <label class="field">
             <span>Type</span>
             <select id="type">
@@ -79,8 +84,18 @@
           </div>
         </div>
 
+        <div id="explorationFilters" class="type-chips" aria-label="Types de biens" hidden>
+          <button type="button" data-cat="all" class="active">Tous</button>
+          <button type="button" data-cat="Maison">Maison</button>
+          <button type="button" data-cat="Appartement">Appart.</button>
+          <button type="button" data-cat="Terrain">Terrain</button>
+          <button type="button" data-cat="Dépendance">Dépend.</button>
+          <button type="button" data-cat="Local">Local</button>
+        </div>
+
         <div class="toolbar">
           <button id="estimate" type="button">Estimer</button>
+          <button id="reset" type="button">Reset</button>
         </div>
 
         <div id="status" class="status">Sélectionne une adresse en Gironde ou Lot-et-Garonne.</div>
@@ -99,15 +114,30 @@
           <div id="range" class="range"></div>
           <div id="askedPosition" class="range"></div>
         </section>
+
+        <section id="marketResult" class="result" hidden>
+          <div class="metrics">
+            <span><b id="marketCount"></b> ventes</span>
+            <span><b id="marketScope"></b></span>
+          </div>
+          <div id="marketStats" class="market-stats"></div>
+        </section>
       </section>
       <button id="expandEstimation" class="expand-estimation" type="button">Estimation</button>
 
       <div id="map"></div>
 
       <aside class="map-controls" aria-label="Contrôles de carte">
-        <label class="toggle">
-          <input id="ignToggle" type="checkbox">
-          <span>IGN</span>
+        <label class="layer-select">
+          <span>Fond de carte</span>
+          <select id="baseLayer">
+            <option value="ignplan">IGN Plan</option>
+            <option value="carto">CARTO Positron</option>
+            <option value="voyager">CARTO Voyager</option>
+            <option value="osm">OSM standard</option>
+            <option value="ign">IGN Satellite</option>
+            <option value="stadiasat">Stadia Satellite</option>
+          </select>
         </label>
       </aside>
 
@@ -131,6 +161,18 @@
           <div class="table-head">
             <strong>Comparables</strong>
             <div class="head-actions">
+              <label id="limitControl" class="limit-control" title="Nombre maximum de comparables affichés">
+                Max
+                <input id="maxComparables" type="number" min="5" max="1000" step="5" value="200">
+              </label>
+              <div class="sort-menu">
+                <button id="sortToggle" type="button" aria-expanded="false">Trier</button>
+                <div id="sortOptions" class="sort-options">
+                  <button type="button" data-sort="price">Prix</button>
+                  <button type="button" data-sort="date">Date</button>
+                  <button type="button" data-sort="surface">m²</button>
+                </div>
+              </div>
               <span id="tableMeta">Aucun calcul</span>
               <button id="toggleComparables" type="button" aria-label="Réduire">−</button>
             </div>

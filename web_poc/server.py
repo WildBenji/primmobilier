@@ -23,6 +23,10 @@ INTERIM = ROOT / "data" / "interim"
 HOST = "127.0.0.1"
 PORT = 8765
 MIN_COMPARABLES = 5
+DEFAULT_MAX_COMPARABLES = 200
+MAX_COMPARABLES_LIMIT = 1000
+# Plafond de sécurité des points carte (payload allégé) : en pratique = « tous les points ».
+POINTS_HARD_CAP = 20000
 DEFAULT_RADIUS_M = 1500
 MIN_RADIUS_M = 100
 MAX_RADIUS_M = 20_000
@@ -144,6 +148,8 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
     history_years = min(MAX_HISTORY_YEARS, max(MIN_HISTORY_YEARS, history_years))
     radius_m = as_int(params, "radius_m", DEFAULT_RADIUS_M) or DEFAULT_RADIUS_M
     radius_m = min(MAX_RADIUS_M, max(MIN_RADIUS_M, radius_m))
+    max_comparables = as_int(params, "max_comparables", DEFAULT_MAX_COMPARABLES) or DEFAULT_MAX_COMPARABLES
+    max_comparables = min(MAX_COMPARABLES_LIMIT, max(MIN_COMPARABLES, max_comparables))
     if scope_mode not in {"radius", "cadastre", "postcode", "city"}:
         scope_mode = "radius"
     if scope_mode == "cadastre":
@@ -262,8 +268,13 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
         asked_m2 = asked_price / surface
         asked_position = sum(1 for p in prices_m2 if p <= asked_m2) / len(prices_m2) * 100
 
-    shown = sorted(cohort, key=lambda item: item["distance_m"])[:80]
-    max_distance = max(r["distance_m"] for r in shown) if shown else 1
+    cohort_sorted = sorted(cohort, key=lambda item: item["distance_m"])
+    max_distance = max((r["distance_m"] for r in cohort_sorted), default=1) or 1
+    for uid, r in enumerate(cohort_sorted):
+        r["uid"] = uid
+        r["sim"] = similarity_score(r, surface, rooms, max_distance)
+    points = cohort_sorted[:POINTS_HARD_CAP]      # carte : tous les points (allégés)
+    detailed = cohort_sorted[:max_comparables]    # liste : plafonnée, détaillée
 
     return {
         "target": {
@@ -293,9 +304,27 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
             "confidence": confidence(len(cohort), dispersion_pct),
             "asked_position_pct": round(asked_position, 1) if asked_position is not None else None,
         },
+        "points": [
+            {
+                "uid": r["uid"],
+                "lon": r["lon"],
+                "lat": r["lat"],
+                "type_local": r["type_local"],
+                "prix": r["prix"],
+                "prix_m2": round(r["prix_m2"]),
+                "surface": r["surface"],
+                "pieces": r["pieces"],
+                "commune": r["nom_commune"],
+                "code_postal": r["code_postal"],
+                "distance_m": round(r["distance_m"]),
+                "date_mutation": r["date_mutation"],
+                "similarity": r["sim"],
+            }
+            for r in points
+        ],
         "comparables": [
             {
-                "uid": i,
+                "uid": r["uid"],
                 "id_mutation": r["id_mutation"],
                 "date_mutation": r["date_mutation"],
                 "nature_mutation": r["nature_mutation"],
@@ -316,9 +345,211 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
                 "rnb_id": r["rnb_id"],
                 "confiance": r["confiance"],
                 "source": r["source"],
-                "similarity": similarity_score(r, surface, rooms, max_distance),
+                "similarity": r["sim"],
             }
-            for i, r in enumerate(shown)
+            for r in detailed
+        ],
+    }
+
+
+MARKET_CATEGORIES = ["Maison", "Appartement", "Terrain", "Dépendance", "Local"]
+# Bornes de €/m² par catégorie pour écarter les valeurs aberrantes (le terrain n'a pas le même ordre de grandeur).
+MARKET_BOUNDS = {
+    "Maison": (500, 20000),
+    "Appartement": (500, 20000),
+    "Terrain": (1, 10000),
+    "Dépendance": (50, 30000),
+    "Local": (100, 30000),
+}
+
+
+def market_rows(params: dict[str, list[str]]) -> dict:
+    dept = params.get("dept", [""])[0]
+    scope_mode = params.get("scope_mode", ["radius"])[0]
+    postcode = params.get("postcode", [""])[0] or None
+    citycode = params.get("citycode", [""])[0] or None
+    lon = as_float(params, "lon")
+    lat = as_float(params, "lat")
+    history_years = as_int(params, "history_years", DEFAULT_HISTORY_YEARS) or DEFAULT_HISTORY_YEARS
+    history_years = min(MAX_HISTORY_YEARS, max(MIN_HISTORY_YEARS, history_years))
+    radius_m = as_int(params, "radius_m", DEFAULT_RADIUS_M) or DEFAULT_RADIUS_M
+    radius_m = min(MAX_RADIUS_M, max(MIN_RADIUS_M, radius_m))
+    max_biens = as_int(params, "max_comparables", DEFAULT_MAX_COMPARABLES) or DEFAULT_MAX_COMPARABLES
+    max_biens = min(MAX_COMPARABLES_LIMIT, max(MIN_COMPARABLES, max_biens))
+    requested = [c for c in (params.get("types", [""])[0] or "").split(",") if c in MARKET_BOUNDS]
+    wanted = set(requested) if requested else set(MARKET_CATEGORIES)
+
+    if scope_mode not in {"radius", "postcode", "city"}:
+        scope_mode = "radius"
+    if dept not in available_departements():
+        return {"error": f"Département {dept or 'inconnu'} indisponible dans data/interim."}
+    if lon is None or lat is None:
+        return {"error": "Adresse, code postal ou commune résolus sont requis."}
+
+    con = duckdb.connect()
+    comp = str(INTERIM / f"comparables_{dept}.parquet")
+    dvf = str(INTERIM / f"dvf_{dept}.parquet")
+    rows = con.execute(
+        """
+        WITH coords AS (
+            SELECT id_mutation, id_parcelle,
+                   any_value(code_postal) AS code_postal,
+                   any_value(TRY_CAST(longitude AS DOUBLE)) AS lon,
+                   any_value(TRY_CAST(latitude AS DOUBLE)) AS lat
+            FROM read_parquet(?)
+            WHERE longitude IS NOT NULL AND latitude IS NOT NULL
+            GROUP BY 1, 2
+        ),
+        logement AS (
+            SELECT c.id_mutation, c.date_mutation, c.nature_mutation,
+                   c.code_commune, c.nom_commune, coords.code_postal,
+                   c.id_parcelle, c.adresse_dvf AS adresse, c.type_local AS categorie,
+                   TRY_CAST(c.surface_reelle_bati AS DOUBLE) AS surface,
+                   TRY_CAST(c.nombre_pieces_principales AS INTEGER) AS pieces,
+                   TRY_CAST(c.valeur_fonciere AS DOUBLE) AS prix,
+                   coords.lon, coords.lat, 'logement' AS qualite
+            FROM read_parquet(?) c
+            JOIN coords USING (id_mutation, id_parcelle)
+            WHERE c.flag_multi_bien = false AND c.flag_multi_adresse = false
+        ),
+        mono AS (
+            SELECT id_mutation FROM read_parquet(?) GROUP BY 1 HAVING count(*) = 1
+        ),
+        autres AS (
+            SELECT d.id_mutation, d.date_mutation, d.nature_mutation,
+                   d.code_commune, d.nom_commune, d.code_postal, d.id_parcelle,
+                   trim(concat_ws(' ', CAST(d.adresse_numero AS VARCHAR), d.adresse_nom_voie)) AS adresse,
+                   CASE WHEN d.type_local IS NULL THEN 'Terrain'
+                        WHEN d.type_local = 'Local industriel. commercial ou assimilé' THEN 'Local'
+                        ELSE d.type_local END AS categorie,
+                   CASE WHEN d.type_local IS NULL THEN TRY_CAST(d.surface_terrain AS DOUBLE)
+                        ELSE TRY_CAST(d.surface_reelle_bati AS DOUBLE) END AS surface,
+                   CAST(NULL AS INTEGER) AS pieces,
+                   TRY_CAST(d.valeur_fonciere AS DOUBLE) AS prix,
+                   TRY_CAST(d.longitude AS DOUBLE) AS lon, TRY_CAST(d.latitude AS DOUBLE) AS lat,
+                   'indicatif' AS qualite
+            FROM read_parquet(?) d
+            JOIN mono USING (id_mutation)
+            WHERE d.longitude IS NOT NULL AND d.latitude IS NOT NULL
+              AND (d.type_local IS NULL
+                   OR d.type_local IN ('Dépendance', 'Local industriel. commercial ou assimilé'))
+        )
+        SELECT *,
+               prix / surface AS prix_m2,
+               2 * 6371000 * asin(sqrt(
+                   power(sin(radians(lat - ?) / 2), 2)
+                   + cos(radians(?)) * cos(radians(lat))
+                   * power(sin(radians(lon - ?) / 2), 2)
+               )) AS distance_m
+        FROM (SELECT * FROM logement UNION ALL SELECT * FROM autres)
+        WHERE prix > 0 AND surface > 0
+        """,
+        [dvf, comp, dvf, dvf, lat, lat, lon],
+    ).fetchall()
+    columns = [c[0] for c in con.description]
+    all_rows = [dict(zip(columns, row)) for row in rows]
+    reference_date = latest_mutation_date(all_rows)
+
+    if scope_mode == "postcode":
+        scope = f"code postal {postcode}" if postcode else "code postal"
+        cohort = [r for r in all_rows if postcode and r["code_postal"] == postcode]
+    elif scope_mode == "city":
+        scope = "commune entière"
+        cohort = [r for r in all_rows if citycode and r["code_commune"] == citycode]
+    else:
+        scope = radius_label(radius_m)
+        cohort = [r for r in all_rows if r["distance_m"] <= radius_m]
+
+    cohort = filter_history(cohort, history_years, reference_date)
+    cohort = [
+        r for r in cohort
+        if r["categorie"] in wanted
+        and MARKET_BOUNDS[r["categorie"]][0] <= r["prix_m2"] <= MARKET_BOUNDS[r["categorie"]][1]
+    ]
+    if not cohort:
+        return {
+            "error": f"Aucune vente dans l'emprise « {scope} » sur {history_label(history_years)} pour les types choisis.",
+            "count": 0,
+            "scope": scope,
+        }
+
+    types_summary = []
+    for cat in MARKET_CATEGORIES:
+        subset = [r for r in cohort if r["categorie"] == cat]
+        if not subset:
+            continue
+        prices_m2 = [r["prix_m2"] for r in subset]
+        prices = [r["prix"] for r in subset]
+        types_summary.append({
+            "categorie": cat,
+            "count": len(subset),
+            "median_m2": round(median(prices_m2)),
+            "q10_m2": round(quantile(prices_m2, 0.10)),
+            "q90_m2": round(quantile(prices_m2, 0.90)),
+            "median_prix": round(median(prices), -3),
+            "qualite": subset[0]["qualite"],
+        })
+
+    cohort.sort(key=lambda r: r["distance_m"])
+    for uid, r in enumerate(cohort):
+        r["uid"] = uid
+    points = cohort[:POINTS_HARD_CAP]      # carte : tous les points (allégés)
+    detailed = cohort[:max_biens]          # liste : plafonnée, détaillée
+
+    return {
+        "target": {
+            "dept": dept, "lon": lon, "lat": lat,
+            "postcode": postcode, "citycode": citycode,
+            "scope_mode": scope_mode, "radius_m": radius_m, "history_years": history_years,
+        },
+        "summary": {
+            "scope": scope,
+            "history": history_label(history_years),
+            "count": len(cohort),
+            "shown": len(points),
+            "list": len(detailed),
+            "types": types_summary,
+        },
+        "points": [
+            {
+                "uid": r["uid"],
+                "lon": r["lon"],
+                "lat": r["lat"],
+                "type_local": r["categorie"],
+                "prix": r["prix"],
+                "prix_m2": round(r["prix_m2"]),
+                "surface": round(r["surface"]) if r["surface"] else None,
+                "pieces": r["pieces"],
+                "commune": r["nom_commune"],
+                "code_postal": r["code_postal"],
+                "distance_m": round(r["distance_m"]),
+                "date_mutation": r["date_mutation"],
+            }
+            for r in points
+        ],
+        "biens": [
+            {
+                "uid": r["uid"],
+                "id_mutation": r["id_mutation"],
+                "date_mutation": r["date_mutation"],
+                "nature_mutation": r["nature_mutation"],
+                "code_commune": r["code_commune"],
+                "code_postal": r["code_postal"],
+                "adresse": r["adresse"],
+                "commune": r["nom_commune"],
+                "id_parcelle": r["id_parcelle"],
+                "type_local": r["categorie"],
+                "categorie": r["categorie"],
+                "qualite": r["qualite"],
+                "surface": round(r["surface"]) if r["surface"] else None,
+                "pieces": r["pieces"],
+                "prix": r["prix"],
+                "prix_m2": round(r["prix_m2"]),
+                "distance_m": round(r["distance_m"]),
+                "lon": r["lon"],
+                "lat": r["lat"],
+            }
+            for r in detailed
         ],
     }
 
@@ -363,6 +594,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/estimate":
             self.json(comparable_rows(parse_qs(parsed.query)))
+            return
+        if parsed.path == "/api/market":
+            self.json(market_rows(parse_qs(parsed.query)))
             return
         if parsed.path == "/api/panoramax":
             self.json(panoramax_rows(parse_qs(parsed.query)))
