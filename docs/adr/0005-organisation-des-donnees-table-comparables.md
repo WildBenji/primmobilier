@@ -1,6 +1,7 @@
 ---
 status: accepted
 date: 2026-06-10
+superseded-by: 0006 §4-6
 ---
 
 # Organisation des données : table comparables centrée DVF, pont parcelle→bâtiment
@@ -37,6 +38,10 @@ les données sont stockées pour le service** (comparables immobiliers).
    pour un gain marginal. **Le bâtiment est un bonus quand il est certain ; la parcelle + les
    coordonnées sont le socle de localisation** (suffisant pour des comparables ; le DPE se
    joindra par clé d'adresse, sans pré-choix de bâtiment).
+
+   > Supersédé pour la BDNB par l'[ADR 0006](0006-bdnb-parcelle-pour-resolution-batiment.md) :
+   > la route officielle `batiment_groupe_complet_parcelle` est désormais utilisée pour enrichir
+   > la parcelle et résoudre un `batiment_groupe_id` quand la parcelle ne porte qu'un groupe BDNB.
 
 6. **Référentiel d'adresses élagué.** `adresses_ref` ne garde que les `rnb_id` réellement
    référencés par le pont (≈ ceux touchés par DVF), pas les ~1,17 M adresses du RNB → fichiers
