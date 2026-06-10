@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Primmobilier POC</title>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.14.0/dist/maplibre-gl.css">
+    <link rel="stylesheet" href="/app.css">
+  </head>
+  <body>
+    <main class="app">
+      <section id="estimationPanel" class="panel" aria-label="Estimation immobilière">
+        <div class="brand">
+          <strong>Primmobilier</strong>
+          <div class="head-actions">
+            <span>POC comparables DVF</span>
+            <button id="toggleEstimation" type="button" aria-label="Réduire">−</button>
+          </div>
+        </div>
+
+        <div class="search-wrap">
+          <label class="field search-field">
+            <span>Adresse</span>
+            <input id="address" autocomplete="off" placeholder="12 cours de l'Intendance, Bordeaux">
+          </label>
+          <div id="suggestions" class="suggestions" hidden></div>
+        </div>
+
+        <div class="grid">
+          <label class="field">
+            <span>Type</span>
+            <select id="type">
+              <option>Appartement</option>
+              <option>Maison</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Surface</span>
+            <input id="surface" type="number" min="10" step="1" value="65">
+          </label>
+          <label class="field">
+            <span>Pièces</span>
+            <input id="rooms" type="number" min="1" step="1" value="3">
+          </label>
+          <label class="field">
+            <span>Prix soumis</span>
+            <input id="askedPrice" type="number" min="0" step="1000" placeholder="optionnel">
+          </label>
+        </div>
+
+        <div class="scope-control" aria-label="Emprise de comparaison">
+          <button type="button" data-scope="radius" class="active">Rayon</button>
+          <button type="button" data-scope="cadastre" disabled>Cadastre</button>
+          <button type="button" data-scope="postcode">Code postal</button>
+          <button type="button" data-scope="city">Commune</button>
+        </div>
+
+        <div id="radiusControl" class="radius-control">
+          <div class="radius-head">
+            <span>Rayon</span>
+            <strong id="radiusLabel">1,5 km</strong>
+          </div>
+          <input id="radiusSlider" type="range" min="0" max="13" step="1" value="7" aria-label="Rayon de comparaison">
+          <div class="radius-scale" aria-hidden="true">
+            <span>100 m</span>
+            <span>20 km</span>
+          </div>
+        </div>
+
+        <div class="history-control">
+          <div class="radius-head">
+            <span>Historique</span>
+            <strong id="historyLabel">5 ans</strong>
+          </div>
+          <input id="historySlider" type="range" min="1" max="5" step="1" value="5" aria-label="Historique des ventes">
+          <div class="radius-scale" aria-hidden="true">
+            <span>12 mois</span>
+            <span>5 ans</span>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <button id="estimate" type="button">Estimer</button>
+        </div>
+
+        <div id="status" class="status">Sélectionne une adresse en Gironde ou Lot-et-Garonne.</div>
+        <div id="targetStreetView" class="street-status" hidden></div>
+
+        <section id="result" class="result" hidden>
+          <div>
+            <span class="label">Prix médian estimé</span>
+            <strong id="estimatedPrice"></strong>
+          </div>
+          <div class="metrics">
+            <span><b id="medianM2"></b> €/m²</span>
+            <span><b id="count"></b> ventes</span>
+            <span><b id="scope"></b></span>
+          </div>
+          <div id="range" class="range"></div>
+          <div id="askedPosition" class="range"></div>
+        </section>
+      </section>
+      <button id="expandEstimation" class="expand-estimation" type="button">Estimation</button>
+
+      <div id="map"></div>
+
+      <aside class="map-controls" aria-label="Contrôles de carte">
+        <label class="toggle">
+          <input id="ignToggle" type="checkbox">
+          <span>IGN</span>
+        </label>
+      </aside>
+
+      <aside id="streetViewPanel" class="street-panel" hidden aria-label="Vue rue">
+        <div class="table-head">
+          <strong>Vue rue</strong>
+          <button id="closeStreetView" type="button" aria-label="Fermer">×</button>
+        </div>
+        <div id="streetViewBody" class="street-body"></div>
+      </aside>
+
+      <aside class="table-wrap collapsed" aria-label="Comparables retenus">
+        <div id="comparableDetail" class="detail-panel" hidden>
+          <div class="table-head">
+            <strong>Détail</strong>
+            <button id="closeDetail" type="button" aria-label="Fermer">×</button>
+          </div>
+          <div id="detailBody" class="detail-body"></div>
+        </div>
+        <div class="list-panel">
+          <div class="table-head">
+            <strong>Comparables</strong>
+            <div class="head-actions">
+              <span id="tableMeta">Aucun calcul</span>
+              <button id="toggleComparables" type="button" aria-label="Réduire">−</button>
+            </div>
+          </div>
+          <div id="comparablesList" class="comparables-list"></div>
+        </div>
+        <button id="expandComparables" class="expand-comparables" type="button">Comparables</button>
+      </aside>
+    </main>
+
+    <script src="https://unpkg.com/maplibre-gl@5.14.0/dist/maplibre-gl.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
