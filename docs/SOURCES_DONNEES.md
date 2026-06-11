@@ -7,6 +7,9 @@ Suivi d'exploration des sources publiques candidates au **socle immobilier carto
 - **Date de cadrage** : 2026-06-09
 - **Méthode** : exploration via le MCP `datagouv` (catalogue data.gouv.fr) + lecture des documentations fournies avec les fichiers. Le champ **Définition** de chaque source est construit à partir de ces docs.
 - **Cadre métier** : voir le langage du domaine dans [CONTEXT.md](../CONTEXT.md). On distingue les **Sources socle** (attendues dans toute estimation : BAN, DVF, Cadastre) des **Enrichissements optionnels** (DPE, RNB/BDNB, copropriétés, risques, urbanisme).
+- **Principe de volumétrie** : l'application chiffre depuis DVF. Les fichiers bruts peuvent être
+  complets pour audit/reconstruction, mais les artefacts opérationnels sont réduits aux parcelles,
+  adresses et bâtiments reliés à une vente DVF.
 
 ## Légende statut d'exploration
 
@@ -71,15 +74,88 @@ Suivi d'exploration des sources publiques candidates au **socle immobilier carto
 - **Statut** : ✅ **Catalogué & mesuré (33 + 47)** — parcelles + sections ingérées en GeoParquet, schéma et clés confirmés (cf. mesures §10).
 - **Définition** : découpage parcellaire du territoire au format géo simplifié (vs PCI Vecteur EDIGÉO brut). Fournit les **géométries de parcelles et sections** et la clé de rattachement `id_parcelle`.
 
-**Fichiers / accès** : hébergés sur `cadastre.data.gouv.fr/data/etalab-cadastre/latest/geojson/departements/{dept}/` (pas de ressource tabulaire data.gouv directe ; GeoParquet **non publié** → on convertit le GeoJSON nous-mêmes). Acquisition : [`telechargement/preparer_cadastre.py`](../telechargement/preparer_cadastre.py) (idempotent, GeoJSON.gz → GeoParquet WKB via DuckDB spatial). Tailles 33 : parcelles 235 Mo gz / sections 9,6 Mo gz.
+**Fichiers / accès** : hébergés sur `cadastre.data.gouv.fr/data/etalab-cadastre/latest/geojson/departements/{dept}/` (pas de ressource tabulaire data.gouv directe ; GeoParquet **non publié** → on convertit le GeoJSON nous-mêmes). Acquisition : [`telechargement/preparer_cadastre.py`](../telechargement/preparer_cadastre.py) (idempotent, GeoJSON.gz → GeoParquet WKB via DuckDB spatial, couches `sections` + `parcelles` + `batiments`). Tailles 33 : parcelles 235 Mo gz / sections 9,6 Mo gz / bâtiments 82 Mo gz (→ `cadastre_batiments_33.parquet` 177 Mo, 1,43 M empreintes).
 
 **Champs réels confirmés (DuckDB spatial sur 33/47)** :
 - Couche **parcelles** : `id` (= commune + préfixe + section + numéro, ex. `33063000KE0083`), `commune`, `prefixe`, `section`, `numero`, `contenance` (surface terrain m², dispo à **99,97%**), `arpente`, `created`, `updated`, géométrie. Ajout calculé à l'ingestion : `clon`/`clat` (centroïde, pour filtre bbox rapide).
 - Couche **sections** : `id` (commune + préfixe + section, ex. `33063000KE`), `commune`, `code`, géométrie — **emprise d'analyse** (cf. CONTEXT « Section cadastrale »).
+- Couche **bâtiments** : empreintes au sol (MultiPolygon), `type` (`01` bâti en dur / `02` bâti léger : garage, abri…), `nom` (souvent nul), `commune`, `created`/`updated`, `clon`/`clat`. **Pas d'id parcelle** → rattachement par intersection spatiale (empreinte ∩ parcelle). Sert à dessiner le détail intérieur d'une parcelle (maison + annexes) là où RNB n'expose qu'un point et BDNB que des attributs.
 
-**Superflu / à différer** : couches `subdivisions_fiscales`, `lieux_dits`, `prefixes_sections`, `feuilles` — peu utiles à l'estimation. Couche `batiments` cadastrale : redondante avec RNB pour la maille bâtiment → préférer RNB.
+**Superflu / à différer** : couches `subdivisions_fiscales`, `lieux_dits`, `prefixes_sections`, `feuilles` — peu utiles à l'estimation.
 
 **Clés de jointure (confirmées)** : `parcelles.id` ↔ DVF (`id_parcelle`) [**97,89%** des parcelles DVF logement présentes] ↔ RNB (`plots[].id`) · `sections.id` ↔ `substr(id_parcelle, 1, 10)` [**99,84%**]. Format GeoParquet (WKB) = idéal pour DuckDB spatial (`ST_GeomFromWKB`, `ST_Contains`).
+
+**Artefact service** : `cadastre_parcelles_service_{dept}.parquet` ne garde que les parcelles
+présentes dans DVF. Les sections et bâtiments restent complets : les bâtiments sont interrogés
+à la demande par parcelle (endpoint `/api/batiments`, préfiltre bbox `clon`/`clat` puis
+`ST_Intersects`), pas réduits au graphe DVF.
+
+## 1.4 Contours communes (geo.api.gouv.fr) + contours codes postaux dérivés
+
+- **Source communes** : [geo.api.gouv.fr](https://geo.api.gouv.fr) (`/communes?codeDepartement={dept}&geometry=contour`), limites administratives **IGN Admin Express**. Licence ouverte.
+- **Statut** : ✅ **Intégré** — figé en local, plus de dépendance runtime à geo.api ; les contours code postal en sont **construits**.
+- **Pourquoi pas un jeu « contours codes postaux » tout fait** : le seul référentiel national (« contours **calculés** des zones codes postaux », adresse.data.gouv.fr, millésime **2021**) est constitué d'enveloppes par adresse qui **débordent et se chevauchent largement** (ex. le 33000 englobant toute l'agglo bordelaise) → **abandonné**. Il n'existe par ailleurs aucun découpage officiel pour un code postal **intra-communal** (une commune à plusieurs CP).
+
+**Méthode** (cf. [`telechargement/preparer_communes.py`](../telechargement/preparer_communes.py) puis [`telechargement/preparer_codes_postaux.py`](../telechargement/preparer_codes_postaux.py)) :
+1. **Communes** : un appel geo.api par département → `contours_communes_{dept}.parquet` (`insee, nom, geom_wkb`). Détail IGN qui **suit les axes réels** (routes, rues).
+2. **Codes postaux** (hybride, à partir des communes locales + BAN) :
+   - CP couvrant des **communes entières** → **union** des polygones communaux (exact, sans chevauchement) ;
+   - **commune découpée** en plusieurs CP (grandes villes) → **partition adaptative par plus proche adresse BAN**, fusionnée par CP et **découpée à la commune**. Astuce : une coordonnée → un seul CP (le plus fréquent) pour éviter les chevauchements.
+   - Le flag **`is_split`** marque les CP issus de cette partition intra-communale (vs union de communes).
+
+**Champs** : `contours_communes_{dept}` = `insee` (↔ DVF `code_commune` / citycode BAN), `nom`, géométrie WKB. `contours_codes_postaux` = `codePostal` (↔ DVF `code_postal`), `nb_points`, `is_split`, géométrie WKB.
+
+**Clé de service** : lecture DuckDB `ST_GeomFromWKB` filtrée sur `insee` / `codePostal` (endpoint `/api/codepostal`), cohérente avec la résolution des sections cadastrales. Communes et CP partageant la **même géométrie geo.api**, le service peut filtrer les biens débordants (géocodage hors limite administrative) sur le polygone exact.
+
+**Artefacts** : `data/interim/contours_communes_{dept}.parquet` (~2-3 Mo/dept) + `data/interim/contours_codes_postaux.parquet` (~2 Mo, départements présents). Qualité mesurée : ≥ 99,9 % des biens d'un CP tombent dans son contour.
+
+## 1.5 Mailles géographiques : définitions et cardinalités
+
+Référence pour les **emprises de comparaison** du POC (rayon, section, code postal, commune) et
+pour toute requête filtrant par zone. Sources : **Code Officiel Géographique (COG)** de l'INSEE
+(`v_commune_{millésime}.csv`, data.gouv `58c984b088ee386cdb1261f3`) et **Base officielle des
+codes postaux** de La Poste (data.gouv `545b55e1c751df52de9b6045`).
+
+| Objet | Définition | Cardinalité | Preuve |
+| --- | --- | --- | --- |
+| **Commune** ↔ **code INSEE** (`code_commune`, citycode) | maille administrative de base ; le code INSEE (`COM`, 5 caractères) l'identifie | **1:1** (bijection, à millésime donné) | COG : un seul `COM` par commune. **Conséquence : « emprise commune » = « emprise code INSEE »**, même zone, même filtre |
+| **Code postal** ↔ **commune** | objet de **distribution postale** (La Poste), pas une maille administrative | **N:M** | CP `01300` → 24 communes ; Toulouse (`31555`) → 6 CP (`31000…31500`) |
+| **« Ville »** | **notion non officielle** ; en pratique = commune. Absente du COG | — | sous la commune : lieux-dits (`Ligne_5` La Poste) **sans code INSEE**, donc non filtrables à une maille propre |
+| **Arrondissement municipal** (Paris/Lyon/Marseille) | subdivision de commune | code INSEE **propre** (`TYPECOM=ARM`), parent via `COMPARENT` | Paris commune `75056` ; arrond. `75101`–`75120`. Marseille `13055` → `13201`–`13216` ; Lyon `69123` → `69381`–`69389` |
+| **Commune déléguée / associée** | ancienne commune fusionnée dans une commune nouvelle | code INSEE **propre** (`TYPECOM=COMD`/`COMA`), parent via `COMPARENT` | Béon `01039` (délégué) → parent `01138` |
+
+**Application dans le code** (toutes les requêtes respectent ces cardinalités) :
+- Emprise **commune** : filtre par code INSEE — attribut DVF `code_commune` (`add_scope_filter`)
+  **et** géométrie `ST_Within` sur `contours_communes.insee` (1:1, cf. §1.4). Pas d'emprise
+  « code INSEE » séparée : elle désignerait la **même** zone (la barre de recherche permet déjà
+  de saisir nom de commune, code postal ou adresse).
+- Emprise **code postal** : N:M assumé — `scope_communes_rows` liste **toutes** les communes
+  d'un CP et **tous** les CP d'une commune ; le contour CP est hybride (union de communes +
+  partition intra-communale, cf. §1.4). Ne jamais supposer « 1 CP = 1 commune ».
+- `dept_from_citycode` dérive le département du code INSEE (`97x` → 3 car. DOM ; Corse `2A/2B`
+  → 2 car.).
+- **Normalisation des codes périmés (millésime COG)** : le code INSEE n'est unique qu'à
+  millésime fixé — une fusion (commune nouvelle, fusion-association) fait **disparaître** un code
+  des référentiels courants (geo.api, BAN). DVF conservant le code au moment de la vente, ces
+  ventes seraient orphelines (ni contour ni adresse). [`telechargement/preparer_passage_communes.py`](../telechargement/preparer_passage_communes.py)
+  télécharge le **COG INSEE** (`v_commune` + `v_mvt_commune`, data.gouv `58c984b088ee386cdb1261f3`)
+  et produit deux tables nationales : `passage_communes` (`code_perime → code_actuel`, fermeture
+  transitive des fusions) et `communes_actuelles` (`insee → nom_cog`, autorité de nommage).
+  `preparer_donnees._normaliser_communes` les applique au DVF : **(1)** remap des codes périmés
+  vers la commune actuelle, **(2)** nom COG autoritaire par code — ce qui corrige aussi les codes
+  *survivants renommés* (commune nouvelle reprenant le code d'une fondatrice, p.ex. `17268`
+  Nuaillé-sur-Boutonne → Rives-de-Boutonne). Résultat vérifié sur 17/33/47 : **0 code commune
+  orphelin, 0 nom divergent du contour geo.api**. La normalisation **conserve l'origine** :
+  `comparables.commune_modif_origine` (`Nom (CODE)`) + `commune_modif_date` (table
+  `communes_modif`, dates `v_mvt_commune`) tracent la fusion/renommage au **détail d'une vente**
+  (ex. vendue sous *Saint-Georges-de-Longuepierre (17334)*, rattachée à *Rives-de-Boutonne*,
+  modifiée le 2025-01-01).
+
+> **Limite connue** : pour Paris/Lyon/Marseille, DVF porte le code d'**arrondissement** (`751xx`…)
+> tandis que `contours_communes` (geo.api `/communes`) ne fournit que la commune-mère. Le filtre
+> par **attribut** reste exact (par arrondissement) ; seul le **tracé** du contour peut manquer.
+> Sans incidence sur la Gironde (dept de référence), à traiter via l'endpoint geo.api
+> `/communes/{code}/arrondissements-municipaux` si ces métropoles sont intégrées.
 
 ---
 
@@ -110,17 +186,32 @@ Suivi d'exploration des sources publiques candidates au **socle immobilier carto
 
 **Superflu / doublon** : `shape` peut être omis si seul `point` suffit (allège fortement). `status` filtrable en amont.
 
-**Clés de jointure** : c'est le **hub** — `addresses.cle_interop` ↔ BAN, `plots.id` ↔ Cadastre/DVF, `ext_ids` ↔ BDNB. À relier à DPE via `rnb_id`.
+**Clés de jointure** : c'est le **hub** — `addresses.cle_interop` ↔ BAN, `plots.id` ↔ Cadastre/DVF. `ext_ids` peut contenir des identifiants externes, dont BDNB construction, mais **ne doit pas être utilisé comme conversion implicite vers `batiment_groupe_id` BDNB** sans table officielle. À relier à DPE via `rnb_id`.
+
+**Artefacts service** : après récupération des non-matchs, `rnb_plots_service_{dept}`,
+`rnb_adr_service_{dept}` et `rnb_points_service_{dept}` ne gardent que les parcelles DVF et les
+`rnb_id` récupérés. Les exports RNB complets restent nécessaires en amont pour retrouver les
+parcelles renumérotées et les rattachements par adresse/spatial.
 
 ## 2.2 BDNB — Base de Données Nationale des Bâtiments
 
 - **ID data.gouv** : `61dc7157488f8cdb4283e3c3` · Organisation : CSTB · Licence : `lov2` · Fréquence : **semestrielle** · MàJ catalogue : 2026-05-22
-- **Statut** : ⏳ À approfondir (enrichissement lourd, optionnel)
+- **Statut** : ✅ Ciblé pour les fiches détail et la résolution groupe bâtiment par parcelle
 - **Définition** : carte d'identité agrégée des **~32 M de bâtiments** (croisement d'une vingtaine de bases publiques), à la maille bâtiment : âge, typologie, énergie/DPE, rénovation.
 
-**Fichiers / accès** : exports France **très volumineux** — CSV 36,7 Go, GPKG 47,5 Go, pgdump 37,7 Go ; **API** (portail BDNB) ; **dictionnaire de données** xlsx (`documentation.xlsx`, v0.7.11). Pas d'export départemental sur data.gouv (dispo sur bdnb.io).
+**Fichiers / accès** : exports France **très volumineux** — CSV 36,7 Go, GPKG 47,5 Go, pgdump 37,7 Go ; exports **départementaux** sur `bdnb.io/download` / S3 `open-data.s3.fr-par.scw.cloud` ; **API BDNB Open** `69427c378a39a6a5051349e7`, base `https://api.bdnb.io/v1/bdnb` ; **dictionnaire de données** xlsx (`documentation.xlsx`, v0.7.11).
 
-**Position dans le socle** : redondant en partie avec RNB (maille bâtiment) + DPE (énergie). **À ne pas ingérer en masse au départ** — n'apporter que des champs ciblés (année de construction, type, copropriété) si le besoin se confirme, via API ou extraction. Pivot bâtiment = RNB, pas BDNB.
+**Route / tables officielles retenues** : la spec API expose `/donnees/batiment_groupe_complet_parcelle`, décrite comme une jointure `batiment_groupe` avec les tables métier faisant le lien avec les parcelles. En production locale, on reconstruit cette vue depuis les ZIP départementaux avec `rel_batiment_groupe_parcelle`, `batiment_groupe`, `batiment_groupe_synthese_propriete_usage`, `batiment_groupe_ffo_bat`, `batiment_groupe_rnc`, `batiment_groupe_geospx` et `batiment_groupe_bdtopo_bat`.
+
+**Position dans le socle** : BDNB enrichit les fiches détail et peut résoudre un `batiment_groupe_id` quand une parcelle n'a qu'un groupe BDNB. Le pivot bâtiment reste RNB quand un `rnb_id` est résolu ; on ne remplace pas RNB par BDNB via inférence.
+
+**Champs ciblés retenus** : `batiment_groupe_id`, `parcelle_id`, `code_departement_insee`, `code_commune_insee`, `usage_principal_bdnb_open`, `usage_niveau_1_txt`, `nb_log`, `nb_log_rnc`, `nb_lot_garpark_rnc`, `nb_lot_tertiaire_rnc`, `surface_emprise_sol`, `hauteur_mean`, `nb_niveau`, `annee_construction`, `mat_mur_txt`, `mat_toit_txt`, `type_batiment_dpe`, `fiabilite_emprise_sol`, `fiabilite_hauteur`, `fiabilite_cr_adr_niv_1`, `fiabilite_cr_adr_niv_2`, `s_geom_groupe`.
+
+**Règle de précision** : si la route renvoie plusieurs `batiment_groupe_id` pour une parcelle, la fiche reste au niveau parcelle enrichie. Aucun choix par "plus grande emprise", distance ou surface n'est appliqué sans source officielle.
+
+**Artefact service** : `bdnb_batiments_service_{dept}.parquet` est filtré sur les `parcelle_id`
+présents dans DVF. L'ingestion départementale filtre également les tables BDNB dès que possible
+sur ces parcelles puis sur les `batiment_groupe_id` restants.
 
 ---
 
@@ -181,6 +272,7 @@ Suivi d'exploration des sources publiques candidates au **socle immobilier carto
 | API Cadastre data.gouv (bundler Etalab) | `6661eadade5469423f58a6b4` | Exports parcelle/commune/EPCI | ⏳ |
 | API Carto Cadastre (IGN) | `672cf6658e2b8878bf0a5e6c` | Géométrie/centroïde de parcelle, divisions cadastrales | ⏳ |
 | API Carto GPU (urbanisme, IGN) | `672cf67520c9ae9747b4015c` | Zonage, servitudes, prescriptions intersectant un point/parcelle | ⏳ |
+| API BDNB Open | `69427c378a39a6a5051349e7` | Bâtiments groupes par parcelle et attributs métier | ✅ |
 
 > Note notebook : l'API actuelle (`api-adresse.data.gouv.fr`) doit être testée vs l'API Géoplateforme (`data.geopf.fr/geocodage/`).
 
@@ -203,7 +295,7 @@ Le **RNB (`rnb_id`) est le pivot bâtiment** qui relie les sources entre elles :
 │   id_parcelle │           │   bâtiment) │          │   neuf)     │
 └───────────────┘           │  ext_ids    │          └─────────────┘
         ▲                   └─────────────┘                ▲
-        │ id_parcelle              │ ext_ids               │ parcelle
+        │ id_parcelle              │ parcelle_id           │ parcelle
         │                          ▼                       │
 ┌───────────────┐           ┌─────────────┐                │
 │      DVF      │           │    BDNB     │                │
@@ -216,7 +308,7 @@ Le **RNB (`rnb_id`) est le pivot bâtiment** qui relie les sources entre elles :
 
 **Chaînes de jointure exploitables**
 1. **Adresse → bien** : adresse cible → API BAN → `id` (cle_interop) → RNB (`addresses.cle_interop_ban`) → `plots` → Cadastre (`id_parcelle`) → DVF.
-2. **DVF → bâtiment** : DVF (`id_parcelle`) → RNB (`plots`) → `rnb_id`. Attention : 1 parcelle peut porter N bâtiments → ambiguïté à mesurer.
+2. **DVF → bâtiment/groupe** : DVF (`id_parcelle`) → RNB (`plots`) → `rnb_id` quand la parcelle ou l'adresse tranche ; DVF (`id_parcelle`) → BDNB (`parcelle_id`) → `batiment_groupe_id` quand la parcelle BDNB n'a qu'un groupe. Si plusieurs groupes restent possibles, on conserve le niveau parcelle.
 3. **DPE → bâtiment** : DPE (`identifiant_ban`) → RNB (`addresses.cle_interop_ban`) → `rnb_id`. Fallback : spatial (DPE `_geopoint` ↔ RNB `point`) ou BAN crosswalk.
 
 **Points durs à valider sur échantillon (dépt 33)**

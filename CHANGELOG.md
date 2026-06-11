@@ -1,5 +1,41 @@
 # Changelog
 
+## v1.1.0 - 2026-06-11
+
+- **Emprises géographiques sur contours IGN locaux** : contours communes figés depuis geo.api (`preparer_communes.py`) et contours codes postaux hybrides (union de communes + partition intra-communale par plus proche adresse BAN) remplaçant le dataset « contours calculés » 2021 débordant. Filtrage **géométrique côté serveur** (`ST_Within` sur le polygone de l'emprise) : stats, compteur et carte alignés sur l'emprise réellement tracée ; le front dessine l'emprise depuis le serveur (`/api/commune`, `/api/codepostal`), plus de dépendance runtime à geo.api ni de rognage point-in-polygon côté client.
+- **Normalisation COG des communes** : `preparer_passage_communes.py` télécharge le Code Officiel Géographique (INSEE — `v_commune` + `v_mvt_commune`) et remappe les codes communes périmés (fusions, communes nouvelles) vers la commune courante, avec nom autoritaire — sinon les ventes DVF sous d'anciens codes seraient sans contour ni adresse. La fusion / le renommage est **tracé au détail d'une vente** (commune d'origine + date de l'événement). Vérifié sur les départements 17 / 33 / 47 : 0 code commune orphelin, 0 nom divergent du contour.
+- **Finitions UI** : fermeture des menus « Fond de carte » / « Grille cadastre » après sélection (plus besoin de cliquer sur la carte), loupe légère au survol d'un résultat avec illumination du point correspondant sur la carte, panneau détail en finition « verre », emprise cliquable (chip + détails).
+- Hygiène : `.gitignore` couvre les fichiers macOS ; pipeline de téléchargement et pipeline de transformation documentées comme couches indépendantes.
+
+## v1.0.0 - 2026-06-10
+
+- **Exploration filtrable par prix réel** : le slider de prix à deux poignées s'aligne sur les min/max DVF réels du cohort courant (emprise, rayon/zone, types et historique), sans borne artificielle `0 → 1 M€+`; les bornes sont calculées avant filtre prix afin que la plage affichée reste celle du marché observé.
+- **Historique en plage temporelle** : remplacement du slider historique simple par un double slider `0 – 5 ans`; Estimation et Exploration acceptent désormais `history_min_years` / `history_max_years` et filtrent les ventes par fenêtre d'âge réelle.
+- **Ergonomie Exploration** : le filtre prix remonte sous l'historique, au-dessus du choix d'emprise; les filtres prix se réinitialisent quand l'adresse, l'emprise, le rayon, les types ou l'historique changent pour éviter de réutiliser une ancienne plage sur une nouvelle zone.
+- **Finition UI** : correction de l'alignement visuel des doubles sliders afin que les poignées atteignent les extrémités de piste attendues.
+
+## v0.9.0 - 2026-06-10
+
+- **Résolution bâtiment par BDNB** ([ADR 0006](docs/adr/0006-bdnb-parcelle-pour-resolution-batiment.md)) : extraction BDNB Open départementale dans `preparer_donnees.py`, et `construire_comparables.py` résout `batiment_groupe_id` + attributs (usage, logements, hauteur, niveaux, emprise, année…) quand une parcelle porte un groupe BDNB unique, sans relation RNB↔BDNB inventée. Nouvelle étape `pipeline/reduire_referentiels.py` qui réduit RNB/BAN/BDNB/Cadastre au graphe DVF, câblée dans `lancer_pipeline.py`.
+- **Emprises réelles « code postal » et « commune »** : nouveau référentiel national des contours codes postaux (`telechargement/preparer_codes_postaux.py`, GeoJSON → GeoParquet) servi par l'endpoint `/api/codepostal` — les grandes villes sont découpées par CP, plus de tracé débordant sur la commune entière. La commune utilise les contours administratifs (geo.api.gouv.fr). Garde anti-réponse-périmée par jeton de séquence.
+- **Bâti cadastral dans le détail** : acquisition de la couche bâtiments du cadastre (`preparer_cadastre.py`), endpoint `/api/batiments` qui rattache les empreintes à la parcelle par intersection spatiale (préfiltre bbox **élargi d'une marge** pour ne pas rater un bâtiment qui déborde la parcelle, puis `ST_Intersects`) et renvoie type (en dur / léger) + surface au sol. La fiche détail dessine la parcelle et ses bâtiments distinctement (maison / annexes / garage) et les liste ; survoler une box illumine l'empreinte correspondante sur la carte. La date cadastrale (relevé) n'est plus affichée comme une année de construction — elle passe en infobulle.
+- **Définitions au survol** : un « ? » à côté de chaque label de la fiche détail explique la donnée (surface habitable DVF vs emprise au sol cadastre vs emprise BDNB, année de construction vs relevé cadastral, etc.).
+- **Focus parcelle à la sélection** : sélectionner un comparable affiche automatiquement la grille cadastre de sa parcelle seule et masque les autres ; fermer le détail rétablit l'overlay du menu « Grille cadastre » (renommé depuis « Cadastre »).
+- **Panneaux modernisés** : ouverture des panneaux détail / vue rue en glissé + fondu, blocs repliables animés (`grid-template-rows`), finition « verre » (flou d'arrière-plan, coins arrondis, ombres douces), le tout respectant `prefers-reduced-motion`.
+- **Tri des comparables** : option « Similarité » ajoutée et tri par similarité décroissante par défaut.
+- **Carte** : double-clic sur un comparable = zoom rapproché + ouverture du détail (le double-clic ailleurs garde le recentrage + géocodage inverse). Au zoom rapproché, les points/halo s'effacent (le point devient un anneau) pour ne plus masquer le bâtiment et le cadastre.
+- **UI carte** : menus « Fond de carte » et « Grille cadastre » au survol (groupés par fournisseur, accessibles au clavier via `:focus-within`) en remplacement des `<select>` ; case « Afficher la zone » pour masquer/afficher l'emprise ; type Appartement/Maison pris en compte immédiatement.
+- **Libellés d'emprise** : le message de fin et la fourchette observée reflètent l'emprise choisie (rayon, code postal, `Commune (code INSEE)`, section) au lieu du seul département.
+- Hygiène : en-tête `Cache-Control: no-store` (limité au service local), endpoints servis par les référentiels `*_service` quand ils existent.
+
+## v0.8.0 - 2026-06-10
+
+- Optimisation des endpoints Estimation et Exploration : les emprises (rayon, code postal, commune, section cadastrale) sont poussées dans DuckDB avant matérialisation Python, avec préfiltre bbox puis distance exacte pour les rayons.
+- Exploration marché accélérée : filtres catégorie/bornes €/m² appliqués en SQL, DVF scoped une seule fois, et mutations DVF mono-ligne matérialisées en parquet temporaire réutilisable par département.
+- Robustesse API/UI : validation stricte du département pour `/api/parcelles`, erreurs serveur JSON au lieu de connexions coupées, gestion frontend des erreurs réseau/serveur et garde contre les réponses obsolètes.
+- Hygiène du POC web : connexions DuckDB fermées explicitement, chargement spatial mutualisé, dérivation département centralisée, chaînes serveur échappées dans les rendus HTML, et détails Exploration sans champs Similarité/Confiance absents.
+- Documentation des conventions de service web : les futures fonctions interactives doivent filtrer tôt côté DuckDB et matérialiser les scans coûteux réutilisables.
+
 ## v0.7.0 - 2026-06-10
 
 - Acquisition cadastre (Etalab) pour les départements 33 et 47 : nouveau module `telechargement/preparer_cadastre.py` qui télécharge parcelles + sections (GeoJSON.gz) et les convertit en **GeoParquet** (géométrie WKB, centroïde `clon`/`clat` précalculé) via DuckDB spatial. GeoParquet non publié par Etalab → conversion maison.
