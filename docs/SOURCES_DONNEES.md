@@ -74,14 +74,15 @@ Suivi d'exploration des sources publiques candidates au **socle immobilier carto
 - **Statut** : ✅ **Catalogué & mesuré (33 + 47)** — parcelles + sections ingérées en GeoParquet, schéma et clés confirmés (cf. mesures §10).
 - **Définition** : découpage parcellaire du territoire au format géo simplifié (vs PCI Vecteur EDIGÉO brut). Fournit les **géométries de parcelles et sections** et la clé de rattachement `id_parcelle`.
 
-**Fichiers / accès** : hébergés sur `cadastre.data.gouv.fr/data/etalab-cadastre/latest/geojson/departements/{dept}/` (pas de ressource tabulaire data.gouv directe ; GeoParquet **non publié** → on convertit le GeoJSON nous-mêmes). Acquisition : [`telechargement/preparer_cadastre.py`](../telechargement/preparer_cadastre.py) (idempotent, GeoJSON.gz → GeoParquet WKB via DuckDB spatial, couches `sections` + `parcelles` + `batiments`). Tailles 33 : parcelles 235 Mo gz / sections 9,6 Mo gz / bâtiments 82 Mo gz (→ `cadastre_batiments_33.parquet` 177 Mo, 1,43 M empreintes).
+**Fichiers / accès** : hébergés sur `cadastre.data.gouv.fr/data/etalab-cadastre/latest/geojson/departements/{dept}/` (pas de ressource tabulaire data.gouv directe ; GeoParquet **non publié** → on convertit le GeoJSON nous-mêmes). Acquisition : [`telechargement/preparer_cadastre.py`](../telechargement/preparer_cadastre.py) (idempotent, GeoJSON.gz → GeoParquet WKB via DuckDB spatial, couches `sections` + `parcelles` + `batiments` + `lieux_dits`). Tailles 33 : parcelles 235 Mo gz / sections 9,6 Mo gz / bâtiments 82 Mo gz (→ `cadastre_batiments_33.parquet` 177 Mo, 1,43 M empreintes) / lieux-dits 30 Mo gz.
 
 **Champs réels confirmés (DuckDB spatial sur 33/47)** :
 - Couche **parcelles** : `id` (= commune + préfixe + section + numéro, ex. `33063000KE0083`), `commune`, `prefixe`, `section`, `numero`, `contenance` (surface terrain m², dispo à **99,97%**), `arpente`, `created`, `updated`, géométrie. Ajout calculé à l'ingestion : `clon`/`clat` (centroïde, pour filtre bbox rapide).
 - Couche **sections** : `id` (commune + préfixe + section, ex. `33063000KE`), `commune`, `code`, géométrie — **emprise d'analyse** (cf. CONTEXT « Section cadastrale »).
 - Couche **bâtiments** : empreintes au sol (MultiPolygon), `type` (`01` bâti en dur / `02` bâti léger : garage, abri…), `nom` (souvent nul), `commune`, `created`/`updated`, `clon`/`clat`. **Pas d'id parcelle** → rattachement par intersection spatiale (empreinte ∩ parcelle). Sert à dessiner le détail intérieur d'une parcelle (maison + annexes) là où RNB n'expose qu'un point et BDNB que des attributs.
+- Couche **lieux-dits** : **polygones nommés** (`nom`, `commune` INSEE, `created`/`updated`, `clon`/`clat`). Seule maille **nommée infra-communale** (les lieux-dits BAN n'ont pas de contour, cf. §1.5). Rattachement d'un bien à sa localité par **point-dans-polygone** (`resolve_lieu_dit`, endpoint `/api/lieudit`, préfiltre bbox `clon`/`clat` puis `ST_Contains`, ~60 ms) — affiché au détail d'une vente.
 
-**Superflu / à différer** : couches `subdivisions_fiscales`, `lieux_dits`, `prefixes_sections`, `feuilles` — peu utiles à l'estimation.
+**Superflu / à différer** : couches `subdivisions_fiscales`, `prefixes_sections`, `feuilles` — peu utiles à l'estimation.
 
 **Clés de jointure (confirmées)** : `parcelles.id` ↔ DVF (`id_parcelle`) [**97,89%** des parcelles DVF logement présentes] ↔ RNB (`plots[].id`) · `sections.id` ↔ `substr(id_parcelle, 1, 10)` [**99,84%**]. Format GeoParquet (WKB) = idéal pour DuckDB spatial (`ST_GeomFromWKB`, `ST_Contains`).
 
@@ -102,6 +103,8 @@ présentes dans DVF. Les sections et bâtiments restent complets : les bâtiment
    - CP couvrant des **communes entières** → **union** des polygones communaux (exact, sans chevauchement) ;
    - **commune découpée** en plusieurs CP (grandes villes) → **partition adaptative par plus proche adresse BAN**, fusionnée par CP et **découpée à la commune**. Astuce : une coordonnée → un seul CP (le plus fréquent) pour éviter les chevauchements.
    - Le flag **`is_split`** marque les CP issus de cette partition intra-communale (vs union de communes).
+
+> **⚠ Leçon (piège des CP transfrontaliers)** : un code postal peut **chevaucher deux départements** (ex. **33220** : Sainte-Foy-la-Grande en Gironde **+** Port-Sainte-Foy en Dordogne). Le build étant **par département**, chaque dept produit alors **une part** du contour → plusieurs lignes pour le même `codePostal`. Un consommateur qui fait `WHERE codePostal = ? LIMIT 1` récupère une **moitié arbitraire** → des biens « disparaissent » (symptôme observé : la commune renvoyait 138 ventes, le CP « unique » correspondant 0). **Correctif** : agréger par `codePostal` à l'écriture finale (`ST_Union_Agg` des géométries de tous les départements), pour qu'un CP n'ait **qu'un seul contour complet**. Vaut pour tout CP à cheval (33/24, 33/47…). Plus généralement : tout artefact construit par dept mais **clé non bornée au dept** (le code postal n'encode pas le département de ses communes) doit être **dédupliqué/agrégé** au niveau national.
 
 **Champs** : `contours_communes_{dept}` = `insee` (↔ DVF `code_commune` / citycode BAN), `nom`, géométrie WKB. `contours_codes_postaux` = `codePostal` (↔ DVF `code_postal`), `nb_points`, `is_split`, géométrie WKB.
 

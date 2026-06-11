@@ -301,9 +301,22 @@ def main() -> None:
         n_cp = con.execute("SELECT count(*) FROM final").fetchone()[0]
         print(f"  dept {dept} : {n_cp} codes postaux cumulés ({n_vor} cellules en communes découpées)")
     dest = INTERIM / "contours_codes_postaux.parquet"
+    # Un code postal à cheval sur plusieurs départements traités produit une ligne par
+    # département dans `final` (chacune ne couvrant que sa part). On agrège ici par
+    # codePostal — union des géométries — pour qu'un CP n'ait qu'UN contour complet,
+    # sinon un consommateur (LIMIT 1) prendrait une part arbitraire (ex. 33220 Sainte-Foy
+    # côté Gironde vs Dordogne).
     con.execute(
         f"""
-        COPY (SELECT codePostal, nb_points, is_split, ST_AsWKB(geom) AS geom_wkb FROM final ORDER BY codePostal)
+        COPY (
+            SELECT codePostal,
+                   sum(nb_points) AS nb_points,
+                   bool_or(is_split) AS is_split,
+                   ST_AsWKB(ST_MakeValid(ST_Union_Agg(geom))) AS geom_wkb
+            FROM final
+            GROUP BY codePostal
+            ORDER BY codePostal
+        )
         TO '{dest.as_posix()}' (FORMAT PARQUET)
         """
     )

@@ -27,10 +27,11 @@ qui n'est pas rattachable de façon défendable est soit localisé à la **parce
 ## Architecture
 
 ```
-telechargement/      preparer_donnees.py        # acquisition + parsing brut -> interim (par dept) ; normalise les codes communes périmés
+telechargement/      _telechargement.py         # download HTTP robuste partagé (écriture atomique + retry exp-backoff)
+                     preparer_donnees.py        # acquisition COMPLÈTE d'un dept (DVF/RNB/BDNB/BAN/communes/COG/cadastre) ; normalise les codes communes périmés ; vérifie la complétude (arrêt net si manque)
                      preparer_passage_communes.py # COG INSEE -> passage codes périmés + noms courants (national)
                      preparer_communes.py       # contours communes IGN (geo.api) -> GeoParquet (par dept)
-                     preparer_cadastre.py       # cadastre Etalab (parcelles/sections/bâtiments) -> GeoParquet (par dept)
+                     preparer_cadastre.py       # cadastre Etalab (sections/parcelles/bâtiments/lieux-dits) -> GeoParquet (par dept) — appelé par preparer_donnees
                      preparer_codes_postaux.py  # contours codes postaux hybrides (union communes + partition BAN) -> GeoParquet (par dept présent)
 pipeline/
   commun.py          # chemins, points RNB, table mutations (partagés)
@@ -107,7 +108,7 @@ flowchart TD
 
 | # | Module | Entrée | Sortie | Rôle |
 | --- | --- | --- | --- | --- |
-| 1 | `telechargement.preparer_donnees` | URLs opendata + ZIP BDNB dept | `dvf_`, `rnb_plots_`, `rnb_adr_`, `bdnb_batiments_`, `contours_communes_`, `passage_communes`, `communes_actuelles` (parquet) + bruts | télécharge DVF (2021-25), parse le JSON RNB (`plots`, `addresses`), extrait la BDNB départementale par parcelle, récupère la BAN, fige les contours communes IGN (geo.api). **Normalise les codes communes périmés** (fusions) et le nom vers le COG courant via `preparer_passage_communes` — sinon les ventes sous d'anciens codes seraient sans contour ni adresse (cf. SOURCES_DONNEES §1.5) |
+| 1 | `telechargement.preparer_donnees` | URLs opendata + ZIP BDNB dept | `dvf_`, `rnb_plots_`, `rnb_adr_`, `bdnb_batiments_`, `contours_communes_`, `cadastre_{sections,parcelles,batiments,lieux_dits}_`, `passage_communes`, `communes_actuelles`, `communes_modif` (parquet) + bruts | **acquisition complète** : DVF (2021-25), JSON RNB (`plots`, `addresses`), BDNB départementale par parcelle, BAN, contours communes IGN (geo.api), **cadastre Etalab** (sections/parcelles/bâtiments/lieux-dits). **Normalise les codes communes périmés** (fusions) + nom vers le COG courant (cf. SOURCES_DONNEES §1.5). Termine par `_verifier` qui **garantit la présence de tous les artefacts** (arrêt net sinon) — la construction ne démarre jamais sur une acquisition incomplète |
 | — | `pipeline.qualite_jointure` *(diagnostic)* | interim | (stdout) | mesure le % de match DVF→RNB par parcelle et décompose les non-matchs |
 | 2 | `pipeline.recuperation_non_match` | interim + BAN | `recup_liens_` | récupère les ~2–5% de ventes dont la parcelle est absente du RNB |
 | 3 | `pipeline.geocodage_residuel` | `recup_liens_` + DVF + API BAN | `recup_liens_final_`, `pertes_` | géocode le résiduel (score ≥ 0,95) ; le reste = perdu |
