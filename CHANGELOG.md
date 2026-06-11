@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.1.0 - 2026-06-11
+
+- **Emprises géographiques sur contours IGN locaux** : contours communes figés depuis geo.api (`preparer_communes.py`) et contours codes postaux hybrides (union de communes + partition intra-communale par plus proche adresse BAN) remplaçant le dataset « contours calculés » 2021 débordant. Filtrage **géométrique côté serveur** (`ST_Within` sur le polygone de l'emprise) : stats, compteur et carte alignés sur l'emprise réellement tracée ; le front dessine l'emprise depuis le serveur (`/api/commune`, `/api/codepostal`), plus de dépendance runtime à geo.api ni de rognage point-in-polygon côté client.
+- **Normalisation COG des communes** : `preparer_passage_communes.py` télécharge le Code Officiel Géographique (INSEE — `v_commune` + `v_mvt_commune`) et remappe les codes communes périmés (fusions, communes nouvelles) vers la commune courante, avec nom autoritaire — sinon les ventes DVF sous d'anciens codes seraient sans contour ni adresse. La fusion / le renommage est **tracé au détail d'une vente** (commune d'origine + date de l'événement). Vérifié sur les départements 17 / 33 / 47 : 0 code commune orphelin, 0 nom divergent du contour.
+- **Finitions UI** : fermeture des menus « Fond de carte » / « Grille cadastre » après sélection (plus besoin de cliquer sur la carte), loupe légère au survol d'un résultat avec illumination du point correspondant sur la carte, panneau détail en finition « verre », emprise cliquable (chip + détails).
+- Hygiène : `.gitignore` couvre les fichiers macOS ; pipeline de téléchargement et pipeline de transformation documentées comme couches indépendantes.
+
 ## v1.0.0 - 2026-06-10
 
 - **Exploration filtrable par prix réel** : le slider de prix à deux poignées s'aligne sur les min/max DVF réels du cohort courant (emprise, rayon/zone, types et historique), sans borne artificielle `0 → 1 M€+`; les bornes sont calculées avant filtre prix afin que la plage affichée reste celle du marché observé.
