@@ -10,7 +10,6 @@ import math
 import mimetypes
 import re
 import tempfile
-import urllib.request
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,9 +26,9 @@ HOST = "127.0.0.1"
 PORT = 8765
 MIN_COMPARABLES = 5
 DEFAULT_MAX_COMPARABLES = 200
-MAX_COMPARABLES_LIMIT = 1000
 # Plafond de sécurité des points carte (payload allégé) : en pratique = « tous les points ».
 POINTS_HARD_CAP = 20000
+MAX_COMPARABLES_LIMIT = POINTS_HARD_CAP
 PARCELLE_IDS_CAP = 2000
 PARCELLE_BBOX_CAP = 4000
 DEFAULT_RADIUS_M = 1500
@@ -38,7 +37,6 @@ MAX_RADIUS_M = 20_000
 DEFAULT_HISTORY_YEARS = 5
 MIN_HISTORY_YEARS = 0
 MAX_HISTORY_YEARS = 5
-PANORAMAX_ENDPOINT = "https://panoramax.openstreetmap.fr"
 SPATIAL_INSTALLED = False
 MONO_CACHE: dict[str, Path] = {}
 MONO_CACHE_LOCK = Lock()
@@ -306,6 +304,40 @@ def price_bounds(rows: list[dict]) -> dict | None:
     }
 
 
+def surface_step(min_surface: float, max_surface: float) -> int:
+    span = max(0, max_surface - min_surface)
+    if span <= 200:
+        return 1
+    if span <= 1000:
+        return 10
+    return 50
+
+
+def surface_bounds(rows: list[dict]) -> dict | None:
+    surfaces = [float(row["surface"]) for row in rows if row.get("surface") is not None]
+    if not surfaces:
+        return None
+    raw_min = min(surfaces)
+    raw_max = max(surfaces)
+    step = surface_step(raw_min, raw_max)
+    return {
+        "min": math.floor(raw_min / step) * step,
+        "max": math.ceil(raw_max / step) * step,
+        "step": step,
+    }
+
+
+def rooms_bounds(rows: list[dict]) -> dict | None:
+    rooms = [int(row["pieces"]) for row in rows if row.get("pieces") is not None]
+    if not rooms:
+        return None
+    return {
+        "min": min(rooms),
+        "max": max(rooms),
+        "step": 1,
+    }
+
+
 def similarity_score(row: dict, target_surface: float, target_rooms: int | None, max_distance: float) -> float:
     surface_gap = abs(row["surface"] - target_surface) / target_surface if target_surface else 1
     surface_score = max(0, 1 - surface_gap / 0.30)
@@ -314,6 +346,22 @@ def similarity_score(row: dict, target_surface: float, target_rooms: int | None,
         rooms_score = max(0, 1 - abs(row["pieces"] - target_rooms) / 3)
     distance_score = max(0, 1 - row["distance_m"] / max(max_distance, 1))
     return round((0.50 * surface_score + 0.25 * rooms_score + 0.25 * distance_score) * 100, 1)
+
+
+def sorted_for_display(rows: list[dict], sort_key: str | None, sort_dir: str) -> list[dict]:
+    key = sort_key if sort_key in {"similarity", "price", "date", "surface"} else None
+    by_distance = sorted(rows, key=lambda row: (row.get("distance_m") or 0, row.get("date_mutation") or ""))
+    if not key:
+        return by_distance
+    reverse = sort_dir == "desc"
+    value_key = {
+        "similarity": "sim",
+        "price": "prix",
+        "date": "date_mutation",
+        "surface": "surface",
+    }[key]
+    missing = float("-inf") if reverse else float("inf")
+    return sorted(by_distance, key=lambda row: row.get(value_key) if row.get(value_key) is not None else missing, reverse=reverse)
 
 
 def resolve_section(dept: str, lon: float, lat: float) -> dict | None:
@@ -659,6 +707,8 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
     radius_m = min(MAX_RADIUS_M, max(MIN_RADIUS_M, radius_m))
     max_comparables = as_int(params, "max_comparables", DEFAULT_MAX_COMPARABLES) or DEFAULT_MAX_COMPARABLES
     max_comparables = min(MAX_COMPARABLES_LIMIT, max(MIN_COMPARABLES, max_comparables))
+    sort_key = params.get("sort_key", [""])[0] or None
+    sort_dir = params.get("sort_dir", ["desc"])[0]
     if scope_mode not in {"radius", "cadastre", "postcode", "city"}:
         scope_mode = "radius"
 
@@ -837,7 +887,7 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
         r["uid"] = uid
         r["sim"] = similarity_score(r, surface, rooms, max_distance)
     points = cohort_sorted[:POINTS_HARD_CAP]      # carte : tous les points (allégés)
-    detailed = cohort_sorted[:max_comparables]    # liste : plafonnée, détaillée
+    detailed = sorted_for_display(cohort_sorted, sort_key, sort_dir)[:max_comparables]    # liste : tri global puis limite
 
     return {
         "target": {
@@ -952,8 +1002,14 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     radius_m = min(MAX_RADIUS_M, max(MIN_RADIUS_M, radius_m))
     max_biens = as_int(params, "max_comparables", DEFAULT_MAX_COMPARABLES) or DEFAULT_MAX_COMPARABLES
     max_biens = min(MAX_COMPARABLES_LIMIT, max(MIN_COMPARABLES, max_biens))
-    requested = [c for c in (params.get("types", [""])[0] or "").split(",") if c in MARKET_BOUNDS]
-    wanted = set(requested) if requested else set(MARKET_CATEGORIES)
+    sort_key = params.get("sort_key", [""])[0] or None
+    sort_dir = params.get("sort_dir", ["desc"])[0]
+    selected_type = params.get("type", [""])[0] or None
+    if selected_type not in MARKET_BOUNDS:
+        requested = [c for c in (params.get("types", [""])[0] or "").split(",") if c in MARKET_BOUNDS]
+        selected_type = requested[0] if len(requested) == 1 else None
+    wanted = {selected_type} if selected_type else set(MARKET_CATEGORIES)
+    pieces_filter_enabled = selected_type in {"Maison", "Appartement"}
 
     if scope_mode not in {"radius", "cadastre", "postcode", "city"}:
         scope_mode = "radius"
@@ -1044,6 +1100,19 @@ def market_rows(params: dict[str, list[str]]) -> dict:
         parcelle_expr="c.id_parcelle",
     )
     autres_filters = ["d.type_local IS NULL OR d.type_local IN ('Dépendance', 'Local industriel. commercial ou assimilé')"]
+    if selected_type in {"Maison", "Appartement"}:
+        logement_filters.append("c.type_local = ?")
+        logement_args.append(selected_type)
+        autres_filters.append("FALSE")
+    elif selected_type == "Terrain":
+        logement_filters.append("FALSE")
+        autres_filters.append("d.type_local IS NULL")
+    elif selected_type == "Dépendance":
+        logement_filters.append("FALSE")
+        autres_filters.append("d.type_local = 'Dépendance'")
+    elif selected_type == "Local":
+        logement_filters.append("FALSE")
+        autres_filters.append("d.type_local = 'Local industriel. commercial ou assimilé'")
     bounds_filters = []
     bounds_args: list[object] = []
     for category in MARKET_CATEGORIES:
@@ -1057,6 +1126,10 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     # Filtre prix total (€) optionnel — appliqué après calcul des bornes réelles du cohort.
     prix_min = as_float(params, "prix_min")
     prix_max = as_float(params, "prix_max")
+    surface_min = as_float(params, "surface_min")
+    surface_max = as_float(params, "surface_max")
+    pieces_min = as_int(params, "pieces_min") if pieces_filter_enabled else None
+    pieces_max = as_int(params, "pieces_max") if pieces_filter_enabled else None
     if scope_mode == "radius":
         final_filters.append("distance_m <= ?")
         final_args.append(radius_m)
@@ -1179,6 +1252,8 @@ def market_rows(params: dict[str, list[str]]) -> dict:
 
     base_cohort = filter_history_window(all_rows, history_min_years, history_max_years, reference_date)
     bounds = price_bounds(base_cohort)
+    surf_bounds = surface_bounds(base_cohort)
+    piece_bounds = rooms_bounds(base_cohort) if pieces_filter_enabled else None
     if not base_cohort:
         return {
             "error": f"Aucune vente dans l'emprise « {scope} » sur {history_window_label(history_min_years, history_max_years)} pour les types choisis.",
@@ -1187,21 +1262,29 @@ def market_rows(params: dict[str, list[str]]) -> dict:
                 "scope": scope,
                 "history": history_window_label(history_min_years, history_max_years),
                 "price_bounds": bounds,
+                "surface_bounds": surf_bounds,
+                "pieces_bounds": piece_bounds,
             },
         }
     cohort = [
         r for r in base_cohort
         if (prix_min is None or r["prix"] >= prix_min)
         and (prix_max is None or r["prix"] <= prix_max)
+        and (surface_min is None or r["surface"] >= surface_min)
+        and (surface_max is None or r["surface"] <= surface_max)
+        and (pieces_min is None or r.get("pieces") is not None and r["pieces"] >= pieces_min)
+        and (pieces_max is None or r.get("pieces") is not None and r["pieces"] <= pieces_max)
     ]
     if not cohort:
         return {
-            "error": f"Aucune vente dans l'emprise « {scope} » sur {history_window_label(history_min_years, history_max_years)} pour cette plage de prix.",
+            "error": f"Aucune vente dans l'emprise « {scope} » sur {history_window_label(history_min_years, history_max_years)} pour ces filtres.",
             "summary": {
                 "count": 0,
                 "scope": scope,
                 "history": history_window_label(history_min_years, history_max_years),
                 "price_bounds": bounds,
+                "surface_bounds": surf_bounds,
+                "pieces_bounds": piece_bounds,
             },
         }
 
@@ -1226,13 +1309,14 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     for uid, r in enumerate(cohort):
         r["uid"] = uid
     points = cohort[:POINTS_HARD_CAP]      # carte : tous les points (allégés)
-    detailed = cohort[:max_biens]          # liste : plafonnée, détaillée
+    detailed = sorted_for_display(cohort, sort_key, sort_dir)[:max_biens]          # liste : tri global puis limite
 
     return {
         "target": {
             "dept": dept, "lon": lon, "lat": lat,
             "postcode": postcode, "citycode": citycode,
             "scope_mode": scope_mode, "radius_m": radius_m,
+            "type": selected_type,
             "history_min_years": history_min_years, "history_max_years": history_max_years,
             "section": section,
         },
@@ -1244,6 +1328,8 @@ def market_rows(params: dict[str, list[str]]) -> dict:
             "list": len(detailed),
             "types": types_summary,
             "price_bounds": bounds,
+            "surface_bounds": surf_bounds,
+            "pieces_bounds": piece_bounds,
         },
         "points": [
             {
@@ -1307,23 +1393,6 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     }
 
 
-def panoramax_rows(params: dict[str, list[str]]) -> dict:
-    lon = as_float(params, "lon")
-    lat = as_float(params, "lat")
-    if lon is None or lat is None:
-        return {"features": []}
-    radius_m = 60
-    d_lat = radius_m / 111_320
-    d_lon = radius_m / (111_320 * math.cos(math.radians(lat)))
-    bbox = f"{lon - d_lon},{lat - d_lat},{lon + d_lon},{lat + d_lat}"
-    url = f"{PANORAMAX_ENDPOINT}/api/search?bbox={bbox}&limit=12"
-    try:
-        with urllib.request.urlopen(url, timeout=8) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except Exception:
-        return {"features": []}
-
-
 class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:
         parsed = urlparse(self.path)
@@ -1348,7 +1417,6 @@ class Handler(BaseHTTPRequestHandler):
             "/api/market": market_rows,
             "/api/parcelles": parcelles_rows,
             "/api/batiments": batiments_rows,
-            "/api/panoramax": panoramax_rows,
             "/api/codepostal": postcode_rows,
             "/api/commune": commune_rows,
             "/api/lieudit": lieudit_rows,

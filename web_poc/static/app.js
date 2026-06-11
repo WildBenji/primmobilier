@@ -2,7 +2,6 @@ const addressInput = document.querySelector("#address");
 const suggestions = document.querySelector("#suggestions");
 const statusEl = document.querySelector("#status");
 const resultEl = document.querySelector("#result");
-const targetStreetView = document.querySelector("#targetStreetView");
 const estimateBtn = document.querySelector("#estimate");
 const resetBtn = document.querySelector("#reset");
 const estimationPanel = document.querySelector("#estimationPanel");
@@ -16,9 +15,6 @@ const tableMeta = document.querySelector("#tableMeta");
 const comparableDetail = document.querySelector("#comparableDetail");
 const detailBody = document.querySelector("#detailBody");
 const closeDetail = document.querySelector("#closeDetail");
-const streetViewPanel = document.querySelector("#streetViewPanel");
-const streetViewBody = document.querySelector("#streetViewBody");
-const closeStreetView = document.querySelector("#closeStreetView");
 const tableWrap = document.querySelector(".table-wrap");
 const expandComparables = document.querySelector("#expandComparables");
 const sortMenu = document.querySelector(".sort-menu");
@@ -36,13 +32,27 @@ const zoneToggle = document.querySelector("#zoneToggle");
 const modeButtons = document.querySelectorAll(".mode-control button");
 const estimationFields = document.querySelector("#estimationFields");
 const explorationFilters = document.querySelector("#explorationFilters");
-const typeChips = document.querySelectorAll("#explorationFilters button");
+const marketTypeMenu = document.querySelector("#marketTypeMenu");
+const marketTypeLabel = document.querySelector("#marketTypeLabel");
+const marketTypeButtons = document.querySelectorAll("[data-market-type]");
 const priceControl = document.querySelector("#priceControl");
 const priceMinInput = document.querySelector("#priceMin");
 const priceMaxInput = document.querySelector("#priceMax");
 const priceLabel = document.querySelector("#priceLabel");
 const priceScaleMin = document.querySelector("#priceScaleMin");
 const priceScaleMax = document.querySelector("#priceScaleMax");
+const surfaceControl = document.querySelector("#surfaceControl");
+const surfaceMinInput = document.querySelector("#surfaceMin");
+const surfaceMaxInput = document.querySelector("#surfaceMax");
+const surfaceLabel = document.querySelector("#surfaceLabel");
+const surfaceScaleMin = document.querySelector("#surfaceScaleMin");
+const surfaceScaleMax = document.querySelector("#surfaceScaleMax");
+const roomsControl = document.querySelector("#roomsControl");
+const roomsMinInput = document.querySelector("#roomsMin");
+const roomsMaxInput = document.querySelector("#roomsMax");
+const roomsLabel = document.querySelector("#roomsLabel");
+const roomsScaleMin = document.querySelector("#roomsScaleMin");
+const roomsScaleMax = document.querySelector("#roomsScaleMax");
 const marketResult = document.querySelector("#marketResult");
 const marketStats = document.querySelector("#marketStats");
 const estimationStats = document.querySelector("#estimationStats");
@@ -56,6 +66,7 @@ const marketScopeDetails = document.querySelector("#marketScopeDetails");
 const addressLabel = document.querySelector("#addressLabel");
 const maxComparablesInput = document.querySelector("#maxComparables");
 const limitControl = document.querySelector("#limitControl");
+const MIN_COMPARABLES = 5;
 const radiusSteps = [100, 150, 200, 300, 400, 500, 1000, 1500, 2000, 3000, 4000, 5000, 10000, 20000];
 const MARKET_CATEGORIES = ["Maison", "Appartement", "Terrain", "Dépendance", "Local"];
 const CATEGORY_COLORS = {
@@ -65,13 +76,11 @@ const CATEGORY_COLORS = {
   "Dépendance": "#9a5b9a",
   Local: "#c4472f"
 };
-const PANORAMAX_ENDPOINT = "https://panoramax.openstreetmap.fr";
-const streetViewCache = new Map();
-
 let selectedAddress = null;
 let targetMarker = null;
 let currentComparables = [];
 let currentComparablesTotal = null;
+let selectedMarketType = "";
 let searchTimer = null;
 let radiusTimer = null;
 let historyTimer = null;
@@ -83,21 +92,30 @@ let selectedHistoryMinYears = 0;
 let selectedHistoryMaxYears = 5;
 let selectedComparableUid = null;
 let lastSelectedUid = null;
-let detailReturnScrollTop = null;
 const viewedComparableUids = new Set();
 let selectedAddressSeq = 0;
 let comparableSortKey = "similarity";
 let comparableSortDirection = "desc";
 let comparableSortTouched = false;
 let selectedMode = "estimation";
-let activeCategories = new Set(MARKET_CATEGORIES);
 let runSeq = 0;
 const DEFAULT_PRICE_BOUNDS = { min: 0, max: 1000000, step: 10000 };
+const DEFAULT_SURFACE_BOUNDS = { min: 0, max: 300, step: 1 };
+const DEFAULT_ROOMS_BOUNDS = { min: 1, max: 8, step: 1 };
 let priceBounds = { ...DEFAULT_PRICE_BOUNDS };
+let surfaceBounds = { ...DEFAULT_SURFACE_BOUNDS };
+let roomsBounds = { ...DEFAULT_ROOMS_BOUNDS };
 let selectedPriceMin = priceBounds.min;
 let selectedPriceMax = priceBounds.max;
+let selectedSurfaceMin = surfaceBounds.min;
+let selectedSurfaceMax = surfaceBounds.max;
+let selectedRoomsMin = roomsBounds.min;
+let selectedRoomsMax = roomsBounds.max;
 let priceFilterTouched = false;
-let priceTimer = null;
+let surfaceFilterTouched = false;
+let roomsFilterTouched = false;
+let marketFilterTimer = null;
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 const map = new maplibregl.Map({
   container: "map",
@@ -595,13 +613,8 @@ function makeDraggable(positionedEls, handle, sourceEl) {
   });
 }
 
-const mapControls = appEl.querySelector(".map-controls");
-makeDraggable([streetViewPanel], streetViewPanel.querySelector(".table-head"), streetViewPanel);
-
 addressInput.addEventListener("input", () => {
   selectedAddress = null;
-  targetStreetView.hidden = true;
-  streetViewPanel.hidden = true;
   clearTimeout(searchTimer);
   const q = addressInput.value.trim();
   if (q.length < 3) {
@@ -638,24 +651,28 @@ for (const button of modeButtons) {
   });
 }
 
-for (const chip of typeChips) {
-  chip.addEventListener("click", () => {
-    const cat = chip.dataset.cat;
-    if (cat === "all") {
-      activeCategories = new Set(MARKET_CATEGORIES);
-    } else if (activeCategories.size === MARKET_CATEGORIES.length) {
-      activeCategories = new Set([cat]);
-    } else if (activeCategories.has(cat)) {
-      activeCategories.delete(cat);
-      if (activeCategories.size === 0) activeCategories = new Set(MARKET_CATEGORIES);
-    } else {
-      activeCategories.add(cat);
+function onMarketTypeChange() {
+  resetMarketFiltersForScope();
+  syncMarketFilterAvailability();
+  if (selectedAddress) runMarket();
+}
+
+for (const button of marketTypeButtons) {
+  button.addEventListener("click", () => {
+    selectedMarketType = button.dataset.marketType || "";
+    marketTypeLabel.textContent = button.textContent;
+    for (const other of marketTypeButtons) {
+      other.classList.toggle("active", other === button);
     }
-    updateChips();
-    resetPriceFilterForScope();
-    if (selectedAddress) runMarket();
+    marketTypeMenu.classList.add("just-picked");
+    button.blur();
+    onMarketTypeChange();
   });
 }
+
+marketTypeMenu.addEventListener("mouseleave", () => {
+  marketTypeMenu.classList.remove("just-picked");
+});
 
 for (const button of scopeButtons) {
   button.addEventListener("click", () => {
@@ -667,7 +684,7 @@ for (const button of scopeButtons) {
       other.classList.toggle("active", other === button);
     }
     radiusControl.hidden = selectedScope !== "radius";
-    resetPriceFilterForScope();
+    resetMarketFiltersForScope();
     if (selectedAddress) {
       updateScopeGeometry();
       run();
@@ -688,12 +705,13 @@ radiusSlider.addEventListener("input", () => {
     const [lon, lat] = selectedAddress.geometry.coordinates;
     setRadiusGeojson(lon, lat, selectedRadius);
     map.easeTo({ center: [lon, lat], zoom: zoomForRadius(selectedRadius), duration: 250 });
-    resetPriceFilterForScope();
+    resetMarketFiltersForScope();
     radiusTimer = setTimeout(run, 300);
   }
 });
 
 maxComparablesInput.addEventListener("change", () => {
+  normalizeMaxComparablesInput();
   if (selectedAddress) run();
 });
 
@@ -704,6 +722,21 @@ maxComparablesInput.addEventListener("keydown", (event) => {
   // ça enlève le caret et évite le double-run (glitch) au clic à côté.
   maxComparablesInput.blur();
 });
+
+function normalizeMaxComparablesInput() {
+  const raw = maxComparablesInput.value.trim();
+  if (raw === "") {
+    const fallback = currentComparablesTotal ?? 200;
+    maxComparablesInput.value = String(fallback);
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < MIN_COMPARABLES) {
+    maxComparablesInput.value = String(MIN_COMPARABLES);
+    return MIN_COMPARABLES;
+  }
+  return value;
+}
 
 function onHistoryInput() {
   let lo = Number(historyMinInput.value);
@@ -719,7 +752,7 @@ function onHistoryInput() {
   historyLabel.textContent = formatHistoryRange(selectedHistoryMinYears, selectedHistoryMaxYears);
   clearTimeout(historyTimer);
   if (selectedAddress) {
-    resetPriceFilterForScope();
+    resetMarketFiltersForScope();
     historyTimer = setTimeout(run, 300);
   }
 }
@@ -741,13 +774,54 @@ function onPriceInput() {
   selectedPriceMin = lo;
   selectedPriceMax = hi;
   priceLabel.textContent = priceText();
-  clearTimeout(priceTimer);
-  if (selectedMode === "exploration" && selectedAddress) {
-    priceTimer = setTimeout(runMarket, 300);
-  }
+  scheduleMarketRun();
 }
 priceMinInput.addEventListener("input", onPriceInput);
 priceMaxInput.addEventListener("input", onPriceInput);
+
+function onSurfaceInput() {
+  surfaceFilterTouched = true;
+  let lo = Number(surfaceMinInput.value);
+  let hi = Number(surfaceMaxInput.value);
+  if (lo > hi) {
+    if (document.activeElement === surfaceMinInput) hi = lo;
+    else lo = hi;
+    surfaceMinInput.value = String(lo);
+    surfaceMaxInput.value = String(hi);
+  }
+  selectedSurfaceMin = lo;
+  selectedSurfaceMax = hi;
+  surfaceLabel.textContent = surfaceText();
+  scheduleMarketRun();
+}
+surfaceMinInput.addEventListener("input", onSurfaceInput);
+surfaceMaxInput.addEventListener("input", onSurfaceInput);
+
+function onRoomsInput() {
+  if (roomsMinInput.disabled || roomsMaxInput.disabled) return;
+  roomsFilterTouched = true;
+  let lo = Number(roomsMinInput.value);
+  let hi = Number(roomsMaxInput.value);
+  if (lo > hi) {
+    if (document.activeElement === roomsMinInput) hi = lo;
+    else lo = hi;
+    roomsMinInput.value = String(lo);
+    roomsMaxInput.value = String(hi);
+  }
+  selectedRoomsMin = lo;
+  selectedRoomsMax = hi;
+  roomsLabel.textContent = roomsText();
+  scheduleMarketRun();
+}
+roomsMinInput.addEventListener("input", onRoomsInput);
+roomsMaxInput.addEventListener("input", onRoomsInput);
+
+function scheduleMarketRun() {
+  clearTimeout(marketFilterTimer);
+  if (selectedMode === "exploration" && selectedAddress) {
+    marketFilterTimer = setTimeout(runMarket, 300);
+  }
+}
 
 function resetPriceFilterForScope() {
   priceFilterTouched = false;
@@ -756,6 +830,30 @@ function resetPriceFilterForScope() {
   priceMinInput.value = String(selectedPriceMin);
   priceMaxInput.value = String(selectedPriceMax);
   priceLabel.textContent = priceText();
+}
+
+function resetSurfaceFilterForScope() {
+  surfaceFilterTouched = false;
+  selectedSurfaceMin = surfaceBounds.min;
+  selectedSurfaceMax = surfaceBounds.max;
+  surfaceMinInput.value = String(selectedSurfaceMin);
+  surfaceMaxInput.value = String(selectedSurfaceMax);
+  surfaceLabel.textContent = surfaceText();
+}
+
+function resetRoomsFilterForScope() {
+  roomsFilterTouched = false;
+  selectedRoomsMin = roomsBounds.min;
+  selectedRoomsMax = roomsBounds.max;
+  roomsMinInput.value = String(selectedRoomsMin);
+  roomsMaxInput.value = String(selectedRoomsMax);
+  roomsLabel.textContent = roomsText();
+}
+
+function resetMarketFiltersForScope() {
+  resetPriceFilterForScope();
+  resetSurfaceFilterForScope();
+  resetRoomsFilterForScope();
 }
 
 function applyPriceBounds(bounds) {
@@ -792,11 +890,123 @@ function applyPriceBounds(bounds) {
   priceLabel.textContent = priceText();
 }
 
+function applySurfaceBounds(bounds) {
+  if (!bounds || !Number.isFinite(Number(bounds.min)) || !Number.isFinite(Number(bounds.max))) {
+    return;
+  }
+  const nextMin = Number(bounds.min);
+  const nextMax = Number(bounds.max);
+  const nextStep = Math.max(1, Number(bounds.step) || DEFAULT_SURFACE_BOUNDS.step);
+  surfaceBounds = { min: nextMin, max: nextMax, step: nextStep };
+
+  for (const input of [surfaceMinInput, surfaceMaxInput]) {
+    input.min = String(nextMin);
+    input.max = String(nextMax);
+    input.step = String(nextStep);
+    input.disabled = nextMin === nextMax;
+  }
+
+  if (!surfaceFilterTouched) {
+    selectedSurfaceMin = nextMin;
+    selectedSurfaceMax = nextMax;
+  } else {
+    selectedSurfaceMin = Math.min(Math.max(selectedSurfaceMin, nextMin), nextMax);
+    selectedSurfaceMax = Math.min(Math.max(selectedSurfaceMax, nextMin), nextMax);
+    if (selectedSurfaceMin > selectedSurfaceMax) {
+      selectedSurfaceMin = nextMin;
+      selectedSurfaceMax = nextMax;
+    }
+  }
+  surfaceMinInput.value = String(selectedSurfaceMin);
+  surfaceMaxInput.value = String(selectedSurfaceMax);
+  surfaceScaleMin.textContent = `${int(nextMin)} m²`;
+  surfaceScaleMax.textContent = `${int(nextMax)} m²`;
+  surfaceLabel.textContent = surfaceText();
+}
+
+function applyRoomsBounds(bounds) {
+  const enabled = roomsFilterApplies() && bounds
+    && Number.isFinite(Number(bounds.min))
+    && Number.isFinite(Number(bounds.max));
+  roomsControl.classList.toggle("disabled", !enabled);
+  for (const input of [roomsMinInput, roomsMaxInput]) {
+    input.disabled = !enabled;
+  }
+  if (!enabled) {
+    roomsFilterTouched = false;
+    roomsLabel.textContent = "Non applicable";
+    roomsScaleMin.textContent = "-";
+    roomsScaleMax.textContent = "-";
+    return;
+  }
+
+  const nextMin = Number(bounds.min);
+  const nextMax = Number(bounds.max);
+  const nextStep = Math.max(1, Number(bounds.step) || DEFAULT_ROOMS_BOUNDS.step);
+  roomsBounds = { min: nextMin, max: nextMax, step: nextStep };
+  for (const input of [roomsMinInput, roomsMaxInput]) {
+    input.min = String(nextMin);
+    input.max = String(nextMax);
+    input.step = String(nextStep);
+    input.disabled = false;
+  }
+
+  if (!roomsFilterTouched) {
+    selectedRoomsMin = nextMin;
+    selectedRoomsMax = nextMax;
+  } else {
+    selectedRoomsMin = Math.min(Math.max(selectedRoomsMin, nextMin), nextMax);
+    selectedRoomsMax = Math.min(Math.max(selectedRoomsMax, nextMin), nextMax);
+    if (selectedRoomsMin > selectedRoomsMax) {
+      selectedRoomsMin = nextMin;
+      selectedRoomsMax = nextMax;
+    }
+  }
+  roomsMinInput.value = String(selectedRoomsMin);
+  roomsMaxInput.value = String(selectedRoomsMax);
+  roomsScaleMin.textContent = String(int(nextMin));
+  roomsScaleMax.textContent = String(int(nextMax));
+  roomsLabel.textContent = roomsText();
+}
+
 function priceText() {
   if (selectedPriceMin <= priceBounds.min && selectedPriceMax >= priceBounds.max) return "Tous";
   const lo = formatPrice(selectedPriceMin);
   const hi = formatPrice(selectedPriceMax);
   return `${lo} – ${hi}`;
+}
+
+function surfaceText() {
+  if (selectedSurfaceMin <= surfaceBounds.min && selectedSurfaceMax >= surfaceBounds.max) return "Toutes";
+  return `${int(selectedSurfaceMin)} – ${int(selectedSurfaceMax)} m²`;
+}
+
+function roomsText() {
+  if (!roomsFilterApplies()) return "Non applicable";
+  if (selectedRoomsMin <= roomsBounds.min && selectedRoomsMax >= roomsBounds.max) return "Toutes";
+  return `${int(selectedRoomsMin)} – ${int(selectedRoomsMax)}`;
+}
+
+function roomsFilterApplies() {
+  const type = currentMarketType();
+  return type === "Maison" || type === "Appartement";
+}
+
+function currentMarketType() {
+  return selectedMarketType;
+}
+
+function setMarketType(value) {
+  selectedMarketType = value || "";
+  for (const button of marketTypeButtons) {
+    const active = (button.dataset.marketType || "") === selectedMarketType;
+    button.classList.toggle("active", active);
+    if (active) marketTypeLabel.textContent = button.textContent;
+  }
+}
+
+function syncMarketFilterAvailability() {
+  applyRoomsBounds(roomsFilterApplies() ? roomsBounds : null);
 }
 
 function setResultsAvailable(available) {
@@ -861,7 +1071,11 @@ for (const button of sortButtons) {
     sortMenu.classList.remove("open");
     sortToggle.setAttribute("aria-expanded", "false");
     updateSortControl();
-    renderComparableList();
+    if (selectedAddress) {
+      run();
+    } else {
+      renderComparableList();
+    }
   });
 }
 
@@ -879,10 +1093,6 @@ syncDrawerTabs();
 
 salesChip.addEventListener("click", () => setStatsPanelOpen(salesChip, estimationStats, estimationStats.hidden));
 marketSalesChip.addEventListener("click", () => setStatsPanelOpen(marketSalesChip, marketStats, marketStats.hidden));
-
-closeStreetView.addEventListener("click", () => {
-  streetViewPanel.hidden = true;
-});
 
 map.on("click", "comparables-points", (event) => {
   const feature = event.features && event.features[0];
@@ -976,8 +1186,7 @@ function showSuggestions(features) {
 function selectAddress(feature) {
   selectedAddress = feature;
   selectedAddressSeq += 1;
-  resetPriceFilterForScope();
-  const addressSeq = selectedAddressSeq;
+  resetMarketFiltersForScope();
   addressInput.value = feature.properties.label;
   suggestions.hidden = true;
   const [lon, lat] = feature.geometry.coordinates;
@@ -985,7 +1194,6 @@ function selectAddress(feature) {
   updateScopeGeometry();
   map.flyTo({ center: [lon, lat], zoom: selectedScope === "radius" ? zoomForRadius(selectedRadius) : 13.4 });
   setStatus(`${feature.properties.postcode || ""} ${feature.properties.city || ""}`.trim());
-  loadTargetStreetView(lon, lat, feature.properties.label, addressSeq);
   run();
 }
 
@@ -1005,6 +1213,7 @@ function resetAll() {
   document.querySelector("#surface").value = "65";
   document.querySelector("#rooms").value = "3";
   document.querySelector("#askedPrice").value = "";
+  maxComparablesInput.max = "20000";
   maxComparablesInput.value = "200";
   radiusSlider.value = "7";
   selectedRadius = radiusSteps[7];
@@ -1031,18 +1240,21 @@ function resetAll() {
   zoneToggle.checked = true;
   setZoneVisibility(true);
 
-  // Mode -> estimation, chips -> tous
+  // Mode -> estimation, exploration -> tous
   selectedMode = "estimation";
   for (const b of modeButtons) {
     b.classList.toggle("active", b.dataset.mode === "estimation");
   }
-  activeCategories = new Set(MARKET_CATEGORIES);
-  updateChips();
+  setMarketType("");
 
-  // Prix -> aucune limite
+  // Filtres de marché -> aucune limite
   priceBounds = { ...DEFAULT_PRICE_BOUNDS };
+  surfaceBounds = { ...DEFAULT_SURFACE_BOUNDS };
+  roomsBounds = { ...DEFAULT_ROOMS_BOUNDS };
   applyPriceBounds(priceBounds);
-  resetPriceFilterForScope();
+  applySurfaceBounds(surfaceBounds);
+  applyRoomsBounds(null);
+  resetMarketFiltersForScope();
 
   // Adresse / marqueur / géométries
   selectedAddress = null;
@@ -1058,8 +1270,6 @@ function resetAll() {
 
   // Vide la carte, les résultats et les comparables (via applyMode), puis les panneaux annexes
   applyMode();
-  targetStreetView.hidden = true;
-  streetViewPanel.hidden = true;
 
   map.flyTo({ center: [-0.5792, 44.8378], zoom: 12 });
   setStatus("");
@@ -1071,6 +1281,9 @@ function applyMode() {
   estimationFields.hidden = explore;
   explorationFilters.hidden = !explore;
   priceControl.hidden = !explore;
+  surfaceControl.hidden = !explore;
+  roomsControl.hidden = !explore;
+  syncMarketFilterAvailability();
   limitControl.hidden = false;
   addressLabel.textContent = explore ? "Adresse, code postal ou commune" : "Adresse";
   estimateBtn.textContent = explore ? "Explorer" : "Estimer";
@@ -1132,18 +1345,6 @@ function applyMapMode() {
   }
 }
 
-function updateChips() {
-  const allActive = activeCategories.size === MARKET_CATEGORIES.length;
-  for (const chip of typeChips) {
-    const cat = chip.dataset.cat;
-    if (cat === "all") {
-      chip.classList.toggle("active", allActive);
-    } else {
-      chip.classList.toggle("active", !allActive && activeCategories.has(cat));
-    }
-  }
-}
-
 async function runMarket() {
   if (!selectedAddress) {
     setStatus("Choisis une adresse, un code postal ou une commune.");
@@ -1152,7 +1353,7 @@ async function runMarket() {
   const props = selectedAddress.properties;
   const [lon, lat] = selectedAddress.geometry.coordinates;
   const dept = currentDept() || "";
-  const types = activeCategories.size === MARKET_CATEGORIES.length ? "" : [...activeCategories].join(",");
+  const marketType = currentMarketType();
   const seq = ++runSeq;
 
   const params = new URLSearchParams({
@@ -1165,8 +1366,10 @@ async function runMarket() {
     radius_m: String(selectedRadius),
     history_min_years: String(selectedHistoryMinYears),
     history_max_years: String(selectedHistoryMaxYears),
-    max_comparables: maxComparablesInput.value || "200",
-    types
+    max_comparables: String(normalizeMaxComparablesInput()),
+    type: marketType,
+    sort_key: comparableSortKey || "",
+    sort_dir: comparableSortDirection
   });
   // Bornes de prix : envoyées seulement si l'utilisateur a resserré le slider.
   if (priceFilterTouched && selectedPriceMin > priceBounds.min) {
@@ -1175,6 +1378,18 @@ async function runMarket() {
   if (priceFilterTouched && selectedPriceMax < priceBounds.max) {
     params.set("prix_max", String(selectedPriceMax));
   }
+  if (surfaceFilterTouched && selectedSurfaceMin > surfaceBounds.min) {
+    params.set("surface_min", String(selectedSurfaceMin));
+  }
+  if (surfaceFilterTouched && selectedSurfaceMax < surfaceBounds.max) {
+    params.set("surface_max", String(selectedSurfaceMax));
+  }
+  if (roomsFilterApplies() && roomsFilterTouched && selectedRoomsMin > roomsBounds.min) {
+    params.set("pieces_min", String(selectedRoomsMin));
+  }
+  if (roomsFilterApplies() && roomsFilterTouched && selectedRoomsMax < roomsBounds.max) {
+    params.set("pieces_max", String(selectedRoomsMax));
+  }
 
   updateScopeGeometry();
   resultEl.hidden = true;
@@ -1182,6 +1397,8 @@ async function runMarket() {
   const data = await fetchJson(`/api/market?${params}`);
   if (seq !== runSeq) return;
   applyPriceBounds(data.summary?.price_bounds);
+  applySurfaceBounds(data.summary?.surface_bounds);
+  applyRoomsBounds(data.summary?.pieces_bounds);
   if (data.error) {
     marketResult.hidden = true;
     marketScopeDetails.hidden = true;
@@ -1246,7 +1463,9 @@ async function estimate() {
     radius_m: String(selectedRadius),
     history_min_years: String(selectedHistoryMinYears),
     history_max_years: String(selectedHistoryMaxYears),
-    max_comparables: maxComparablesInput.value || "200"
+    max_comparables: String(normalizeMaxComparablesInput()),
+    sort_key: comparableSortKey || "",
+    sort_dir: comparableSortDirection
   });
 
   updateScopeGeometry();
@@ -1256,7 +1475,6 @@ async function estimate() {
   if (data.error) {
     resultEl.hidden = true;
     scopeDetails.hidden = true;
-    targetStreetView.hidden = true;
     setComparableGeojson([]);
     comparableDetail.hidden = true;
     tableWrap.classList.remove("detail-open");
@@ -1405,7 +1623,8 @@ function renderComparables(rows, points, total) {
   tableMeta.textContent = `${rows.length}/${currentComparablesTotal} affichés`;
   // Si on a demandé plus de comparables qu'il n'en existe, on ramène le champ « Max » au réel disponible.
   if (total != null) {
-    maxComparablesInput.value = String(Math.min(Number(maxComparablesInput.value) || 200, total));
+    maxComparablesInput.max = String(Math.min(total, 20000));
+    maxComparablesInput.value = String(Math.min(normalizeMaxComparablesInput(), total));
   }
   updateSortControl();
   renderComparableList();
@@ -1422,9 +1641,10 @@ function addComparableToDisplayed(row) {
   tableMeta.textContent = `${currentComparables.length}/${currentComparablesTotal ?? currentComparables.length} affichés`;
 }
 
-function renderComparableList() {
+function renderComparableList(options = {}) {
+  const previousPositions = options.previousPositions || (options.animate ? comparableCardPositions() : null);
   comparablesList.innerHTML = "";
-  for (const row of sortedComparables()) {
+  for (const row of displayedComparables()) {
     const viewed = viewedComparableUids.has(row.uid);
     const card = document.createElement("article");
     card.className = "comparable-card";
@@ -1456,16 +1676,44 @@ function renderComparableList() {
     }
     comparablesList.append(card);
   }
+  animateComparableReorder(previousPositions);
 }
 
-function scrollComparableToTop(uid) {
+function comparableCardPositions() {
+  const positions = new Map();
+  for (const card of comparablesList.querySelectorAll(".comparable-card[data-uid]")) {
+    positions.set(card.dataset.uid, card.getBoundingClientRect());
+  }
+  return positions;
+}
+
+function animateComparableReorder(previousPositions) {
+  if (!previousPositions || reduceMotion.matches) return;
+  const movedCards = [];
+  for (const card of comparablesList.querySelectorAll(".comparable-card[data-uid]")) {
+    const previous = previousPositions.get(card.dataset.uid);
+    if (!previous) continue;
+    const current = card.getBoundingClientRect();
+    const dx = previous.left - current.left;
+    const dy = previous.top - current.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
+    card.style.transition = "transform 0s";
+    card.style.transform = `translate(${dx}px, ${dy}px)`;
+    card.style.willChange = "transform";
+    movedCards.push(card);
+  }
+  if (!movedCards.length) return;
   requestAnimationFrame(() => {
-    const card = comparablesList.querySelector(`.comparable-card[data-uid="${CSS.escape(String(uid))}"]`);
-    if (!card) return;
-    const listRect = comparablesList.getBoundingClientRect();
-    const cardRect = card.getBoundingClientRect();
-    const top = comparablesList.scrollTop + cardRect.top - listRect.top;
-    comparablesList.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+    for (const card of movedCards) {
+      card.style.transition = "transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1)";
+      card.style.transform = "";
+    }
+    window.setTimeout(() => {
+      for (const card of movedCards) {
+        card.style.transition = "";
+        card.style.willChange = "";
+      }
+    }, 220);
   });
 }
 
@@ -1480,12 +1728,6 @@ function scrollComparableToMiddle(uid) {
       - (comparablesList.clientHeight - cardRect.height) / 2;
     comparablesList.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
   });
-}
-
-function restoreComparableScroll() {
-  if (detailReturnScrollTop == null) return;
-  comparablesList.scrollTo({ top: detailReturnScrollTop, behavior: "smooth" });
-  detailReturnScrollTop = null;
 }
 
 let hoveredComparableUid = null;
@@ -1527,6 +1769,15 @@ function sortedComparables() {
   });
 }
 
+function displayedComparables() {
+  const rows = sortedComparables();
+  if (selectedComparableUid === null) return rows;
+  const selectedIndex = rows.findIndex((row) => row.uid === selectedComparableUid);
+  if (selectedIndex <= 0) return rows;
+  const selected = rows[selectedIndex];
+  return [selected, ...rows.slice(0, selectedIndex), ...rows.slice(selectedIndex + 1)];
+}
+
 function comparableSortValue(row) {
   if (comparableSortKey === "similarity") return Number(row.similarity) || 0;
   if (comparableSortKey === "price") return Number(row.prix) || 0;
@@ -1557,26 +1808,6 @@ function sortLabel(key) {
   if (key === "price") return "Prix";
   if (key === "date") return "Date";
   return "m²";
-}
-
-async function loadTargetStreetView(lon, lat, label, addressSeq) {
-  targetStreetView.hidden = false;
-  targetStreetView.innerHTML = `<span class="street-muted">Recherche d'une vue rue ouverte...</span>`;
-  const view = await findPanoramaxImage(lon, lat);
-  if (!selectedAddress || selectedAddressSeq !== addressSeq) return;
-  if (!view) {
-    targetStreetView.innerHTML = `<span class="street-muted">Aucune vue rue ouverte à proximité.</span>`;
-    return;
-  }
-  targetStreetView.innerHTML = `
-    <div class="street-action">
-      <span>Vue rue trouvée à ${int(view.distance_m)} m</span>
-      <button type="button">Vue rue</button>
-    </div>
-  `;
-  targetStreetView.querySelector("button").addEventListener("click", () => {
-    openStreetView(view, label || "Adresse cible");
-  });
 }
 
 function setTargetMarker(lon, lat) {
@@ -1790,13 +2021,9 @@ function setComparableGeojson(points) {
 }
 
 function selectComparable(uid, options = { fit: false }, fallbackRow = null) {
-  const previousUid = selectedComparableUid;
   // `force` garde le détail ouvert (pas de bascule) — utile au double-clic.
   if (!options.force && uid !== null && selectedComparableUid === uid) {
     uid = null;
-  }
-  if (uid !== null && previousUid === null) {
-    detailReturnScrollTop = comparablesList.scrollTop;
   }
   selectedComparableUid = uid;
   if (lastSelectedUid !== null) {
@@ -1814,8 +2041,7 @@ function selectComparable(uid, options = { fit: false }, fallbackRow = null) {
   }
   if (uid === null) {
     comparableDetail.hidden = true;
-    renderComparableList();
-    restoreComparableScroll();
+    renderComparableList({ animate: true });
     setParcelleDetail(null);
     // On rétablit la grille cadastre selon le réglage du menu.
     applyCadastre();
@@ -1829,9 +2055,9 @@ function selectComparable(uid, options = { fit: false }, fallbackRow = null) {
   viewedComparableUids.add(uid);
   tableWrap.classList.remove("collapsed");
   comparableDetail.hidden = true;
-  renderComparableList();
-  scrollComparableToTop(uid);
-  loadComparableStreetView(row);
+  const previousPositions = comparableCardPositions();
+  comparablesList.scrollTop = 0;
+  renderComparableList({ previousPositions });
   loadComparableLieuDit(row);
   // Focus sur la parcelle : on n'affiche que sa grille cadastre (via loadComparableBatiments)
   // et on retire les autres parcelles de l'overlay général.
@@ -1898,7 +2124,6 @@ function renderDetail(row, container = detailBody) {
     ${detailSection("Cadastre", cadastreFields)}
     ${collapsible("Bâti cadastral", `<div id="detailBatiments" class="detail-batiments"><span class="street-muted">Lecture du cadastre…</span></div>`)}
     ${detailSection("Bâtiment (RNB / BDNB)", bdnbFields)}
-    <div id="detailStreetView" class="detail-street"><span class="street-muted">Recherche d'une vue rue ouverte...</span></div>
   `;
 }
 
@@ -1926,67 +2151,6 @@ async function loadComparableLieuDit(row) {
   el.hidden = false;
 }
 
-async function loadComparableStreetView(row) {
-  const container = document.querySelector(`.comparable-detail[data-uid="${CSS.escape(String(row.uid))}"] #detailStreetView`)
-    || document.querySelector("#detailStreetView");
-  if (!container) return;
-  const view = await findPanoramaxImage(row.lon, row.lat);
-  if (selectedComparableUid !== row.uid) return;
-  if (!view) {
-    container.innerHTML = `<span class="street-muted">Aucune vue rue ouverte à proximité.</span>`;
-    return;
-  }
-  container.innerHTML = `
-    <div class="street-action">
-      <span>Vue rue trouvée à ${int(view.distance_m)} m</span>
-      <button type="button">Vue rue</button>
-    </div>
-  `;
-  container.querySelector("button").addEventListener("click", () => {
-    openStreetView(view, `${row.adresse || "Comparable"} · ${row.commune || ""}`);
-  });
-}
-
-async function findPanoramaxImage(lon, lat) {
-  const key = `${lon.toFixed(5)},${lat.toFixed(5)}`;
-  if (streetViewCache.has(key)) {
-    return streetViewCache.get(key);
-  }
-  const url = new URL("/api/panoramax", window.location.origin);
-  url.searchParams.set("lon", lon);
-  url.searchParams.set("lat", lat);
-  try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`Panoramax ${response.status}`);
-    const data = await response.json();
-    const best = (data.features || [])
-      .map((feature) => {
-        const [picLon, picLat] = feature.geometry.coordinates;
-        return {
-          id: feature.id,
-          collection: feature.collection,
-          lon: picLon,
-          lat: picLat,
-          distance_m: haversineMeters(lon, lat, picLon, picLat),
-          sd: feature.assets?.sd?.href,
-          hd: feature.assets?.hd?.href,
-          thumb: feature.assets?.thumb?.href,
-          datetime: feature.properties?.datetimetz || feature.properties?.datetime,
-          license: feature.properties?.license,
-          producer: feature.properties?.["geovisio:producer"],
-          url: `${PANORAMAX_ENDPOINT}/api/collections/${feature.collection}/items/${feature.id}`
-        };
-      })
-      .filter((feature) => feature.sd || feature.hd)
-      .sort((a, b) => a.distance_m - b.distance_m)[0] || null;
-    streetViewCache.set(key, best);
-    return best;
-  } catch {
-    streetViewCache.set(key, null);
-    return null;
-  }
-}
-
 async function fetchJson(url) {
   try {
     const response = await fetch(url);
@@ -2000,29 +2164,6 @@ async function fetchJson(url) {
   }
 }
 
-function openStreetView(view, title) {
-  streetViewPanel.hidden = false;
-  streetViewBody.innerHTML = `
-    <img class="street-photo" src="${escapeHtml(view.sd || view.hd || view.thumb)}" alt="">
-    <strong>${escapeHtml(title)}</strong>
-    <div class="street-meta">
-      <span>${int(view.distance_m)} m</span>
-      ${view.datetime ? `<span>${escapeHtml(new Date(view.datetime).toLocaleDateString("fr-FR"))}</span>` : ""}
-      ${view.license ? `<span>${escapeHtml(view.license)}</span>` : ""}
-      ${view.producer ? `<span>${escapeHtml(view.producer)}</span>` : ""}
-    </div>
-    <a class="street-link" href="${escapeHtml(view.url)}" target="_blank" rel="noreferrer">Ouvrir la source</a>
-  `;
-}
-
-function haversineMeters(lon1, lat1, lon2, lat2) {
-  const toRad = (value) => value * Math.PI / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2
-    + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * 6371000 * Math.asin(Math.sqrt(a));
-}
 
 // Définitions rapides affichées au survol du « ? » à côté de chaque label.
 const FIELD_HINTS = {
