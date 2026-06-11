@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3.0 - 2026-06-11
+
+- **Future map shell** : UI réorganisée autour de deux docks stables — panneau gauche (recherche/estimation) et dock droit (résultats) — tous deux escamotables. La carte reste le canvas principal en arrière-plan.
+- **Détail inline** : le détail d'un comparable se déplie directement dans sa carte dans la liste (plus de colonne latérale). Tick « ✓ consulté » sur les fiches déjà vues.
+- **Contrôles de carte intégrés** : sélecteurs de fond de carte et grille cadastre déplacés dans le panneau gauche (plus de `position: fixed` en bas à droite).
+- **Synchronisation carte ↔ liste** : le survol d'un point sur la carte illumine le résultat correspondant dans la liste et y scroll automatiquement.
+- **Chip ventes interactif** : le compteur de ventes devient un bouton qui déplie/replie les statistiques (accoléon avec le détail d'emprise).
+- **Mobile adapté** : docks empilés en haut/bas avec onglets de dépliage, grille détail en une seule colonne.
+
 ## v1.2.0 - 2026-06-11
 
 - **Acquisition départementale complète** : `preparer_donnees.py` devient le point d'entrée unique pour DVF, RNB, BDNB, BAN, contours communes, COG et cadastre Etalab (sections, parcelles, bâtiments, lieux-dits), avec vérification finale bloquante des artefacts attendus avant construction.
