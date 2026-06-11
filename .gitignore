@@ -15,5 +15,12 @@ data/
 # Notebooks
 .ipynb_checkpoints/
 
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
 # Outils locaux (artefacts daemon lean-ctx)
 .lean-ctx/
