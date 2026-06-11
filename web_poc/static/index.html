@@ -132,8 +132,9 @@
           <div class="metrics">
             <span><b id="medianM2"></b> €/m²</span>
             <span><b id="count"></b> ventes</span>
-            <span><b id="scope"></b></span>
+            <span><button id="scope" class="scope-chip" type="button"></button></span>
           </div>
+          <div id="scopeDetails" class="scope-details" hidden></div>
           <div id="range" class="range"></div>
           <div id="askedPosition" class="range"></div>
         </section>
@@ -141,8 +142,9 @@
         <section id="marketResult" class="result" hidden>
           <div class="metrics">
             <span><b id="marketCount"></b> ventes</span>
-            <span><b id="marketScope"></b></span>
+            <span><button id="marketScope" class="scope-chip" type="button"></button></span>
           </div>
+          <div id="marketScopeDetails" class="scope-details" hidden></div>
           <div id="marketStats" class="market-stats"></div>
         </section>
       </section>
@@ -212,7 +214,7 @@
         <div id="streetViewBody" class="street-body"></div>
       </aside>
 
-      <aside class="table-wrap collapsed" aria-label="Comparables retenus">
+      <aside class="table-wrap collapsed" aria-label="Résultats">
         <div id="comparableDetail" class="detail-panel" hidden>
           <div class="table-head">
             <strong>Détail</strong>
@@ -222,7 +224,7 @@
         </div>
         <div class="list-panel">
           <div class="table-head">
-            <strong>Comparables</strong>
+            <strong>Résultats</strong>
             <div class="head-actions">
               <label id="limitControl" class="limit-control" title="Nombre maximum de comparables affichés">
                 Max
@@ -243,7 +245,7 @@
           </div>
           <div id="comparablesList" class="comparables-list"></div>
         </div>
-        <button id="expandComparables" class="expand-comparables" type="button">Comparables</button>
+        <button id="expandComparables" class="expand-comparables" type="button">Résultats</button>
       </aside>
     </main>
 

@@ -704,6 +704,80 @@ body.dragging {
   font-size: 13px;
 }
 
+.scope-chip {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+}
+
+.scope-chip:not(:disabled) {
+  cursor: pointer;
+}
+
+.scope-chip:not(:disabled)::after {
+  content: "▾";
+  margin-left: 6px;
+  color: #66736d;
+  font-size: 11px;
+}
+
+.scope-chip.open::after {
+  content: "▴";
+}
+
+.scope-details {
+  display: grid;
+  gap: 8px;
+  margin-top: 2px;
+  border: 1px solid #d8dfda;
+  border-radius: 8px;
+  padding: 10px;
+  background: #fbfcfa;
+  animation: panel-in 0.2s ease;
+}
+
+.scope-details[hidden] {
+  display: none;
+}
+
+.scope-details strong {
+  font-size: 12px;
+}
+
+.scope-details ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.scope-details li button {
+  border: 1px solid #e2e7e3;
+  border-radius: 6px;
+  padding: 4px 7px;
+  background: #f6f8f5;
+  color: #18211f;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.scope-details li button:hover,
+.scope-details li button:focus-visible {
+  border-color: #2457c5;
+  background: #eef4ff;
+  outline: none;
+}
+
+.scope-details li span {
+  color: #66736d;
+}
+
 .table-wrap {
   position: absolute;
   z-index: 2;
@@ -793,8 +867,10 @@ body.dragging {
 }
 
 .detail-panel {
-  border-right: 1px solid #e2e7e3;
-  background: #fbfcfa;
+  border-right: 1px solid rgba(34, 48, 43, 0.14);
+  /* Transparent : laisse voir le verre (flou + translucidité) du .table-wrap parent,
+     comme la colonne liste. Un léger voile blanc distingue la colonne détail. */
+  background: rgba(255, 255, 255, 0.16);
 }
 
 /* Le panneau détail (colonne de la grille) glisse + s'estompe à l'ouverture. */
@@ -956,12 +1032,31 @@ body.dragging {
   font-size: 13px;
   text-align: left;
   cursor: pointer;
+  transform-origin: center center;
+  transition: transform 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
 }
 
 .comparable:hover,
 .comparable:focus,
 .comparable.selected {
   background: #eaf3ef;
+}
+
+/* Loupe « macOS » très légère au survol : le résultat grossit à peine et se détache. */
+.comparable:hover {
+  transform: scale(1.025);
+  box-shadow: 0 4px 16px rgba(20, 31, 29, 0.12);
+  position: relative;
+  z-index: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comparable {
+    transition: background 0.16s ease;
+  }
+  .comparable:hover {
+    transform: none;
+  }
 }
 
 .comparable b {
@@ -988,6 +1083,17 @@ body.dragging {
 
 .detail-title strong {
   font-size: 16px;
+}
+
+.detail-note {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(238, 181, 82, 0.16);
+  border: 1px solid rgba(238, 181, 82, 0.45);
+  color: #6b5114;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .detail-grid {

@@ -49,6 +49,9 @@ const marketResult = document.querySelector("#marketResult");
 const marketStats = document.querySelector("#marketStats");
 const marketCount = document.querySelector("#marketCount");
 const marketScope = document.querySelector("#marketScope");
+const scopeChip = document.querySelector("#scope");
+const scopeDetails = document.querySelector("#scopeDetails");
+const marketScopeDetails = document.querySelector("#marketScopeDetails");
 const addressLabel = document.querySelector("#addressLabel");
 const maxComparablesInput = document.querySelector("#maxComparables");
 const limitControl = document.querySelector("#limitControl");
@@ -81,6 +84,7 @@ let lastSelectedUid = null;
 let selectedAddressSeq = 0;
 let comparableSortKey = "similarity";
 let comparableSortDirection = "desc";
+let comparableSortTouched = false;
 let selectedMode = "estimation";
 let activeCategories = new Set(MARKET_CATEGORIES);
 let runSeq = 0;
@@ -286,6 +290,8 @@ const map = new maplibregl.Map({
             "case",
             ["boolean", ["feature-state", "selected"], false],
             12,
+            ["boolean", ["feature-state", "hover"], false],
+            11,
             ["interpolate", ["linear"], ["get", "similarity"], 0, 5, 60, 8, 100, 13]
           ],
           "circle-color": [
@@ -294,11 +300,25 @@ const map = new maplibregl.Map({
             "#0f6f9f",
             ["interpolate", ["linear"], ["get", "similarity"], 0, "#c4472f", 60, "#eeb552", 100, "#176b5b"]
           ],
-          "circle-stroke-color": "#ffffff",
-          "circle-stroke-width": ["case", ["boolean", ["feature-state", "selected"], false], 3, 1.8],
+          // Survol d'un résultat dans la liste : anneau doré pour « illuminer » le point sur la carte.
+          "circle-stroke-color": ["case", ["boolean", ["feature-state", "hover"], false], "#ffcf3f", "#ffffff"],
+          "circle-stroke-width": [
+            "case",
+            ["boolean", ["feature-state", "selected"], false],
+            3,
+            ["boolean", ["feature-state", "hover"], false],
+            3.5,
+            1.8
+          ],
           // Au zoom rapproché, le remplissage s'efface : le point devient un anneau
           // qui encadre le bâtiment au lieu de le masquer (le contour blanc reste).
-          "circle-opacity": ["interpolate", ["linear"], ["zoom"], 16, 0.92, 17.2, 0.1]
+          // Un point survolé depuis la liste reste pleinement opaque pour rester repérable.
+          // `zoom` doit rester l'entrée racine de l'interpolate ; le case hover est dans les sorties.
+          "circle-opacity": [
+            "interpolate", ["linear"], ["zoom"],
+            16, ["case", ["boolean", ["feature-state", "hover"], false], 1, 0.92],
+            17.2, ["case", ["boolean", ["feature-state", "hover"], false], 1, 0.1]
+          ]
         }
       }
     ]
@@ -320,8 +340,10 @@ for (const button of baseLayerMenu.querySelectorAll("[data-layer]")) {
     for (const other of baseLayerMenu.querySelectorAll("[data-layer]")) {
       other.classList.toggle("active", other === button);
     }
-    // Le menu reste en hover : on le referme une fois le fond choisi.
+    // Le menu reste en hover : on le referme une fois le fond choisi. On retire aussi
+    // le focus du bouton, sinon :focus-within rouvrirait le menu au mouseleave.
     baseLayerMenu.classList.add("just-picked");
+    button.blur();
   });
 }
 // On réactive le hover dès que la souris quitte le menu.
@@ -346,6 +368,7 @@ for (const button of cadastreMenu.querySelectorAll("[data-cadastre]")) {
   button.addEventListener("click", () => {
     setCadastreMode(button.dataset.cadastre, { apply: true });
     cadastreMenu.classList.add("just-picked");
+    button.blur();
   });
 }
 cadastreMenu.addEventListener("mouseleave", () => {
@@ -817,6 +840,7 @@ for (const button of sortButtons) {
       comparableSortKey = key;
       comparableSortDirection = "desc";
     }
+    comparableSortTouched = true;
     sortMenu.classList.remove("open");
     sortToggle.setAttribute("aria-expanded", "false");
     updateSortControl();
@@ -964,6 +988,10 @@ function resetAll() {
   selectedHistoryMinYears = 0;
   selectedHistoryMaxYears = 5;
   historyLabel.textContent = formatHistoryRange(selectedHistoryMinYears, selectedHistoryMaxYears);
+  comparableSortTouched = false;
+  comparableSortKey = "similarity";
+  comparableSortDirection = "desc";
+  updateSortControl();
 
   // Emprise -> rayon
   selectedScope = "radius";
@@ -1013,6 +1041,7 @@ function resetAll() {
 
 function applyMode() {
   const explore = selectedMode === "exploration";
+  applyDefaultSortForMode();
   estimationFields.hidden = explore;
   explorationFilters.hidden = !explore;
   priceControl.hidden = !explore;
@@ -1021,6 +1050,8 @@ function applyMode() {
   estimateBtn.textContent = explore ? "Explorer" : "Estimer";
   resultEl.hidden = true;
   marketResult.hidden = true;
+  scopeDetails.hidden = true;
+  marketScopeDetails.hidden = true;
   comparableDetail.hidden = true;
   tableWrap.classList.remove("detail-open");
   currentComparables = [];
@@ -1029,6 +1060,17 @@ function applyMode() {
   tableMeta.textContent = "Aucun calcul";
   tableWrap.classList.add("collapsed");
   applyMapMode();
+}
+
+function applyDefaultSortForMode() {
+  if (selectedMode === "exploration" && !comparableSortTouched) {
+    comparableSortKey = null;
+    comparableSortDirection = "asc";
+  } else if (selectedMode !== "exploration" && !comparableSortTouched) {
+    comparableSortKey = "similarity";
+    comparableSortDirection = "desc";
+  }
+  updateSortControl();
 }
 
 function applyMapMode() {
@@ -1115,6 +1157,7 @@ async function runMarket() {
   applyPriceBounds(data.summary?.price_bounds);
   if (data.error) {
     marketResult.hidden = true;
+    marketScopeDetails.hidden = true;
     setComparableGeojson([]);
     comparableDetail.hidden = true;
     tableWrap.classList.remove("detail-open");
@@ -1129,13 +1172,13 @@ async function runMarket() {
   renderMarket(data);
   drawScope(data.target);
   if (cadastreMode === "biens") loadCadastreBiens();
-  setStatus(`Marché local — ${data.summary.scope}, ${data.summary.history}.`);
+  setStatus("");
 }
 
 function renderMarket(data) {
   marketResult.hidden = false;
   marketCount.textContent = int(data.summary.count);
-  marketScope.textContent = data.summary.scope;
+  configureScopeChip(marketScope, marketScopeDetails, data.target, data.summary.scope);
   marketStats.innerHTML = "";
   for (const t of data.summary.types) {
     const row = document.createElement("div");
@@ -1183,6 +1226,7 @@ async function estimate() {
   if (seq !== runSeq) return;
   if (data.error) {
     resultEl.hidden = true;
+    scopeDetails.hidden = true;
     targetStreetView.hidden = true;
     setComparableGeojson([]);
     comparableDetail.hidden = true;
@@ -1209,12 +1253,106 @@ function renderResult(data) {
   document.querySelector("#estimatedPrice").textContent = euro(summary.estimated_price);
   document.querySelector("#medianM2").textContent = int(summary.median_m2);
   document.querySelector("#count").textContent = summary.count;
-  document.querySelector("#scope").textContent = summary.scope;
+  configureScopeChip(scopeChip, scopeDetails, data.target, summary.scope);
   document.querySelector("#range").textContent =
     `Fourchette observée: ${euro(summary.low_price)} à ${euro(summary.high_price)} pour ${summary.scope} · ${summary.history} · confiance ${summary.confidence}`;
   document.querySelector("#askedPosition").textContent = summary.asked_position_pct === null
     ? ""
     : `Prix soumis: percentile ${summary.asked_position_pct} des comparables`;
+}
+
+function configureScopeChip(button, panel, target, label) {
+  button.textContent = label;
+  panel.hidden = true;
+  panel.innerHTML = "";
+  button.classList.remove("open");
+  button.setAttribute("aria-expanded", "false");
+  const interactive = target && ["postcode", "city"].includes(target.scope_mode);
+  button.disabled = !interactive;
+  button.onclick = interactive
+    ? () => toggleScopeDetails(button, panel, target)
+    : null;
+}
+
+async function toggleScopeDetails(button, panel, target) {
+  if (!panel.hidden) {
+    panel.hidden = true;
+    button.classList.remove("open");
+    button.setAttribute("aria-expanded", "false");
+    return;
+  }
+  button.classList.add("open");
+  button.setAttribute("aria-expanded", "true");
+  panel.hidden = false;
+  const loadingTimer = setTimeout(() => {
+    if (!panel.hidden) panel.innerHTML = `<strong>Chargement...</strong>`;
+  }, 120);
+  const params = new URLSearchParams({
+    dept: target.dept || "",
+    scope_mode: target.scope_mode || "",
+    postcode: target.postcode || "",
+    citycode: target.citycode || ""
+  });
+  const data = await fetchJson(`/api/scope-communes?${params}`);
+  clearTimeout(loadingTimer);
+  if (data.error) {
+    panel.innerHTML = `<strong>${escapeHtml(data.error)}</strong>`;
+    return;
+  }
+  const isPostcodes = data.kind === "postcodes";
+  const items = isPostcodes ? (data.postcodes || []) : (data.communes || []);
+  const label = isPostcodes ? "code postal" : "commune";
+  const plural = items.length > 1 ? "s" : "";
+  panel.innerHTML = `
+    <strong>${escapeHtml(data.title || "Communes")} · ${items.length} ${label}${plural}</strong>
+    <ul>
+      ${items.map((item) => `
+        <li>
+          <button type="button" data-code="${escapeHtml(item.code || "")}" data-name="${escapeHtml(item.nom || "")}">
+            ${isPostcodes ? escapeHtml(item.code || "") : escapeHtml(item.nom || "")}
+            ${isPostcodes ? "" : ` <span>${escapeHtml(item.code || "")}</span>`}
+          </button>
+        </li>
+      `).join("")}
+    </ul>
+  `;
+  for (const item of panel.querySelectorAll("button[data-code]")) {
+    item.addEventListener("click", () => {
+      if (isPostcodes) selectScopePostcode(item.dataset.code);
+      else selectScopeCommune(item.dataset.code, item.dataset.name);
+    });
+  }
+}
+
+function selectScopePostcode(postcode) {
+  if (!selectedAddress || !postcode) return;
+  selectedScope = "postcode";
+  for (const button of scopeButtons) {
+    button.classList.toggle("active", button.dataset.scope === "postcode");
+  }
+  radiusControl.hidden = true;
+  selectedAddress.properties.postcode = postcode;
+  scopeDetails.hidden = true;
+  marketScopeDetails.hidden = true;
+  resetPriceFilterForScope();
+  updateScopeGeometry();
+  run();
+}
+
+function selectScopeCommune(citycode, city) {
+  if (!selectedAddress || !citycode) return;
+  selectedScope = "city";
+  for (const button of scopeButtons) {
+    button.classList.toggle("active", button.dataset.scope === "city");
+  }
+  radiusControl.hidden = true;
+  selectedAddress.properties.citycode = citycode;
+  selectedAddress.properties.city = city || selectedAddress.properties.city;
+  scopeDetails.hidden = true;
+  marketScopeDetails.hidden = true;
+  resetPriceFilterForScope();
+  updateScopeGeometry();
+  run();
 }
 
 function renderComparables(rows, points, total) {
@@ -1253,7 +1391,24 @@ function renderComparableList() {
       <span>${escapeHtml(row.date_mutation || "")}</span>
     `;
     item.addEventListener("click", () => selectComparable(row.uid, { fit: true }));
+    item.addEventListener("mouseenter", () => setComparableHover(row.uid, true));
+    item.addEventListener("mouseleave", () => setComparableHover(row.uid, false));
     comparablesList.append(item);
+  }
+}
+
+let hoveredComparableUid = null;
+// Illumine (feature-state hover) le point carte correspondant au résultat survolé dans la liste.
+function setComparableHover(uid, on) {
+  if (on) {
+    if (hoveredComparableUid !== null && hoveredComparableUid !== uid) {
+      map.setFeatureState({ source: "comparables", id: hoveredComparableUid }, { hover: false });
+    }
+    hoveredComparableUid = uid;
+    map.setFeatureState({ source: "comparables", id: uid }, { hover: true });
+  } else if (hoveredComparableUid === uid) {
+    hoveredComparableUid = null;
+    map.setFeatureState({ source: "comparables", id: uid }, { hover: false });
   }
 }
 
@@ -1381,45 +1536,44 @@ function updateScopeGeometry() {
   if (selectedScope === "cadastre") {
     return; // polygone dessiné par drawScope() depuis la réponse serveur
   }
-  // Code postal / commune : contours administratifs réels via geo.api.gouv.fr.
+  // Code postal : contours hybrides (union de communes + Voronoï, /api/codepostal).
+  // Commune : limites administratives IGN locales (/api/commune).
   drawAdminScope(lon, lat);
 }
 
-// Contours commune (citycode) ou code postal (union des communes) en GeoJSON.
+// Tracé de la zone administrative depuis les contours locaux servis par le serveur :
+// commune -> /api/commune, code postal -> /api/codepostal
+// (contours hybrides union de communes + Voronoï). Le serveur a déjà filtré les biens
+// sur ce même polygone, donc aucun filtrage géométrique côté front.
 async function drawAdminScope(lon, lat) {
   const addr = selectedAddress;
   const seq = ++scopeDrawSeq;
   const props = addr.properties;
-  // Code postal : contours réels (zones BAN, servis en local) — les grandes villes
-  // sont découpées par CP. Commune : limites administratives via geo.api.gouv.fr.
-  const url = selectedScope === "postcode" && props.postcode
-    ? `/api/codepostal?code=${encodeURIComponent(props.postcode)}`
-    : selectedScope === "city" && props.citycode
-      ? `https://geo.api.gouv.fr/communes/${encodeURIComponent(props.citycode)}?format=geojson&geometry=contour`
+  const center = () => map.easeTo({ center: [lon, lat], zoom: 12.8, duration: 450 });
+
+  const url = selectedScope === "city" && props.citycode
+    ? `/api/commune?code=${encodeURIComponent(props.citycode)}`
+    : selectedScope === "postcode" && props.postcode
+      ? `/api/codepostal?code=${encodeURIComponent(props.postcode)}`
       : null;
   if (!url) {
     clearScopeGeojson();
-    map.easeTo({ center: [lon, lat], zoom: 12.8, duration: 450 });
+    center();
     return;
   }
   try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`geo.api ${response.status}`);
-    const data = await response.json();
+    const data = await (await fetch(url)).json();
     // Adresse ou emprise changée pendant la requête : on ignore une réponse périmée.
     if (selectedAddress !== addr || seq !== scopeDrawSeq) return;
     const fc = data.type === "FeatureCollection" ? data : { type: "FeatureCollection", features: [data] };
     const source = map.getSource("targetRadius");
     if (source) source.setData(fc);
-    if (fc.features && fc.features.length) {
-      fitToFeatureCollection(fc);
-    } else {
-      map.easeTo({ center: [lon, lat], zoom: 12.8, duration: 450 });
-    }
+    if (fc.features && fc.features.length) fitToFeatureCollection(fc);
+    else center();
   } catch {
     if (selectedAddress !== addr || seq !== scopeDrawSeq) return;
     clearScopeGeojson();
-    map.easeTo({ center: [lon, lat], zoom: 12.8, duration: 450 });
+    center();
   }
 }
 
@@ -1508,6 +1662,7 @@ function formatHistoryRange(minYears, maxYears) {
 function setComparableGeojson(points) {
   const source = map.getSource("comparables");
   if (!source) return;
+  hoveredComparableUid = null; // setData réinitialise les feature-states
   source.setData({
     type: "FeatureCollection",
     features: points.map((p) => ({
@@ -1597,6 +1752,11 @@ function renderDetail(row) {
     detailField("Commune", row.code_commune),
   ].join("");
 
+  // La commune de la vente a fusionné / changé de code depuis : on trace l'origine + la date.
+  const communeModif = row.commune_modif_origine
+    ? `<p class="detail-note">⚠ Commune modifiée${row.commune_modif_date ? ` le ${escapeHtml(row.commune_modif_date)}` : ""} — vendue sous ${escapeHtml(row.commune_modif_origine)}, rattachée aujourd'hui à ${escapeHtml(row.commune || "")} (${escapeHtml(row.code_commune || "")}).</p>`
+    : "";
+
   // Sous-section Bâtiment (RNB / BDNB).
   const bdnbFields = [
     resolutionField,
@@ -1616,6 +1776,7 @@ function renderDetail(row) {
       <span>${escapeHtml(row.adresse || "Adresse DVF non renseignée")}</span>
       <span>${escapeHtml(row.code_postal || "")} ${escapeHtml(row.commune || "")}</span>
     </div>
+    ${communeModif}
     <div class="detail-grid">
       ${mainFields}
     </div>
