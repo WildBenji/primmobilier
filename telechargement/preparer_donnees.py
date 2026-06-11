@@ -3,7 +3,7 @@
 Reprend l'acquisition du notebook spike sous forme réutilisable. Produit (idempotent) :
   data/raw/      dvf_{dept}_{annee}.csv.gz, RNB_{dept}.csv.zip, ban_{dept}.csv.gz
   data/interim/  dvf_{dept}.parquet, rnb_plots_{dept}.parquet, rnb_adr_{dept}.parquet,
-                 bdnb_batiments_{dept}.parquet
+                 ban_{dept}.parquet, bdnb_batiments_{dept}.parquet
 
 (Le DPE n'est pas requis par le pipeline comparables ; il reste géré par le notebook.)
 
@@ -18,6 +18,9 @@ import zipfile
 from pathlib import Path
 
 import polars as pl
+
+from telechargement.preparer_communes import preparer_communes
+from telechargement.preparer_passage_communes import preparer_passage_communes
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw"
@@ -79,8 +82,59 @@ def preparer_dvf(dept: str) -> None:
                      RAW / f"dvf_{dept}_{y}.csv.gz")
         frames.append(pl.read_csv(f, separator=",", infer_schema=False))  # tout en String
     cache.parent.mkdir(parents=True, exist_ok=True)
-    pl.concat(frames, how="diagonal_relaxed").write_parquet(cache)
+    frame = _normaliser_communes(pl.concat(frames, how="diagonal_relaxed"))
+    frame.write_parquet(cache)
     print(f"  → {cache.name}")
+
+
+def _normaliser_communes(df: pl.DataFrame) -> pl.DataFrame:
+    """Aligne `code_commune`/`nom_commune` sur le COG courant (cf. preparer_passage_communes).
+
+    1. Remap des codes **périmés** (communes fusionnées) vers la commune actuelle — sinon
+       ni contour ni adresse ne leur correspondent.
+    2. Nom **autoritaire** COG par code courant — corrige aussi les codes survivants
+       renommés (commune nouvelle reprenant le code d'une fondatrice).
+    """
+    passage_path = INTERIM / "passage_communes.parquet"
+    noms_path = INTERIM / "communes_actuelles.parquet"
+    modif_path = INTERIM / "communes_modif.parquet"
+    if "code_commune" not in df.columns or not passage_path.exists():
+        return df
+    # Identité DVF d'origine conservée pour tracer la modification de commune au détail.
+    out = df.with_columns(
+        pl.col("code_commune").alias("_code_orig"),
+        pl.col("nom_commune").alias("_nom_orig"),
+    )
+    passage = pl.read_parquet(passage_path)  # code_perime, code_actuel, nom_actuel
+    out = out.join(passage, left_on="code_commune", right_on="code_perime", how="left")
+    n = int(out.select(pl.col("code_actuel").is_not_null().sum()).item())
+    if n:
+        print(f"  ↻ {n} lignes DVF à code commune périmé remappées vers le COG courant")
+    out = out.with_columns(pl.coalesce("code_actuel", "code_commune").alias("code_commune")).drop(
+        "code_actuel", "nom_actuel"
+    )
+    if noms_path.exists():
+        noms = pl.read_parquet(noms_path)  # insee, nom_cog
+        out = out.join(noms, left_on="code_commune", right_on="insee", how="left").with_columns(
+            pl.coalesce("nom_cog", "nom_commune").alias("nom_commune")
+        ).drop("nom_cog")
+    # Trace : origine « Nom (CODE) » + date, seulement si l'identité a changé ET qu'un
+    # mouvement COG daté existe (écarte les écarts de simple formatage).
+    date_col = pl.lit(None, dtype=pl.String)
+    if modif_path.exists():
+        modif = pl.read_parquet(modif_path).with_columns(pl.col("date_effet").cast(pl.String))
+        out = out.join(modif, left_on="_code_orig", right_on="code", how="left")
+        date_col = pl.col("date_effet")
+    traced = (
+        (pl.col("_code_orig") != pl.col("code_commune")) | (pl.col("_nom_orig") != pl.col("nom_commune"))
+    ) & date_col.is_not_null()
+    out = out.with_columns(
+        pl.when(traced).then(pl.format("{} ({})", pl.col("_nom_orig"), pl.col("_code_orig")))
+        .otherwise(None).alias("commune_modif_origine"),
+        pl.when(traced).then(date_col).otherwise(None).alias("commune_modif_date"),
+    )
+    drop_cols = ["_code_orig", "_nom_orig"] + (["date_effet"] if modif_path.exists() else [])
+    return out.drop(drop_cols)
 
 
 def preparer_rnb(dept: str) -> None:
@@ -113,8 +167,27 @@ def preparer_rnb(dept: str) -> None:
 
 
 def preparer_ban(dept: str) -> None:
-    download(f"https://adresse.data.gouv.fr/data/ban/adresses/latest/csv/adresses-{dept}.csv.gz",
-             RAW / f"ban_{dept}.csv.gz")
+    cache = INTERIM / f"ban_{dept}.parquet"
+    if cache.exists():
+        print(f"✓ {cache.name}")
+        return
+    src = download(f"https://adresse.data.gouv.fr/data/ban/adresses/latest/csv/adresses-{dept}.csv.gz",
+                   RAW / f"ban_{dept}.csv.gz")
+    frame = (
+        pl.scan_csv(src, separator=";", infer_schema=False)
+        .select(
+            "code_postal",
+            "code_insee",
+            "nom_commune",
+            pl.col("lon").cast(pl.Float64, strict=False),
+            pl.col("lat").cast(pl.Float64, strict=False),
+        )
+        .filter(pl.col("code_postal").is_not_null() & pl.col("code_insee").is_not_null())
+        .collect()
+    )
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    frame.write_parquet(cache)
+    print(f"  → {cache.name} ({frame.height} adresses)")
 
 
 def _bdnb_url(dept: str) -> str:
@@ -243,10 +316,12 @@ def preparer_bdnb(dept: str) -> None:
 
 
 def main(dept: str) -> None:
+    preparer_passage_communes()  # table de passage COG (avant DVF : normalisation des codes périmés)
     preparer_dvf(dept)
     preparer_rnb(dept)
     preparer_bdnb(dept)
     preparer_ban(dept)
+    preparer_communes(dept)
     print(f"\n✓ Données {dept} prêtes pour le pipeline.")
 
 

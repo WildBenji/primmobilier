@@ -21,14 +21,17 @@ qui n'est pas rattachable de façon défendable est soit localisé à la **parce
 | **RNB** (IGN/CSTB) | le pivot bâtiment (`rnb_id`), empreinte, parcelles, adresses | export S3 par département |
 | **BDNB Open** (CSTB) | enrichissement bâtiment groupe par parcelle | ZIP CSV départemental `bdnb_millesime_2026-02-a` |
 | **BAN** (DINUM) | crosswalk parcelle↔adresse + géocodage | fichier dept + API `api-adresse` |
-| **Contours codes postaux** (adresse.data.gouv.fr) | emprise « code postal » du service carto | GeoJSON **national** (millésime 2021) |
+| **Contours communes** (geo.api.gouv.fr / IGN) | emprise « commune » + briques des contours code postal | GeoJSON par dept (1 appel), figé en local |
+| **COG** (INSEE) | normalisation des codes communes périmés (fusions) + nom courant | `v_commune` + `v_mvt_commune` (national, figé en local) |
 
 ## Architecture
 
 ```
-telechargement/      preparer_donnees.py        # acquisition + parsing brut -> interim (par dept)
+telechargement/      preparer_donnees.py        # acquisition + parsing brut -> interim (par dept) ; normalise les codes communes périmés
+                     preparer_passage_communes.py # COG INSEE -> passage codes périmés + noms courants (national)
+                     preparer_communes.py       # contours communes IGN (geo.api) -> GeoParquet (par dept)
                      preparer_cadastre.py       # cadastre Etalab (parcelles/sections/bâtiments) -> GeoParquet (par dept)
-                     preparer_codes_postaux.py  # contours codes postaux -> GeoParquet (national)
+                     preparer_codes_postaux.py  # contours codes postaux hybrides (union communes + partition BAN) -> GeoParquet (par dept présent)
 pipeline/
   commun.py          # chemins, points RNB, table mutations (partagés)
   qualite_jointure.py        # [diagnostic] mesure du taux de match
@@ -58,7 +61,7 @@ flowchart TD
     PREP --> I2[/rnb_plots_DEPT.parquet/]
     PREP --> I3[/rnb_adr_DEPT.parquet/]
     PREP --> I4[/bdnb_batiments_DEPT.parquet/]
-    PREP --> I5[/ban_DEPT.csv.gz/]
+    PREP --> I5[/ban_DEPT.parquet/]
 
     I1 --> REC[recuperation_non_match]
     I2 --> REC
@@ -104,7 +107,7 @@ flowchart TD
 
 | # | Module | Entrée | Sortie | Rôle |
 | --- | --- | --- | --- | --- |
-| 1 | `telechargement.preparer_donnees` | URLs opendata + ZIP BDNB dept | `dvf_`, `rnb_plots_`, `rnb_adr_`, `bdnb_batiments_` (parquet) + bruts | télécharge DVF (2021-25), parse le JSON RNB (`plots`, `addresses`), extrait la BDNB départementale par parcelle, récupère la BAN |
+| 1 | `telechargement.preparer_donnees` | URLs opendata + ZIP BDNB dept | `dvf_`, `rnb_plots_`, `rnb_adr_`, `bdnb_batiments_`, `contours_communes_`, `passage_communes`, `communes_actuelles` (parquet) + bruts | télécharge DVF (2021-25), parse le JSON RNB (`plots`, `addresses`), extrait la BDNB départementale par parcelle, récupère la BAN, fige les contours communes IGN (geo.api). **Normalise les codes communes périmés** (fusions) et le nom vers le COG courant via `preparer_passage_communes` — sinon les ventes sous d'anciens codes seraient sans contour ni adresse (cf. SOURCES_DONNEES §1.5) |
 | — | `pipeline.qualite_jointure` *(diagnostic)* | interim | (stdout) | mesure le % de match DVF→RNB par parcelle et décompose les non-matchs |
 | 2 | `pipeline.recuperation_non_match` | interim + BAN | `recup_liens_` | récupère les ~2–5% de ventes dont la parcelle est absente du RNB |
 | 3 | `pipeline.geocodage_residuel` | `recup_liens_` + DVF + API BAN | `recup_liens_final_`, `pertes_` | géocode le résiduel (score ≥ 0,95) ; le reste = perdu |
@@ -144,7 +147,10 @@ flowchart TD
   éclatées). Colonnes : `id_mutation, date_mutation, nature_mutation, code_commune, nom_commune,
   id_parcelle, adresse_dvf, type_local, surface_reelle_bati, nombre_pieces_principales,
   valeur_fonciere, rnb_id, batiment_groupe_id, resolution_statut, confiance, source,
-  flag_multi_bien, flag_multi_adresse`.
+  flag_multi_bien, flag_multi_adresse, commune_modif_origine, commune_modif_date`.
+  Les deux dernières tracent une **modification de commune** (fusion / renommage COG) :
+  identité d'origine `Nom (CODE)` + date de l'événement, non nulles seulement si la commune
+  de la vente a changé depuis (affichées au détail du bien).
 - **`pont_batiment_{dept}`** — `(id_mutation, id_parcelle) → rnb_id, batiment_groupe_id,
   resolution_statut, confiance, source`. Autorité du rattachement, **unique par couple**
   (aucune duplication de ligne en aval).
@@ -196,8 +202,14 @@ Le POC web (`web_poc/`) sert de modèle pour les futures fonctions interactives 
   Les empreintes et leur surface au sol (`ST_Area_Spheroid`) sont aussi listées dans la fiche détail.
 - Les **emprises** tracées sur la carte proviennent de référentiels géométriques, pas d'enveloppes
   approximatives : rayon (cercle calculé), section cadastrale (`cadastre_sections_{dept}`, point-dans-polygone),
-  **code postal** (`contours_codes_postaux.parquet`, endpoint `/api/codepostal`, lecture DuckDB
-  `ST_GeomFromWKB` filtrée par `codePostal`), commune (limites administratives via geo.api.gouv.fr).
+  **commune** (contours IGN détaillés geo.api, figés en local dans `contours_communes_{dept}.parquet`),
+  **code postal** (`contours_codes_postaux.parquet`, endpoint `/api/codepostal`). Les contours code
+  postal sont **construits** (preparer_codes_postaux) et non plus issus du jeu « contours calculés »
+  national (millésime 2021, abandonné car ses enveloppes débordaient et se chevauchaient) : un code
+  postal couvrant des communes entières = **union des polygones communaux** ; une commune découpée en
+  plusieurs codes postaux (grandes villes) = **partition adaptative par plus proche adresse BAN**,
+  découpée à la commune (`is_split` marque ce cas). Communes et codes postaux partagent ainsi la **même géométrie
+  geo.api**, ce qui permet de filtrer les biens débordants (géocodage hors limite) sur le polygone exact.
 
 ## Limites (assumées)
 
@@ -220,8 +232,9 @@ Le POC web (`web_poc/`) sert de modèle pour les futures fonctions interactives 
 uv run python lancer_pipeline.py 47
 uv run python lancer_pipeline.py 47 --mesure      # + diagnostic de joignabilité
 
-# référentiels nationaux (idempotents, une seule fois — déjà inclus dans l'étape 1)
-uv run python -m telechargement.preparer_codes_postaux
+# contours d'emprise (les communes sont déjà faites en étape 1 / preparer_donnees)
+uv run python -m telechargement.preparer_communes 47       # contours communes geo.api (idempotent)
+uv run python -m telechargement.preparer_codes_postaux     # contours CP hybrides — après communes + dvf, tous depts présents
 
 # ou étape par étape
 uv run python -m telechargement.preparer_donnees 47

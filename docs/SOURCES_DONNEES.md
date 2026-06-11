@@ -90,19 +90,72 @@ présentes dans DVF. Les sections et bâtiments restent complets : les bâtiment
 à la demande par parcelle (endpoint `/api/batiments`, préfiltre bbox `clon`/`clat` puis
 `ST_Intersects`), pas réduits au graphe DVF.
 
-## 1.4 Contours codes postaux (adresse.data.gouv.fr)
+## 1.4 Contours communes (geo.api.gouv.fr) + contours codes postaux dérivés
 
-- **ID data.gouv** : `600010bb10532cc0d7363fc0` · Organisation : adresse.data.gouv.fr · Licence : `fr-lo` · Millésime : **2021** (référentiel **national et statique**)
-- **Statut** : ✅ **Catalogué & intégré** — converti en GeoParquet, servi par le POC.
-- **Définition** : zones **codes postaux calculées** à partir des numéros BAN. Contrairement aux limites communales (geo.api.gouv.fr), ces contours **découpent les grandes villes par code postal** (ex. Bordeaux 33000 / 33200 / 33800 sont des polygones distincts), ce qui en fait la bonne emprise pour le scope « code postal » du service carto.
+- **Source communes** : [geo.api.gouv.fr](https://geo.api.gouv.fr) (`/communes?codeDepartement={dept}&geometry=contour`), limites administratives **IGN Admin Express**. Licence ouverte.
+- **Statut** : ✅ **Intégré** — figé en local, plus de dépendance runtime à geo.api ; les contours code postal en sont **construits**.
+- **Pourquoi pas un jeu « contours codes postaux » tout fait** : le seul référentiel national (« contours **calculés** des zones codes postaux », adresse.data.gouv.fr, millésime **2021**) est constitué d'enveloppes par adresse qui **débordent et se chevauchent largement** (ex. le 33000 englobant toute l'agglo bordelaise) → **abandonné**. Il n'existe par ailleurs aucun découpage officiel pour un code postal **intra-communal** (une commune à plusieurs CP).
 
-**Fichiers / accès** : un seul GeoJSON national (~3 Mo, 6158 zones, propriété `codePostal`). Pas de GeoParquet publié → conversion locale. Acquisition : [`telechargement/preparer_codes_postaux.py`](../telechargement/preparer_codes_postaux.py) (idempotent, GeoJSON → GeoParquet WKB via DuckDB spatial). Référentiel **national** : acquis une seule fois, hors de la boucle départementale (appelé en étape 1 du pipeline).
+**Méthode** (cf. [`telechargement/preparer_communes.py`](../telechargement/preparer_communes.py) puis [`telechargement/preparer_codes_postaux.py`](../telechargement/preparer_codes_postaux.py)) :
+1. **Communes** : un appel geo.api par département → `contours_communes_{dept}.parquet` (`insee, nom, geom_wkb`). Détail IGN qui **suit les axes réels** (routes, rues).
+2. **Codes postaux** (hybride, à partir des communes locales + BAN) :
+   - CP couvrant des **communes entières** → **union** des polygones communaux (exact, sans chevauchement) ;
+   - **commune découpée** en plusieurs CP (grandes villes) → **partition adaptative par plus proche adresse BAN**, fusionnée par CP et **découpée à la commune**. Astuce : une coordonnée → un seul CP (le plus fréquent) pour éviter les chevauchements.
+   - Le flag **`is_split`** marque les CP issus de cette partition intra-communale (vs union de communes).
 
-**Champs réels** : `codePostal` (string, ex. `33000`), `nbNumeros` (compte d'adresses BAN agrégées), géométrie (Polygon/MultiPolygon WGS84, stockée en WKB).
+**Champs** : `contours_communes_{dept}` = `insee` (↔ DVF `code_commune` / citycode BAN), `nom`, géométrie WKB. `contours_codes_postaux` = `codePostal` (↔ DVF `code_postal`), `nb_points`, `is_split`, géométrie WKB.
 
-**Clé de service** : `codePostal` ↔ BAN/DVF `code_postal`. Lecture côté POC par `ST_GeomFromWKB` filtrée sur `codePostal` (endpoint `/api/codepostal`), cohérente avec la résolution des sections cadastrales.
+**Clé de service** : lecture DuckDB `ST_GeomFromWKB` filtrée sur `insee` / `codePostal` (endpoint `/api/codepostal`), cohérente avec la résolution des sections cadastrales. Communes et CP partageant la **même géométrie geo.api**, le service peut filtrer les biens débordants (géocodage hors limite administrative) sur le polygone exact.
 
-**Artefact** : `data/interim/contours_codes_postaux.parquet` (~1,5 Mo, non réduit — national, sert tous les départements).
+**Artefacts** : `data/interim/contours_communes_{dept}.parquet` (~2-3 Mo/dept) + `data/interim/contours_codes_postaux.parquet` (~2 Mo, départements présents). Qualité mesurée : ≥ 99,9 % des biens d'un CP tombent dans son contour.
+
+## 1.5 Mailles géographiques : définitions et cardinalités
+
+Référence pour les **emprises de comparaison** du POC (rayon, section, code postal, commune) et
+pour toute requête filtrant par zone. Sources : **Code Officiel Géographique (COG)** de l'INSEE
+(`v_commune_{millésime}.csv`, data.gouv `58c984b088ee386cdb1261f3`) et **Base officielle des
+codes postaux** de La Poste (data.gouv `545b55e1c751df52de9b6045`).
+
+| Objet | Définition | Cardinalité | Preuve |
+| --- | --- | --- | --- |
+| **Commune** ↔ **code INSEE** (`code_commune`, citycode) | maille administrative de base ; le code INSEE (`COM`, 5 caractères) l'identifie | **1:1** (bijection, à millésime donné) | COG : un seul `COM` par commune. **Conséquence : « emprise commune » = « emprise code INSEE »**, même zone, même filtre |
+| **Code postal** ↔ **commune** | objet de **distribution postale** (La Poste), pas une maille administrative | **N:M** | CP `01300` → 24 communes ; Toulouse (`31555`) → 6 CP (`31000…31500`) |
+| **« Ville »** | **notion non officielle** ; en pratique = commune. Absente du COG | — | sous la commune : lieux-dits (`Ligne_5` La Poste) **sans code INSEE**, donc non filtrables à une maille propre |
+| **Arrondissement municipal** (Paris/Lyon/Marseille) | subdivision de commune | code INSEE **propre** (`TYPECOM=ARM`), parent via `COMPARENT` | Paris commune `75056` ; arrond. `75101`–`75120`. Marseille `13055` → `13201`–`13216` ; Lyon `69123` → `69381`–`69389` |
+| **Commune déléguée / associée** | ancienne commune fusionnée dans une commune nouvelle | code INSEE **propre** (`TYPECOM=COMD`/`COMA`), parent via `COMPARENT` | Béon `01039` (délégué) → parent `01138` |
+
+**Application dans le code** (toutes les requêtes respectent ces cardinalités) :
+- Emprise **commune** : filtre par code INSEE — attribut DVF `code_commune` (`add_scope_filter`)
+  **et** géométrie `ST_Within` sur `contours_communes.insee` (1:1, cf. §1.4). Pas d'emprise
+  « code INSEE » séparée : elle désignerait la **même** zone (la barre de recherche permet déjà
+  de saisir nom de commune, code postal ou adresse).
+- Emprise **code postal** : N:M assumé — `scope_communes_rows` liste **toutes** les communes
+  d'un CP et **tous** les CP d'une commune ; le contour CP est hybride (union de communes +
+  partition intra-communale, cf. §1.4). Ne jamais supposer « 1 CP = 1 commune ».
+- `dept_from_citycode` dérive le département du code INSEE (`97x` → 3 car. DOM ; Corse `2A/2B`
+  → 2 car.).
+- **Normalisation des codes périmés (millésime COG)** : le code INSEE n'est unique qu'à
+  millésime fixé — une fusion (commune nouvelle, fusion-association) fait **disparaître** un code
+  des référentiels courants (geo.api, BAN). DVF conservant le code au moment de la vente, ces
+  ventes seraient orphelines (ni contour ni adresse). [`telechargement/preparer_passage_communes.py`](../telechargement/preparer_passage_communes.py)
+  télécharge le **COG INSEE** (`v_commune` + `v_mvt_commune`, data.gouv `58c984b088ee386cdb1261f3`)
+  et produit deux tables nationales : `passage_communes` (`code_perime → code_actuel`, fermeture
+  transitive des fusions) et `communes_actuelles` (`insee → nom_cog`, autorité de nommage).
+  `preparer_donnees._normaliser_communes` les applique au DVF : **(1)** remap des codes périmés
+  vers la commune actuelle, **(2)** nom COG autoritaire par code — ce qui corrige aussi les codes
+  *survivants renommés* (commune nouvelle reprenant le code d'une fondatrice, p.ex. `17268`
+  Nuaillé-sur-Boutonne → Rives-de-Boutonne). Résultat vérifié sur 17/33/47 : **0 code commune
+  orphelin, 0 nom divergent du contour geo.api**. La normalisation **conserve l'origine** :
+  `comparables.commune_modif_origine` (`Nom (CODE)`) + `commune_modif_date` (table
+  `communes_modif`, dates `v_mvt_commune`) tracent la fusion/renommage au **détail d'une vente**
+  (ex. vendue sous *Saint-Georges-de-Longuepierre (17334)*, rattachée à *Rives-de-Boutonne*,
+  modifiée le 2025-01-01).
+
+> **Limite connue** : pour Paris/Lyon/Marseille, DVF porte le code d'**arrondissement** (`751xx`…)
+> tandis que `contours_communes` (geo.api `/communes`) ne fournit que la commune-mère. Le filtre
+> par **attribut** reste exact (par arrondissement) ; seul le **tracé** du contour peut manquer.
+> Sans incidence sur la Gironde (dept de référence), à traiter via l'endpoint geo.api
+> `/communes/{code}/arrondissements-municipaux` si ces métropoles sont intégrées.
 
 ---
 

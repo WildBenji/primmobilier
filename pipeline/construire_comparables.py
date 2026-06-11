@@ -196,11 +196,14 @@ def construire_comparables(con: duckdb.DuckDBPyConnection) -> None:
         parc AS (
             SELECT id_mutation, id_parcelle,
                    any_value(code_commune) AS code_commune, any_value(nom_commune) AS nom_commune,
+                   any_value(commune_modif_origine) AS commune_modif_origine,
+                   any_value(commune_modif_date) AS commune_modif_date,
                    any_value(trim(concat_ws(' ', adresse_numero, adresse_suffixe, adresse_nom_voie))) AS adresse_dvf
             FROM dvf WHERE type_local IS NOT NULL GROUP BY 1, 2
         )
         SELECT b.id_mutation, m.date_mutation, m.nature_mutation, m.code_departement,
-               p.code_commune, p.nom_commune, b.id_parcelle, p.adresse_dvf,
+               p.code_commune, p.nom_commune, p.commune_modif_origine, p.commune_modif_date,
+               b.id_parcelle, p.adresse_dvf,
                b.type_local, b.surface_reelle_bati, b.nombre_pieces_principales,
                m.valeur_fonciere,
                pont.rnb_id, pont.batiment_groupe_id, pont.confiance, pont.source, pont.resolution_statut,

@@ -1,7 +1,8 @@
 """Lance le pipeline complet pour un département : acquisition -> table comparables.
 
 Enchaîne, dans l'ordre, les étapes documentées dans docs/PIPELINE.md :
-  1. telechargement.preparer_donnees   -> data brutes + interim (DVF, RNB, BDNB, BAN)
+  1. telechargement.preparer_donnees   -> data brutes + interim (DVF normalisé COG, RNB, BDNB, BAN, contours communes)
+     + telechargement.preparer_codes_postaux -> contours codes postaux hybrides (union communes + Voronoï)
   2. pipeline.recuperation_non_match    -> recup_liens (cascade A/B/C)
   3. pipeline.geocodage_residuel        -> recup_liens_final + pertes (BAN >= seuil)
   4. pipeline.reduire_referentiels      -> artefacts service réduits au graphe DVF
@@ -40,7 +41,8 @@ def main(dept: str, mesure: bool = False) -> None:
 
     _etape(1, total, "Acquisition des données (DVF / RNB / BDNB / BAN)")
     telecharger(dept)
-    # Référentiel national (idempotent, acquis une seule fois) : contours codes postaux.
+    # Contours codes postaux hybrides : construits depuis les contours communes (geo.api,
+    # figés par preparer_donnees ci-dessus) + les adresses DVF. Couvre tous les depts présents.
     telecharger_codes_postaux()
     if mesure:
         print("\n--- Diagnostic : qualité de jointure ---")

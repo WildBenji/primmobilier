@@ -290,12 +290,19 @@ def price_bounds(rows: list[dict]) -> dict | None:
     prices = [float(row["prix"]) for row in rows if row.get("prix") is not None]
     if not prices:
         return None
-    min_price = math.floor(min(prices))
-    max_price = math.ceil(max(prices))
+    raw_min = min(prices)
+    raw_max = max(prices)
+    step = price_step(raw_min, raw_max)
+    # On aligne les bornes sur le pas du slider : un <input range> ne s'arrête que
+    # sur des multiples du step depuis le min. Sans alignement, la poignée max ne
+    # peut pas atteindre le prix exact du bien le plus cher, qui se retrouve alors
+    # exclu du filtre (« Aucune vente… ») alors qu'il est affiché dans la liste.
+    min_price = math.floor(raw_min / step) * step
+    max_price = math.ceil(raw_max / step) * step
     return {
         "min": min_price,
         "max": max_price,
-        "step": price_step(min_price, max_price),
+        "step": step,
     }
 
 
@@ -336,50 +343,135 @@ def resolve_section(dept: str, lon: float, lat: float) -> dict | None:
 POSTCODE_CONTOURS_PATH = INTERIM / "contours_codes_postaux.parquet"
 
 
-def postcode_contour(postcode: str) -> dict | None:
-    """Contour calculé d'une zone code postal (BAN). Renvoie id + géométrie GeoJSON.
+def commune_contours_path(dept: str) -> Path:
+    return INTERIM / f"contours_communes_{dept}.parquet"
 
-    Source : « Contours calculés des zones codes postaux » (adresse.data.gouv.fr),
-    référentiel national qui découpe les grandes villes par code postal (vs limites
-    communales). Acquis par telechargement/preparer_codes_postaux.py.
-    """
-    if not re.fullmatch(r"\d{5}", postcode or ""):
-        return None
-    if not POSTCODE_CONTOURS_PATH.exists():
+
+def dept_from_citycode(code: str) -> str:
+    return code[:3] if code.startswith("97") else code[:2]
+
+
+def _read_contour_geojson(path: Path, key_col: str, value: str) -> dict | None:
+    """Lit une géométrie de contour (GeoJSON) d'un parquet local filtré par clé."""
+    if not path.exists():
         return None
     con = duckdb.connect()
     try:
         load_spatial(con)
         row = con.execute(
-            """
-            SELECT codePostal, ST_AsGeoJSON(ST_GeomFromWKB(geom_wkb))
-            FROM read_parquet(?)
-            WHERE codePostal = ?
-            LIMIT 1
-            """,
-            [str(POSTCODE_CONTOURS_PATH), postcode],
+            f"SELECT ST_AsGeoJSON(ST_GeomFromWKB(geom_wkb)) FROM read_parquet(?) WHERE {key_col} = ? LIMIT 1",
+            [str(path), value],
         ).fetchone()
     finally:
         con.close()
-    if not row:
-        return None
-    return {"id": row[0], "geojson": json.loads(row[1])}
+    return json.loads(row[0]) if row and row[0] else None
 
 
-def postcode_rows(params: dict[str, list[str]]) -> dict:
-    """Emprise GeoJSON d'un code postal pour le tracé de la zone sur la carte."""
-    code = params.get("code", [""])[0]
-    contour = postcode_contour(code)
-    if not contour:
+def _feature_collection(geojson: dict | None, props: dict) -> dict:
+    if not geojson:
         return {"type": "FeatureCollection", "features": []}
     return {
         "type": "FeatureCollection",
-        "features": [{
-            "type": "Feature",
-            "geometry": contour["geojson"],
-            "properties": {"codePostal": code},
-        }],
+        "features": [{"type": "Feature", "geometry": geojson, "properties": props}],
     }
+
+
+def postcode_rows(params: dict[str, list[str]]) -> dict:
+    """Emprise GeoJSON d'un code postal (contours hybrides locaux) pour le tracé carto."""
+    code = params.get("code", [""])[0]
+    if not re.fullmatch(r"\d{5}", code or ""):
+        return {"type": "FeatureCollection", "features": []}
+    geojson = _read_contour_geojson(POSTCODE_CONTOURS_PATH, "codePostal", code)
+    return _feature_collection(geojson, {"codePostal": code})
+
+
+def commune_rows(params: dict[str, list[str]]) -> dict:
+    """Emprise GeoJSON d'une commune (contour IGN local, geo.api figé) pour le tracé carto."""
+    code = params.get("code", [""])[0]
+    if not re.fullmatch(r"\d[\dAB]\d{3}", code or ""):
+        return {"type": "FeatureCollection", "features": []}
+    geojson = _read_contour_geojson(commune_contours_path(dept_from_citycode(code)), "insee", code)
+    return _feature_collection(geojson, {"insee": code})
+
+
+def scope_communes_rows(params: dict[str, list[str]]) -> dict:
+    """Communes associées à l'emprise CP/commune affichée dans le POC."""
+    dept = params.get("dept", [""])[0]
+    scope_mode = params.get("scope_mode", [""])[0]
+    postcode = params.get("postcode", [""])[0]
+    citycode = params.get("citycode", [""])[0]
+    if not re.fullmatch(r"\d{2,3}|2[AB]", dept or ""):
+        return {"communes": []}
+    ban = INTERIM / f"ban_{dept}.parquet"
+    if not ban.exists():
+        return {"communes": []}
+    con = duckdb.connect()
+    try:
+        if scope_mode == "postcode" and re.fullmatch(r"\d{5}", postcode or ""):
+            rows = con.execute(
+                """
+                SELECT code_insee, any_value(nom_commune) AS nom
+                FROM read_parquet(?)
+                WHERE code_postal = ? AND code_insee IS NOT NULL
+                GROUP BY 1
+                ORDER BY 2
+                """,
+                [str(ban), postcode],
+            ).fetchall()
+            return {
+                "kind": "communes",
+                "title": f"Communes partageant {postcode}",
+                "communes": [{"code": code, "nom": nom} for code, nom in rows],
+            }
+        if scope_mode == "city" and re.fullmatch(r"\d[\dAB]\d{3}", citycode or ""):
+            rows = con.execute(
+                """
+                SELECT code_postal, any_value(nom_commune) AS nom
+                FROM read_parquet(?)
+                WHERE code_insee = ?
+                GROUP BY 1
+                ORDER BY 1
+                """,
+                [str(ban), citycode],
+            ).fetchall()
+            if rows:
+                city_name = rows[0][1]
+                return {
+                    "kind": "postcodes",
+                    "title": f"Codes postaux de {city_name}",
+                    "postcodes": [{"code": code, "nom": city_name} for code, _ in rows],
+                }
+            path = commune_contours_path(dept)
+            if path.exists():
+                rows = con.execute(
+                    "SELECT insee, nom FROM read_parquet(?) WHERE insee = ? LIMIT 1",
+                    [str(path), citycode],
+                ).fetchall()
+            else:
+                # Filet de compatibilité uniquement : métierment, DVF ne devrait pas
+                # connaître une commune absente de la BAN du même département. Si ce
+                # repli sert, c'est probablement que l'artefact BAN local est incomplet
+                # ou obsolète et qu'il faut régénérer `ban_{dept}.parquet`.
+                dvf = INTERIM / f"dvf_{dept}.parquet"
+                rows = [] if not dvf.exists() else con.execute(
+                    """
+                    SELECT code_commune, any_value(nom_commune) AS nom
+                    FROM read_parquet(?)
+                    WHERE code_commune = ?
+                    GROUP BY 1
+                    LIMIT 1
+                    """,
+                    [str(dvf), citycode],
+                ).fetchall()
+            return {
+                "kind": "postcodes",
+                "title": "Commune",
+                "postcodes": [],
+                "communes": [{"code": code, "nom": nom} for code, nom in rows],
+            }
+    finally:
+        con.close()
+    return {"communes": []}
 
 
 def parcelles_rows(params: dict[str, list[str]]) -> dict:
@@ -845,6 +937,43 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     dvf_path = INTERIM / f"dvf_{dept}.parquet"
     dvf = str(dvf_path)
     mono = str(mono_mutations_path(dept, dvf_path))
+    comp_columns = {
+        row[0]
+        for row in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [comp]).fetchall()
+    }
+    def optional_comp_col(name: str) -> str:
+        return f"c.{name}" if name in comp_columns else f"NULL AS {name}"
+
+    # Traçabilité des fusions/renommages de communes (cf. preparer_passage_communes) :
+    # présent seulement si les parquets ont été régénérés avec la normalisation COG.
+    dvf_columns = {
+        row[0]
+        for row in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [dvf]).fetchall()
+    }
+    modif_cols = ("commune_modif_origine", "commune_modif_date")
+    has_modif = all(c in comp_columns and c in dvf_columns for c in modif_cols)
+    modif_logement = ", ".join(f"c.{c}" if has_modif else f"NULL AS {c}" for c in modif_cols)
+    modif_autres = ", ".join(f"d.{c}" if has_modif else f"NULL AS {c}" for c in modif_cols)
+
+    bdnb_names = [
+        "rnb_id",
+        "batiment_groupe_id",
+        "resolution_statut",
+        "usage_principal_bdnb_open",
+        "usage_niveau_1_txt",
+        "nb_log",
+        "nb_lot_garpark_rnc",
+        "nb_lot_tertiaire_rnc",
+        "surface_emprise_sol",
+        "hauteur_mean",
+        "nb_niveau",
+        "annee_construction",
+        "type_batiment_dpe",
+        "fiabilite_emprise_sol",
+        "fiabilite_hauteur",
+    ]
+    bdnb_select = ", ".join(optional_comp_col(name) for name in bdnb_names)
+    bdnb_null_select = ", ".join(f"NULL AS {name}" for name in bdnb_names)
     dvf_filters = ["longitude IS NOT NULL", "latitude IS NOT NULL"]
     dvf_args: list[object] = []
     add_scope_filter(
@@ -895,6 +1024,24 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     if scope_mode == "radius":
         final_filters.append("distance_m <= ?")
         final_args.append(radius_m)
+    # Filtre géométrique commune / code postal : ne garder que les biens DANS le polygone
+    # de la zone (le filtre par attribut code_postal/code_commune laisse passer des biens
+    # géocodés hors limite). Aligne stats, compteur et carte sur l'emprise réellement tracée.
+    scope_contour = (
+        (commune_contours_path(dept), "insee", citycode) if scope_mode == "city" and citycode
+        else (POSTCODE_CONTOURS_PATH, "codePostal", postcode) if scope_mode == "postcode" and postcode
+        else None
+    )
+    if scope_contour and scope_contour[0].exists():
+        path, key_col, value = scope_contour
+        row = con.execute(
+            f"SELECT geom_wkb FROM read_parquet(?) WHERE {key_col} = ? LIMIT 1",
+            [str(path), value],
+        ).fetchone()
+        if row and row[0] is not None:
+            load_spatial(con)
+            final_filters.append("ST_Within(ST_Point(lon, lat), ST_GeomFromWKB(?))")
+            final_args.append(row[0])
     scope = scope_label(scope_mode, radius_m, postcode, section)
     args: list[object] = [
         dvf,
@@ -925,19 +1072,21 @@ def market_rows(params: dict[str, list[str]]) -> dict:
             ),
             logement AS (
                 SELECT c.id_mutation, c.date_mutation, c.nature_mutation,
-                       c.code_commune, c.nom_commune, coords.code_postal,
+                       c.code_departement, c.code_commune, c.nom_commune, coords.code_postal,
                        c.id_parcelle, c.adresse_dvf AS adresse, c.type_local AS categorie,
                        TRY_CAST(c.surface_reelle_bati AS DOUBLE) AS surface,
                        TRY_CAST(c.nombre_pieces_principales AS INTEGER) AS pieces,
                        TRY_CAST(c.valeur_fonciere AS DOUBLE) AS prix,
-                       coords.lon, coords.lat, 'logement' AS qualite
+                       coords.lon, coords.lat, 'logement' AS qualite,
+                       {modif_logement},
+                       {bdnb_select}
                 FROM read_parquet(?) c
                 JOIN coords USING (id_mutation, id_parcelle)
                 WHERE {logement_where}
             ),
             autres_candidates AS (
                 SELECT d.id_mutation, d.date_mutation, d.nature_mutation,
-                       d.code_commune, d.nom_commune, d.code_postal, d.id_parcelle,
+                       d.code_departement, d.code_commune, d.nom_commune, d.code_postal, d.id_parcelle,
                        trim(concat_ws(' ', CAST(d.adresse_numero AS VARCHAR), d.adresse_nom_voie)) AS adresse,
                        CASE WHEN d.type_local IS NULL THEN 'Terrain'
                             WHEN d.type_local = 'Local industriel. commercial ou assimilé' THEN 'Local'
@@ -947,7 +1096,9 @@ def market_rows(params: dict[str, list[str]]) -> dict:
                        CAST(NULL AS INTEGER) AS pieces,
                        TRY_CAST(d.valeur_fonciere AS DOUBLE) AS prix,
                        TRY_CAST(d.longitude AS DOUBLE) AS lon, TRY_CAST(d.latitude AS DOUBLE) AS lat,
-                       'indicatif' AS qualite
+                       'indicatif' AS qualite,
+                       {modif_autres},
+                       {bdnb_null_select}
                 FROM dvf_scoped d
                 WHERE {autres_where}
             ),
@@ -974,6 +1125,10 @@ def market_rows(params: dict[str, list[str]]) -> dict:
                 dvf_where=" AND ".join(dvf_filters),
                 logement_where=" AND ".join(logement_filters),
                 autres_where=" AND ".join(autres_filters),
+                modif_logement=modif_logement,
+                modif_autres=modif_autres,
+                bdnb_select=bdnb_select,
+                bdnb_null_select=bdnb_null_select,
                 distance_expr=distance_sql(),
                 final_where=" AND ".join(final_filters),
             ),
@@ -1077,10 +1232,13 @@ def market_rows(params: dict[str, list[str]]) -> dict:
                 "id_mutation": r["id_mutation"],
                 "date_mutation": r["date_mutation"],
                 "nature_mutation": r["nature_mutation"],
+                "code_departement": r["code_departement"],
                 "code_commune": r["code_commune"],
                 "code_postal": r["code_postal"],
                 "adresse": r["adresse"],
                 "commune": r["nom_commune"],
+                "commune_modif_origine": r.get("commune_modif_origine"),
+                "commune_modif_date": r.get("commune_modif_date"),
                 "id_parcelle": r["id_parcelle"],
                 "type_local": r["categorie"],
                 "categorie": r["categorie"],
@@ -1092,6 +1250,21 @@ def market_rows(params: dict[str, list[str]]) -> dict:
                 "distance_m": round(r["distance_m"]),
                 "lon": r["lon"],
                 "lat": r["lat"],
+                "rnb_id": r["rnb_id"],
+                "batiment_groupe_id": r["batiment_groupe_id"],
+                "resolution_statut": r["resolution_statut"],
+                "usage_principal_bdnb_open": r["usage_principal_bdnb_open"],
+                "usage_niveau_1_txt": r["usage_niveau_1_txt"],
+                "nb_log": r["nb_log"],
+                "nb_lot_garpark_rnc": r["nb_lot_garpark_rnc"],
+                "nb_lot_tertiaire_rnc": r["nb_lot_tertiaire_rnc"],
+                "surface_emprise_sol": r["surface_emprise_sol"],
+                "hauteur_mean": r["hauteur_mean"],
+                "nb_niveau": r["nb_niveau"],
+                "annee_construction": r["annee_construction"],
+                "type_batiment_dpe": r["type_batiment_dpe"],
+                "fiabilite_emprise_sol": r["fiabilite_emprise_sol"],
+                "fiabilite_hauteur": r["fiabilite_hauteur"],
             }
             for r in detailed
         ],
@@ -1141,6 +1314,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/batiments": batiments_rows,
             "/api/panoramax": panoramax_rows,
             "/api/codepostal": postcode_rows,
+            "/api/commune": commune_rows,
+            "/api/scope-communes": scope_communes_rows,
         }
         fn = api.get(parsed.path)
         if fn:
@@ -1184,6 +1359,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    depts = available_departements()
     print(f"POC web: http://{HOST}:{PORT}")
-    print(f"Départements disponibles: {', '.join(available_departements())}")
+    print(f"Départements disponibles: {', '.join(depts)}")
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
