@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.4.0 - 2026-06-11
+
+- **Exploration plus complète** : le type de bien passe sur un menu cohérent avec « Fond de carte », avec bornes naturelles par emprise pour le prix, la surface et les pièces. Les pièces sont désactivées pour les catégories où elles n'ont pas de sens.
+- **Résultats cohérents à grande échelle** : le tri est appliqué côté serveur sur toute la cohorte avant limitation d'affichage; vider `Max` prend désormais le total disponible, avec un plafond applicatif aligné sur le plafond de sécurité des points.
+- **Panneaux plus propres** : le panneau droit disparaît entièrement quand il est replié, les contrôles MapLibre passent derrière le panneau gauche, et la sélection d'un comparable est promue temporairement en haut avec une animation plus fluide.
+- **Cadastre Dordogne reconstruit** : les données locales du département 24 ont été reconstruites avec les couches cadastre Etalab, rétablissant la résolution parcellaire à Sarlat-la-Canéda.
+- **Panoramax retiré** : suppression des appels, panneaux et rendus de vue rue pour réduire le bruit visuel et simplifier l'application.
+
 ## v1.3.0 - 2026-06-11
 
 - **Future map shell** : UI réorganisée autour de deux docks stables — panneau gauche (recherche/estimation) et dock droit (résultats) — tous deux escamotables. La carte reste le canvas principal en arrière-plan.
