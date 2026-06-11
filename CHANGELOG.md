@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.2.0 - 2026-06-11
+
+- **Acquisition départementale complète** : `preparer_donnees.py` devient le point d'entrée unique pour DVF, RNB, BDNB, BAN, contours communes, COG et cadastre Etalab (sections, parcelles, bâtiments, lieux-dits), avec vérification finale bloquante des artefacts attendus avant construction.
+- **Téléchargements robustes et partagés** : nouveau helper `telechargement/_telechargement.py` avec écriture atomique et retry exponentiel, utilisé par les modules d'acquisition communes, cadastre et passage communes.
+- **Contours codes postaux complets** : agrégation finale par `codePostal` via union géométrique, pour éviter les contours partiels quand un code postal traverse plusieurs départements traités.
+- **Détails cartographiques enrichis** : endpoint `/api/lieudit` et affichage du lieu-dit cadastral dans la fiche d'une vente ; les détails d'emprise commune/code postal se comportent en accordéon et replient temporairement les stats pour réduire la surcharge visuelle.
+- **Documentation pipeline/source** : mise à jour du flux d'acquisition, des artefacts garantis, des lieux-dits cadastraux et du piège des codes postaux trans-départementaux.
+
 ## v1.1.0 - 2026-06-11
 
 - **Emprises géographiques sur contours IGN locaux** : contours communes figés depuis geo.api (`preparer_communes.py`) et contours codes postaux hybrides (union de communes + partition intra-communale par plus proche adresse BAN) remplaçant le dataset « contours calculés » 2021 débordant. Filtrage **géométrique côté serveur** (`ST_Within` sur le polygone de l'emprise) : stats, compteur et carte alignés sur l'emprise réellement tracée ; le front dessine l'emprise depuis le serveur (`/api/commune`, `/api/codepostal`), plus de dépendance runtime à geo.api ni de rognage point-in-polygon côté client.
