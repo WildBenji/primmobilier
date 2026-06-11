@@ -416,7 +416,8 @@ function setBatiHover(id) {
 // Dessine la parcelle + ses bâtiments cadastraux du comparable sélectionné et
 // remplit la sous-section « Bâti cadastral » du détail.
 async function loadComparableBatiments(row) {
-  const container = document.querySelector("#detailBatiments");
+  const container = document.querySelector(`.comparable-detail[data-uid="${CSS.escape(String(row.uid))}"] #detailBatiments`)
+    || document.querySelector("#detailBatiments");
   const dept = currentDept();
   if (!dept || !row.id_parcelle) {
     setParcelleDetail(null);
@@ -592,11 +593,6 @@ function makeDraggable(positionedEls, handle, sourceEl) {
 }
 
 const mapControls = appEl.querySelector(".map-controls");
-makeDraggable([estimationPanel, expandEstimation], estimationPanel.querySelector(".brand"), estimationPanel);
-makeDraggable([estimationPanel, expandEstimation], expandEstimation, expandEstimation);
-makeDraggable([mapControls], mapControls, mapControls);
-makeDraggable([tableWrap], tableWrap.querySelector(".list-panel .table-head"), tableWrap);
-makeDraggable([tableWrap], expandComparables, tableWrap);
 makeDraggable([streetViewPanel], streetViewPanel.querySelector(".table-head"), streetViewPanel);
 
 addressInput.addEventListener("input", () => {
@@ -808,16 +804,11 @@ function formatPrice(value) {
   return `${Math.round(value / 1000)} k€`;
 }
 
-closeDetail.addEventListener("click", () => {
-  comparableDetail.hidden = true;
-  tableWrap.classList.remove("detail-open");
-  selectComparable(null, { fit: false });
-});
+closeDetail.addEventListener("click", () => selectComparable(null, { fit: false }));
 
 toggleComparables.addEventListener("click", () => {
   selectedComparableUid = null;
   comparableDetail.hidden = true;
-  tableWrap.classList.remove("detail-open");
   tableWrap.classList.add("collapsed");
 });
 
@@ -1367,7 +1358,6 @@ function renderComparables(rows, points, total) {
   selectedComparableUid = null;
   lastSelectedUid = null;
   comparableDetail.hidden = true;
-  tableWrap.classList.remove("detail-open");
   tableWrap.classList.remove("collapsed");
   setParcelleDetail(null);
   tableMeta.textContent = `${rows.length}/${total ?? rows.length} affichés`;
@@ -1385,6 +1375,11 @@ function renderComparables(rows, points, total) {
 function renderComparableList() {
   comparablesList.innerHTML = "";
   for (const row of sortedComparables()) {
+    const card = document.createElement("article");
+    card.className = "comparable-card";
+    card.classList.toggle("selected", row.uid === selectedComparableUid);
+    card.dataset.uid = row.uid;
+
     const item = document.createElement("button");
     item.type = "button";
     item.className = "comparable";
@@ -1399,7 +1394,15 @@ function renderComparableList() {
     item.addEventListener("click", () => selectComparable(row.uid, { fit: true }));
     item.addEventListener("mouseenter", () => setComparableHover(row.uid, true));
     item.addEventListener("mouseleave", () => setComparableHover(row.uid, false));
-    comparablesList.append(item);
+    card.append(item);
+    if (row.uid === selectedComparableUid) {
+      const detail = document.createElement("div");
+      detail.className = "comparable-detail";
+      detail.dataset.uid = row.uid;
+      card.append(detail);
+      renderDetail(row, detail);
+    }
+    comparablesList.append(card);
   }
 }
 
@@ -1709,11 +1712,14 @@ function selectComparable(uid, options = { fit: false }, fallbackRow = null) {
   for (const item of comparablesList.querySelectorAll(".comparable")) {
     item.classList.toggle("selected", Number(item.dataset.uid) === uid);
   }
+  for (const card of comparablesList.querySelectorAll(".comparable-card")) {
+    card.classList.toggle("selected", Number(card.dataset.uid) === uid);
+  }
   if (uid === null) {
     comparableDetail.hidden = true;
-    tableWrap.classList.remove("detail-open");
+    renderComparableList();
     setParcelleDetail(null);
-    // On rétablit la grille cadastre selon le réglage du menu (haut-droite).
+    // On rétablit la grille cadastre selon le réglage du menu.
     applyCadastre();
     return;
   }
@@ -1721,9 +1727,8 @@ function selectComparable(uid, options = { fit: false }, fallbackRow = null) {
   const row = currentComparables.find((candidate) => candidate.uid === uid) || fallbackRow;
   if (!row) return;
   tableWrap.classList.remove("collapsed");
-  renderDetail(row);
-  comparableDetail.hidden = false;
-  tableWrap.classList.add("detail-open");
+  comparableDetail.hidden = true;
+  renderComparableList();
   loadComparableStreetView(row);
   loadComparableLieuDit(row);
   // Focus sur la parcelle : on n'affiche que sa grille cadastre (via loadComparableBatiments)
@@ -1735,7 +1740,7 @@ function selectComparable(uid, options = { fit: false }, fallbackRow = null) {
   }
 }
 
-function renderDetail(row) {
+function renderDetail(row, container = detailBody) {
   const similarityField = row.similarity != null ? detailField("Similarité", `${int(row.similarity)} %`) : "";
   const resolutionField = row.resolution_statut === "rnb_resolu" || row.resolution_statut === "bdnb_groupe_resolu"
     ? detailField("Résolution", row.resolution_statut === "rnb_resolu" ? "bâtiment identifié" : "groupe bâtiment identifié")
@@ -1777,7 +1782,7 @@ function renderDetail(row) {
     row.annee_construction ? detailField("Construction", row.annee_construction) : "",
   ].join("");
 
-  detailBody.innerHTML = `
+  container.innerHTML = `
     <div class="detail-title">
       <strong>${int(row.prix_m2)} €/m² · ${euro(row.prix)}</strong>
       <span>${escapeHtml(row.adresse || "Adresse DVF non renseignée")}</span>
@@ -1812,14 +1817,16 @@ async function loadComparableLieuDit(row) {
     data = null;
   }
   if (selectedComparableUid !== row.uid) return; // sélection changée entre-temps
-  const el = document.querySelector("#detailLieuDit");
+  const el = document.querySelector(`.comparable-detail[data-uid="${CSS.escape(String(row.uid))}"] #detailLieuDit`)
+    || document.querySelector("#detailLieuDit");
   if (!el || !data || !data.nom) return;
   el.textContent = `Lieu-dit : ${data.nom}`;
   el.hidden = false;
 }
 
 async function loadComparableStreetView(row) {
-  const container = document.querySelector("#detailStreetView");
+  const container = document.querySelector(`.comparable-detail[data-uid="${CSS.escape(String(row.uid))}"] #detailStreetView`)
+    || document.querySelector("#detailStreetView");
   if (!container) return;
   const view = await findPanoramaxImage(row.lon, row.lat);
   if (selectedComparableUid !== row.uid) return;
@@ -1969,18 +1976,18 @@ document.addEventListener("mouseout", (event) => {
   if (event.target.closest?.(".hint")) hintTip.hidden = true;
 });
 
-// Repli/dépli des blocs collapsibles (délégation : le détail est ré-rendu en innerHTML).
-detailBody.addEventListener("click", (event) => {
+// Repli/dépli des blocs collapsibles (délégation : le détail inline est ré-rendu en innerHTML).
+document.addEventListener("click", (event) => {
   const summary = event.target.closest(".collapsible-summary");
   if (summary) summary.parentElement.classList.toggle("open");
 });
 
 // Survol d'une box « Bâti cadastral » -> illumine l'empreinte correspondante sur la carte.
-detailBody.addEventListener("mouseover", (event) => {
+document.addEventListener("mouseover", (event) => {
   const item = event.target.closest("[data-bati-idx]");
   if (item) setBatiHover(Number(item.dataset.batiIdx));
 });
-detailBody.addEventListener("mouseout", (event) => {
+document.addEventListener("mouseout", (event) => {
   const item = event.target.closest("[data-bati-idx]");
   if (item && !item.contains(event.relatedTarget)) setBatiHover(null);
 });
