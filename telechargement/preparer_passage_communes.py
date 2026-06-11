@@ -27,11 +27,12 @@ Usage : uv run python -m telechargement.preparer_passage_communes
 """
 from __future__ import annotations
 
-import urllib.request
 from pathlib import Path
 
 import duckdb
 import polars as pl
+
+from telechargement._telechargement import download as _download
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw"
@@ -40,17 +41,6 @@ COG_MILLESIME = "2026"
 COG_BASE = "https://www.insee.fr/fr/statistiques/fichier/8740222"
 COMMUNE_URL = f"{COG_BASE}/v_commune_{COG_MILLESIME}.csv"
 MVT_URL = f"{COG_BASE}/v_mvt_commune_{COG_MILLESIME}.csv"
-
-
-def _download(url: str, dest: Path) -> Path:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists() and dest.stat().st_size > 0:
-        print(f"✓ déjà là : {dest.name}")
-        return dest
-    print(f"⤓ {url}")
-    urllib.request.urlretrieve(url, dest)
-    print(f"  → {dest.name} ({dest.stat().st_size / 1e6:.1f} Mo)")
-    return dest
 
 
 def _resolve(code: str, edges: dict[str, str], current: dict[str, str]) -> str | None:

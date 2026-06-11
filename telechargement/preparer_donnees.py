@@ -1,9 +1,15 @@
 """Télécharge et prépare les artefacts d'un département pour le pipeline comparables.
 
-Reprend l'acquisition du notebook spike sous forme réutilisable. Produit (idempotent) :
-  data/raw/      dvf_{dept}_{annee}.csv.gz, RNB_{dept}.csv.zip, ban_{dept}.csv.gz
-  data/interim/  dvf_{dept}.parquet, rnb_plots_{dept}.parquet, rnb_adr_{dept}.parquet,
-                 ban_{dept}.parquet, bdnb_batiments_{dept}.parquet
+Point d'entrée **unique et complet** de l'acquisition d'un département : DVF, RNB, BDNB,
+BAN, contours communes (geo.api), table de passage COG, **et cadastre** (sections, parcelles,
+bâtiments, lieux-dits). Idempotent. Produit :
+  data/raw/      dvf_{dept}_{annee}.csv.gz, RNB_{dept}.csv.zip, ban_{dept}.csv.gz, cadastre-{dept}-*.json.gz, …
+  data/interim/  dvf_, rnb_plots_, rnb_adr_, ban_, bdnb_batiments_, contours_communes_,
+                 cadastre_{sections,parcelles,batiments,lieux_dits}_ {dept}.parquet
+                 + national : passage_communes, communes_actuelles, communes_modif
+
+À la fin, `_verifier(dept)` **garantit** que tous ces artefacts existent (sinon arrêt net) :
+la construction des données ne doit jamais démarrer sur une acquisition incomplète.
 
 (Le DPE n'est pas requis par le pipeline comparables ; il reste géré par le notebook.)
 
@@ -13,12 +19,13 @@ from __future__ import annotations
 
 import sys
 import io
-import urllib.request
 import zipfile
 from pathlib import Path
 
 import polars as pl
 
+from telechargement._telechargement import download
+from telechargement.preparer_cadastre import main as preparer_cadastre
 from telechargement.preparer_communes import preparer_communes
 from telechargement.preparer_passage_communes import preparer_passage_communes
 
@@ -58,17 +65,6 @@ def _exiger(chemin: Path) -> Path:
     if not chemin.exists():
         sys.exit(f"Artefact manquant (lancer l'étape amont d'abord) : {chemin}")
     return chemin
-
-
-def download(url: str, dest: Path) -> Path:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists() and dest.stat().st_size > 0:
-        print(f"✓ déjà là : {dest.name}")
-        return dest
-    print(f"⤓ {url}")
-    urllib.request.urlretrieve(url, dest)
-    print(f"  → {dest.name} ({dest.stat().st_size / 1e6:.1f} Mo)")
-    return dest
 
 
 def preparer_dvf(dept: str) -> None:
@@ -315,6 +311,40 @@ def preparer_bdnb(dept: str) -> None:
     print(f"  → {cache.name} ({frame.height} lignes)")
 
 
+# Artefacts d'acquisition garantis par dept (base du pipeline). La construction des
+# données NE DOIT JAMAIS démarrer s'il en manque un — `_verifier` échoue alors net.
+ARTEFACTS_DEPT = (
+    "dvf_{d}.parquet",
+    "rnb_plots_{d}.parquet",
+    "rnb_adr_{d}.parquet",
+    "bdnb_batiments_{d}.parquet",
+    "ban_{d}.parquet",
+    "contours_communes_{d}.parquet",
+    "cadastre_sections_{d}.parquet",
+    "cadastre_parcelles_{d}.parquet",
+    "cadastre_batiments_{d}.parquet",
+    "cadastre_lieux_dits_{d}.parquet",
+)
+ARTEFACTS_NATIONAUX = (
+    "passage_communes.parquet",
+    "communes_actuelles.parquet",
+    "communes_modif.parquet",
+)
+
+
+def _verifier(dept: str) -> None:
+    """Garantit que toute l'acquisition a produit ses artefacts (sinon arrêt net)."""
+    attendus = [INTERIM / n.format(d=dept) for n in ARTEFACTS_DEPT]
+    attendus += [INTERIM / n for n in ARTEFACTS_NATIONAUX]
+    manquants = [p.name for p in attendus if not (p.exists() and p.stat().st_size > 0)]
+    if manquants:
+        sys.exit(
+            f"✗ Acquisition incomplète pour {dept} : {len(manquants)} artefact(s) manquant(s) "
+            f"— {', '.join(manquants)}. Relancer preparer_donnees (téléchargement idempotent)."
+        )
+    print(f"  ✓ acquisition complète : {len(attendus)} artefacts présents")
+
+
 def main(dept: str) -> None:
     preparer_passage_communes()  # table de passage COG (avant DVF : normalisation des codes périmés)
     preparer_dvf(dept)
@@ -322,6 +352,8 @@ def main(dept: str) -> None:
     preparer_bdnb(dept)
     preparer_ban(dept)
     preparer_communes(dept)
+    preparer_cadastre(dept)  # sections + parcelles + batiments + lieux_dits
+    _verifier(dept)
     print(f"\n✓ Données {dept} prêtes pour le pipeline.")
 
 
