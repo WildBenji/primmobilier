@@ -14,7 +14,6 @@
           <strong>Primmobilier</strong>
           <div class="head-actions">
             <span>POC comparables DVF</span>
-            <button id="toggleEstimation" type="button" aria-label="Réduire">−</button>
           </div>
         </div>
 
@@ -121,7 +120,61 @@
           <button id="reset" type="button">Reset</button>
         </div>
 
-        <div id="status" class="status">Sélectionne une adresse en Gironde ou Lot-et-Garonne.</div>
+        <div class="map-controls" aria-label="Contrôles de carte">
+          <div class="layer-select layer-menu" id="baseLayerMenu">
+            <span>Fond de carte</span>
+            <div class="layer-menu-trigger">
+              <button type="button" class="layer-menu-current">
+                <span id="baseLayerLabel">IGN Plan</span>
+                <span class="layer-menu-caret">▾</span>
+              </button>
+              <div class="layer-menu-providers">
+                <div class="layer-provider">
+                  <button type="button" class="layer-provider-name">IGN<span class="layer-menu-caret">‹</span></button>
+                  <div class="layer-submenu">
+                    <button type="button" data-layer="ignplan" class="active">IGN Plan</button>
+                    <button type="button" data-layer="ign">IGN Satellite</button>
+                  </div>
+                </div>
+                <div class="layer-provider">
+                  <button type="button" class="layer-provider-name">CARTO<span class="layer-menu-caret">‹</span></button>
+                  <div class="layer-submenu">
+                    <button type="button" data-layer="carto">Positron</button>
+                    <button type="button" data-layer="voyager">Voyager</button>
+                  </div>
+                </div>
+                <div class="layer-provider">
+                  <button type="button" class="layer-provider-name">OSM<span class="layer-menu-caret">‹</span></button>
+                  <div class="layer-submenu">
+                    <button type="button" data-layer="osm">OSM standard</button>
+                  </div>
+                </div>
+                <div class="layer-provider">
+                  <button type="button" class="layer-provider-name">Stadia<span class="layer-menu-caret">‹</span></button>
+                  <div class="layer-submenu">
+                    <button type="button" data-layer="stadiasat">Stadia Satellite</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="layer-select layer-menu" id="cadastreMenu">
+            <span>Grille cadastre</span>
+            <div class="layer-menu-trigger">
+              <button type="button" class="layer-menu-current">
+                <span id="cadastreLabel">Masquée</span>
+                <span class="layer-menu-caret">▾</span>
+              </button>
+              <div class="layer-menu-providers">
+                <button type="button" data-cadastre="none" class="active">Masquée</button>
+                <button type="button" data-cadastre="biens">Biens affichés</button>
+                <button type="button" data-cadastre="all">Tout (zoom ≥ 15)</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="status" class="status"></div>
         <div id="targetStreetView" class="street-status" hidden></div>
 
         <section id="result" class="result" hidden>
@@ -131,7 +184,7 @@
           </div>
           <div class="metrics">
             <span><b id="medianM2"></b> €/m²</span>
-            <span><b id="count"></b> ventes</span>
+            <span><button id="salesChip" class="scope-chip sales-chip" type="button" aria-expanded="true"><b id="count"></b> ventes</button></span>
             <span><button id="scope" class="scope-chip" type="button"></button></span>
           </div>
           <div id="scopeDetails" class="scope-details" hidden></div>
@@ -143,70 +196,16 @@
 
         <section id="marketResult" class="result" hidden>
           <div class="metrics">
-            <span><b id="marketCount"></b> ventes</span>
+            <span><button id="marketSalesChip" class="scope-chip sales-chip" type="button" aria-expanded="true"><b id="marketCount"></b> ventes</button></span>
             <span><button id="marketScope" class="scope-chip" type="button"></button></span>
           </div>
           <div id="marketScopeDetails" class="scope-details" hidden></div>
           <div id="marketStats" class="market-stats"></div>
         </section>
       </section>
-      <button id="expandEstimation" class="expand-estimation" type="button">Estimation</button>
+      <button id="expandEstimation" class="expand-estimation" type="button" aria-label="Ouvrir la recherche">›</button>
 
       <div id="map"></div>
-
-      <aside class="map-controls" aria-label="Contrôles de carte">
-        <div class="layer-select layer-menu" id="baseLayerMenu">
-          <span>Fond de carte</span>
-          <div class="layer-menu-trigger">
-            <button type="button" class="layer-menu-current">
-              <span id="baseLayerLabel">IGN Plan</span>
-              <span class="layer-menu-caret">▾</span>
-            </button>
-            <div class="layer-menu-providers">
-              <div class="layer-provider">
-                <button type="button" class="layer-provider-name">IGN<span class="layer-menu-caret">‹</span></button>
-                <div class="layer-submenu">
-                  <button type="button" data-layer="ignplan" class="active">IGN Plan</button>
-                  <button type="button" data-layer="ign">IGN Satellite</button>
-                </div>
-              </div>
-              <div class="layer-provider">
-                <button type="button" class="layer-provider-name">CARTO<span class="layer-menu-caret">‹</span></button>
-                <div class="layer-submenu">
-                  <button type="button" data-layer="carto">Positron</button>
-                  <button type="button" data-layer="voyager">Voyager</button>
-                </div>
-              </div>
-              <div class="layer-provider">
-                <button type="button" class="layer-provider-name">OSM<span class="layer-menu-caret">‹</span></button>
-                <div class="layer-submenu">
-                  <button type="button" data-layer="osm">OSM standard</button>
-                </div>
-              </div>
-              <div class="layer-provider">
-                <button type="button" class="layer-provider-name">Stadia<span class="layer-menu-caret">‹</span></button>
-                <div class="layer-submenu">
-                  <button type="button" data-layer="stadiasat">Stadia Satellite</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="layer-select layer-menu" id="cadastreMenu">
-          <span>Grille cadastre</span>
-          <div class="layer-menu-trigger">
-            <button type="button" class="layer-menu-current">
-              <span id="cadastreLabel">Masqué</span>
-              <span class="layer-menu-caret">▾</span>
-            </button>
-            <div class="layer-menu-providers">
-              <button type="button" data-cadastre="none" class="active">Masqué</button>
-              <button type="button" data-cadastre="biens">Biens affichés</button>
-              <button type="button" data-cadastre="all">Tout (zoom ≥ 15)</button>
-            </div>
-          </div>
-        </div>
-      </aside>
 
       <aside id="streetViewPanel" class="street-panel" hidden aria-label="Vue rue">
         <div class="table-head">
@@ -242,12 +241,11 @@
                 </div>
               </div>
               <span id="tableMeta">Aucun calcul</span>
-              <button id="toggleComparables" type="button" aria-label="Réduire">−</button>
             </div>
           </div>
           <div id="comparablesList" class="comparables-list"></div>
         </div>
-        <button id="expandComparables" class="expand-comparables" type="button">Résultats</button>
+        <button id="expandComparables" class="expand-comparables" type="button" aria-label="Ouvrir les résultats">‹</button>
       </aside>
     </main>
 

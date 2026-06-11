@@ -6,7 +6,6 @@ const targetStreetView = document.querySelector("#targetStreetView");
 const estimateBtn = document.querySelector("#estimate");
 const resetBtn = document.querySelector("#reset");
 const estimationPanel = document.querySelector("#estimationPanel");
-const toggleEstimation = document.querySelector("#toggleEstimation");
 const expandEstimation = document.querySelector("#expandEstimation");
 const baseLayerMenu = document.querySelector("#baseLayerMenu");
 const baseLayerLabel = document.querySelector("#baseLayerLabel");
@@ -21,7 +20,6 @@ const streetViewPanel = document.querySelector("#streetViewPanel");
 const streetViewBody = document.querySelector("#streetViewBody");
 const closeStreetView = document.querySelector("#closeStreetView");
 const tableWrap = document.querySelector(".table-wrap");
-const toggleComparables = document.querySelector("#toggleComparables");
 const expandComparables = document.querySelector("#expandComparables");
 const sortMenu = document.querySelector(".sort-menu");
 const sortToggle = document.querySelector("#sortToggle");
@@ -49,8 +47,10 @@ const marketResult = document.querySelector("#marketResult");
 const marketStats = document.querySelector("#marketStats");
 const estimationStats = document.querySelector("#estimationStats");
 const marketCount = document.querySelector("#marketCount");
+const marketSalesChip = document.querySelector("#marketSalesChip");
 const marketScope = document.querySelector("#marketScope");
 const scopeChip = document.querySelector("#scope");
+const salesChip = document.querySelector("#salesChip");
 const scopeDetails = document.querySelector("#scopeDetails");
 const marketScopeDetails = document.querySelector("#marketScopeDetails");
 const addressLabel = document.querySelector("#addressLabel");
@@ -71,6 +71,7 @@ const streetViewCache = new Map();
 let selectedAddress = null;
 let targetMarker = null;
 let currentComparables = [];
+let currentComparablesTotal = null;
 let searchTimer = null;
 let radiusTimer = null;
 let historyTimer = null;
@@ -82,6 +83,8 @@ let selectedHistoryMinYears = 0;
 let selectedHistoryMaxYears = 5;
 let selectedComparableUid = null;
 let lastSelectedUid = null;
+let detailReturnScrollTop = null;
+const viewedComparableUids = new Set();
 let selectedAddressSeq = 0;
 let comparableSortKey = "similarity";
 let comparableSortDirection = "desc";
@@ -796,6 +799,33 @@ function priceText() {
   return `${lo} – ${hi}`;
 }
 
+function setResultsAvailable(available) {
+  tableWrap.classList.toggle("has-results", Boolean(available));
+  syncDrawerTabs();
+}
+
+function setStatsPanelOpen(button, panel, open) {
+  if (!button || !panel) return;
+  panel.hidden = !open;
+  button.classList.toggle("open", open);
+  button.setAttribute("aria-expanded", String(open));
+}
+
+function setCompanionPanelOpen(panel, open) {
+  if (panel === marketStats) {
+    setStatsPanelOpen(marketSalesChip, marketStats, open);
+  } else if (panel === estimationStats) {
+    setStatsPanelOpen(salesChip, estimationStats, open);
+  } else if (panel) {
+    panel.hidden = !open;
+  }
+}
+
+function syncDrawerTabs() {
+  expandEstimation.textContent = estimationPanel.classList.contains("collapsed") ? "›" : "‹";
+  expandComparables.textContent = tableWrap.classList.contains("collapsed") ? "‹" : "›";
+}
+
 function formatPrice(value) {
   if (value >= 1000000) {
     const millions = value / 1000000;
@@ -806,14 +836,9 @@ function formatPrice(value) {
 
 closeDetail.addEventListener("click", () => selectComparable(null, { fit: false }));
 
-toggleComparables.addEventListener("click", () => {
-  selectedComparableUid = null;
-  comparableDetail.hidden = true;
-  tableWrap.classList.add("collapsed");
-});
-
 expandComparables.addEventListener("click", () => {
-  tableWrap.classList.remove("collapsed");
+  tableWrap.classList.toggle("collapsed");
+  syncDrawerTabs();
 });
 
 sortToggle.addEventListener("click", (event) => {
@@ -845,13 +870,15 @@ document.addEventListener("click", () => {
   sortToggle.setAttribute("aria-expanded", "false");
 });
 
-toggleEstimation.addEventListener("click", () => {
-  estimationPanel.classList.add("collapsed");
+expandEstimation.addEventListener("click", () => {
+  estimationPanel.classList.toggle("collapsed");
+  syncDrawerTabs();
 });
 
-expandEstimation.addEventListener("click", () => {
-  estimationPanel.classList.remove("collapsed");
-});
+syncDrawerTabs();
+
+salesChip.addEventListener("click", () => setStatsPanelOpen(salesChip, estimationStats, estimationStats.hidden));
+marketSalesChip.addEventListener("click", () => setStatsPanelOpen(marketSalesChip, marketStats, marketStats.hidden));
 
 closeStreetView.addEventListener("click", () => {
   streetViewPanel.hidden = true;
@@ -870,8 +897,15 @@ map.on("mouseenter", "comparables-points", () => {
   map.getCanvas().style.cursor = "pointer";
 });
 
+map.on("mousemove", "comparables-points", (event) => {
+  const feature = event.features && event.features[0];
+  if (!feature) return;
+  setComparableHover(Number(feature.properties.uid), true, { fromMap: true });
+});
+
 map.on("mouseleave", "comparables-points", () => {
   map.getCanvas().style.cursor = "";
+  setComparableHover(hoveredComparableUid, false, { fromMap: true });
 });
 
 // Double-clic SUR un comparable : zoom rapproché (pas au max) + ouverture du détail.
@@ -1028,7 +1062,7 @@ function resetAll() {
   streetViewPanel.hidden = true;
 
   map.flyTo({ center: [-0.5792, 44.8378], zoom: 12 });
-  setStatus("Sélectionne une adresse en Gironde ou Lot-et-Garonne.");
+  setStatus("");
 }
 
 function applyMode() {
@@ -1050,6 +1084,7 @@ function applyMode() {
   comparablesList.innerHTML = "";
   setComparableGeojson([]);
   tableMeta.textContent = "Aucun calcul";
+  setResultsAvailable(false);
   tableWrap.classList.add("collapsed");
   applyMapMode();
 }
@@ -1156,6 +1191,7 @@ async function runMarket() {
     currentComparables = [];
     comparablesList.innerHTML = "";
     tableMeta.textContent = "Aucun résultat";
+    setResultsAvailable(false);
     tableWrap.classList.add("collapsed");
     map.flyTo({ center: [lon, lat], zoom: selectedScope === "radius" ? zoomForRadius(selectedRadius) : 13.4 });
     setStatus(data.error);
@@ -1170,6 +1206,7 @@ async function runMarket() {
 function renderMarket(data) {
   marketResult.hidden = false;
   marketCount.textContent = int(data.summary.count);
+  setStatsPanelOpen(marketSalesChip, marketStats, true);
   configureScopeChip(marketScope, marketScopeDetails, data.target, data.summary.scope, marketStats);
   marketStats.innerHTML = "";
   for (const t of data.summary.types) {
@@ -1226,6 +1263,7 @@ async function estimate() {
     currentComparables = [];
     comparablesList.innerHTML = "";
     tableMeta.textContent = "Aucun résultat";
+    setResultsAvailable(false);
     tableWrap.classList.add("collapsed");
     map.flyTo({ center: [lon, lat], zoom: selectedScope === "radius" ? zoomForRadius(selectedRadius) : 13.4 });
     setStatus(data.error);
@@ -1245,6 +1283,7 @@ function renderResult(data) {
   document.querySelector("#estimatedPrice").textContent = euro(summary.estimated_price);
   document.querySelector("#medianM2").textContent = int(summary.median_m2);
   document.querySelector("#count").textContent = summary.count;
+  setStatsPanelOpen(salesChip, estimationStats, true);
   configureScopeChip(scopeChip, scopeDetails, data.target, summary.scope, estimationStats);
   document.querySelector("#range").textContent =
     `Fourchette observée: ${euro(summary.low_price)} à ${euro(summary.high_price)} pour ${summary.scope} · ${summary.history} · confiance ${summary.confidence}`;
@@ -1259,7 +1298,7 @@ function configureScopeChip(button, panel, target, label, companion) {
   button.textContent = label;
   panel.hidden = true;
   panel.innerHTML = "";
-  if (companion) companion.hidden = false; // détail fermé par défaut -> ventes visibles
+  setCompanionPanelOpen(companion, true); // détail fermé par défaut -> ventes visibles
   button.classList.remove("open");
   button.setAttribute("aria-expanded", "false");
   const interactive = target && ["postcode", "city"].includes(target.scope_mode);
@@ -1272,7 +1311,7 @@ function configureScopeChip(button, panel, target, label, companion) {
 async function toggleScopeDetails(button, panel, target, companion) {
   if (!panel.hidden) {
     panel.hidden = true;
-    if (companion) companion.hidden = false; // on referme le détail -> les ventes reviennent
+    setCompanionPanelOpen(companion, true); // on referme le détail -> les ventes reviennent
     button.classList.remove("open");
     button.setAttribute("aria-expanded", "false");
     return;
@@ -1280,7 +1319,7 @@ async function toggleScopeDetails(button, panel, target, companion) {
   button.classList.add("open");
   button.setAttribute("aria-expanded", "true");
   panel.hidden = false;
-  if (companion) companion.hidden = true; // on déplie le détail -> on replie les ventes
+  setCompanionPanelOpen(companion, false); // on déplie le détail -> on replie les ventes
   const loadingTimer = setTimeout(() => {
     if (!panel.hidden) panel.innerHTML = `<strong>Chargement...</strong>`;
   }, 120);
@@ -1354,13 +1393,16 @@ function selectScopeCommune(citycode, city) {
 
 function renderComparables(rows, points, total) {
   currentComparables = rows;
+  currentComparablesTotal = total ?? rows.length;
+  viewedComparableUids.clear();
   setComparableGeojson(points || rows);
   selectedComparableUid = null;
   lastSelectedUid = null;
   comparableDetail.hidden = true;
   tableWrap.classList.remove("collapsed");
+  setResultsAvailable(rows.length > 0);
   setParcelleDetail(null);
-  tableMeta.textContent = `${rows.length}/${total ?? rows.length} affichés`;
+  tableMeta.textContent = `${rows.length}/${currentComparablesTotal} affichés`;
   // Si on a demandé plus de comparables qu'il n'en existe, on ramène le champ « Max » au réel disponible.
   if (total != null) {
     maxComparablesInput.value = String(Math.min(Number(maxComparablesInput.value) || 200, total));
@@ -1372,12 +1414,22 @@ function renderComparables(rows, points, total) {
   }
 }
 
+function addComparableToDisplayed(row) {
+  if (!row || row.uid == null || currentComparables.some((candidate) => candidate.uid === row.uid)) {
+    return;
+  }
+  currentComparables = [...currentComparables, row];
+  tableMeta.textContent = `${currentComparables.length}/${currentComparablesTotal ?? currentComparables.length} affichés`;
+}
+
 function renderComparableList() {
   comparablesList.innerHTML = "";
   for (const row of sortedComparables()) {
+    const viewed = viewedComparableUids.has(row.uid);
     const card = document.createElement("article");
     card.className = "comparable-card";
     card.classList.toggle("selected", row.uid === selectedComparableUid);
+    card.classList.toggle("viewed", viewed);
     card.dataset.uid = row.uid;
 
     const item = document.createElement("button");
@@ -1389,7 +1441,7 @@ function renderComparableList() {
       <b>${int(row.prix_m2)} €/m²</b>
       <b>${euro(row.prix)}</b>
       <span>${escapeHtml(row.commune || "")} · ${int(row.distance_m)} m · ${escapeHtml(String(row.surface ?? "-"))} m² · ${escapeHtml(String(row.pieces || "-"))} p.</span>
-      <span>${escapeHtml(row.date_mutation || "")}</span>
+      <span class="result-date">${escapeHtml(row.date_mutation || "")}${viewed ? `<span class="viewed-tick" title="Détail consulté" aria-label="Détail consulté">✓</span>` : ""}</span>
     `;
     item.addEventListener("click", () => selectComparable(row.uid, { fit: true }));
     item.addEventListener("mouseenter", () => setComparableHover(row.uid, true));
@@ -1406,18 +1458,59 @@ function renderComparableList() {
   }
 }
 
+function scrollComparableToTop(uid) {
+  requestAnimationFrame(() => {
+    const card = comparablesList.querySelector(`.comparable-card[data-uid="${CSS.escape(String(uid))}"]`);
+    if (!card) return;
+    const listRect = comparablesList.getBoundingClientRect();
+    const cardRect = card.getBoundingClientRect();
+    const top = comparablesList.scrollTop + cardRect.top - listRect.top;
+    comparablesList.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+  });
+}
+
+function scrollComparableToMiddle(uid) {
+  requestAnimationFrame(() => {
+    const card = comparablesList.querySelector(`.comparable-card[data-uid="${CSS.escape(String(uid))}"]`);
+    if (!card) return;
+    const listRect = comparablesList.getBoundingClientRect();
+    const cardRect = card.getBoundingClientRect();
+    const top = comparablesList.scrollTop
+      + cardRect.top - listRect.top
+      - (comparablesList.clientHeight - cardRect.height) / 2;
+    comparablesList.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+  });
+}
+
+function restoreComparableScroll() {
+  if (detailReturnScrollTop == null) return;
+  comparablesList.scrollTo({ top: detailReturnScrollTop, behavior: "smooth" });
+  detailReturnScrollTop = null;
+}
+
 let hoveredComparableUid = null;
 // Illumine (feature-state hover) le point carte correspondant au résultat survolé dans la liste.
-function setComparableHover(uid, on) {
+function setComparableHover(uid, on, options = {}) {
+  if (uid == null) return;
   if (on) {
+    const firstMapHover = options.fromMap && hoveredComparableUid !== uid;
     if (hoveredComparableUid !== null && hoveredComparableUid !== uid) {
       map.setFeatureState({ source: "comparables", id: hoveredComparableUid }, { hover: false });
+      const previous = comparablesList.querySelector(`.comparable-card[data-uid="${CSS.escape(String(hoveredComparableUid))}"]`);
+      if (previous) previous.classList.remove("map-hover");
     }
     hoveredComparableUid = uid;
     map.setFeatureState({ source: "comparables", id: uid }, { hover: true });
+    const card = comparablesList.querySelector(`.comparable-card[data-uid="${CSS.escape(String(uid))}"]`);
+    if (card) {
+      card.classList.toggle("map-hover", Boolean(options.fromMap));
+      if (firstMapHover) scrollComparableToMiddle(uid);
+    }
   } else if (hoveredComparableUid === uid) {
     hoveredComparableUid = null;
     map.setFeatureState({ source: "comparables", id: uid }, { hover: false });
+    const card = comparablesList.querySelector(`.comparable-card[data-uid="${CSS.escape(String(uid))}"]`);
+    if (card) card.classList.remove("map-hover");
   }
 }
 
@@ -1697,9 +1790,13 @@ function setComparableGeojson(points) {
 }
 
 function selectComparable(uid, options = { fit: false }, fallbackRow = null) {
+  const previousUid = selectedComparableUid;
   // `force` garde le détail ouvert (pas de bascule) — utile au double-clic.
   if (!options.force && uid !== null && selectedComparableUid === uid) {
     uid = null;
+  }
+  if (uid !== null && previousUid === null) {
+    detailReturnScrollTop = comparablesList.scrollTop;
   }
   selectedComparableUid = uid;
   if (lastSelectedUid !== null) {
@@ -1718,17 +1815,22 @@ function selectComparable(uid, options = { fit: false }, fallbackRow = null) {
   if (uid === null) {
     comparableDetail.hidden = true;
     renderComparableList();
+    restoreComparableScroll();
     setParcelleDetail(null);
     // On rétablit la grille cadastre selon le réglage du menu.
     applyCadastre();
     return;
   }
 
-  const row = currentComparables.find((candidate) => candidate.uid === uid) || fallbackRow;
+  let row = currentComparables.find((candidate) => candidate.uid === uid) || fallbackRow;
   if (!row) return;
+  addComparableToDisplayed(row);
+  row = currentComparables.find((candidate) => candidate.uid === uid) || row;
+  viewedComparableUids.add(uid);
   tableWrap.classList.remove("collapsed");
   comparableDetail.hidden = true;
   renderComparableList();
+  scrollComparableToTop(uid);
   loadComparableStreetView(row);
   loadComparableLieuDit(row);
   // Focus sur la parcelle : on n'affiche que sa grille cadastre (via loadComparableBatiments)
