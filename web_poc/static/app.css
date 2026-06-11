@@ -215,9 +215,17 @@ body,
   font-weight: 700;
 }
 
-.market-stats {
+.market-stats,
+.result-stats {
   display: grid;
   gap: 8px;
+}
+
+/* Accordéon : la box des ventes se replie quand on déplie le détail d'emprise
+   (communes d'un CP / CP d'une commune) pour ne pas surcharger la page. */
+.market-stats[hidden],
+.result-stats[hidden] {
+  display: none;
 }
 
 .market-row {
@@ -1083,6 +1091,12 @@ body.dragging {
 
 .detail-title strong {
   font-size: 16px;
+}
+
+.detail-lieudit {
+  color: #66736d;
+  font-size: 12px;
+  font-style: italic;
 }
 
 .detail-note {

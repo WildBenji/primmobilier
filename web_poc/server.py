@@ -340,6 +340,42 @@ def resolve_section(dept: str, lon: float, lat: float) -> dict | None:
     return {"id": row[0], "geojson": json.loads(row[1])}
 
 
+def resolve_lieu_dit(dept: str, lon: float, lat: float) -> dict | None:
+    """Lieu-dit cadastral contenant le point (maille nommée infra-communale). Renvoie nom + commune."""
+    path = INTERIM / f"cadastre_lieux_dits_{dept}.parquet"
+    if not path.exists():
+        return None
+    con = duckdb.connect()
+    try:
+        load_spatial(con)
+        row = con.execute(
+            """
+            SELECT nom, commune
+            FROM read_parquet(?)
+            WHERE clon BETWEEN ? - 0.05 AND ? + 0.05
+              AND clat BETWEEN ? - 0.05 AND ? + 0.05
+              AND ST_Contains(ST_GeomFromWKB(geom_wkb), ST_Point(?, ?))
+            LIMIT 1
+            """,
+            [str(path), lon, lon, lat, lat, lon, lat],
+        ).fetchone()
+    finally:
+        con.close()
+    return {"nom": row[0], "commune": row[1]} if row else None
+
+
+def lieudit_rows(params: dict[str, list[str]]) -> dict:
+    """Lieu-dit cadastral d'un point (dept + lon + lat), pour enrichir le détail d'une vente."""
+    dept = params.get("dept", [""])[0]
+    if not re.fullmatch(r"\d{2,3}|2[AB]", dept or ""):
+        return {}
+    lon = as_float(params, "lon")
+    lat = as_float(params, "lat")
+    if lon is None or lat is None:
+        return {}
+    return resolve_lieu_dit(dept, lon, lat) or {}
+
+
 POSTCODE_CONTOURS_PATH = INTERIM / "contours_codes_postaux.parquet"
 
 
@@ -1315,6 +1351,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/panoramax": panoramax_rows,
             "/api/codepostal": postcode_rows,
             "/api/commune": commune_rows,
+            "/api/lieudit": lieudit_rows,
             "/api/scope-communes": scope_communes_rows,
         }
         fn = api.get(parsed.path)

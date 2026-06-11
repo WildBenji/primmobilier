@@ -47,6 +47,7 @@ const priceScaleMin = document.querySelector("#priceScaleMin");
 const priceScaleMax = document.querySelector("#priceScaleMax");
 const marketResult = document.querySelector("#marketResult");
 const marketStats = document.querySelector("#marketStats");
+const estimationStats = document.querySelector("#estimationStats");
 const marketCount = document.querySelector("#marketCount");
 const marketScope = document.querySelector("#marketScope");
 const scopeChip = document.querySelector("#scope");
@@ -1178,7 +1179,7 @@ async function runMarket() {
 function renderMarket(data) {
   marketResult.hidden = false;
   marketCount.textContent = int(data.summary.count);
-  configureScopeChip(marketScope, marketScopeDetails, data.target, data.summary.scope);
+  configureScopeChip(marketScope, marketScopeDetails, data.target, data.summary.scope, marketStats);
   marketStats.innerHTML = "";
   for (const t of data.summary.types) {
     const row = document.createElement("div");
@@ -1253,7 +1254,7 @@ function renderResult(data) {
   document.querySelector("#estimatedPrice").textContent = euro(summary.estimated_price);
   document.querySelector("#medianM2").textContent = int(summary.median_m2);
   document.querySelector("#count").textContent = summary.count;
-  configureScopeChip(scopeChip, scopeDetails, data.target, summary.scope);
+  configureScopeChip(scopeChip, scopeDetails, data.target, summary.scope, estimationStats);
   document.querySelector("#range").textContent =
     `Fourchette observée: ${euro(summary.low_price)} à ${euro(summary.high_price)} pour ${summary.scope} · ${summary.history} · confiance ${summary.confidence}`;
   document.querySelector("#askedPosition").textContent = summary.asked_position_pct === null
@@ -1261,22 +1262,26 @@ function renderResult(data) {
     : `Prix soumis: percentile ${summary.asked_position_pct} des comparables`;
 }
 
-function configureScopeChip(button, panel, target, label) {
+// `companion` = la box des ventes (stats) de la même section, repliée quand on déplie
+// le détail d'emprise, et rouverte quand on le referme (accordéon anti-surcharge).
+function configureScopeChip(button, panel, target, label, companion) {
   button.textContent = label;
   panel.hidden = true;
   panel.innerHTML = "";
+  if (companion) companion.hidden = false; // détail fermé par défaut -> ventes visibles
   button.classList.remove("open");
   button.setAttribute("aria-expanded", "false");
   const interactive = target && ["postcode", "city"].includes(target.scope_mode);
   button.disabled = !interactive;
   button.onclick = interactive
-    ? () => toggleScopeDetails(button, panel, target)
+    ? () => toggleScopeDetails(button, panel, target, companion)
     : null;
 }
 
-async function toggleScopeDetails(button, panel, target) {
+async function toggleScopeDetails(button, panel, target, companion) {
   if (!panel.hidden) {
     panel.hidden = true;
+    if (companion) companion.hidden = false; // on referme le détail -> les ventes reviennent
     button.classList.remove("open");
     button.setAttribute("aria-expanded", "false");
     return;
@@ -1284,6 +1289,7 @@ async function toggleScopeDetails(button, panel, target) {
   button.classList.add("open");
   button.setAttribute("aria-expanded", "true");
   panel.hidden = false;
+  if (companion) companion.hidden = true; // on déplie le détail -> on replie les ventes
   const loadingTimer = setTimeout(() => {
     if (!panel.hidden) panel.innerHTML = `<strong>Chargement...</strong>`;
   }, 120);
@@ -1719,6 +1725,7 @@ function selectComparable(uid, options = { fit: false }, fallbackRow = null) {
   comparableDetail.hidden = false;
   tableWrap.classList.add("detail-open");
   loadComparableStreetView(row);
+  loadComparableLieuDit(row);
   // Focus sur la parcelle : on n'affiche que sa grille cadastre (via loadComparableBatiments)
   // et on retire les autres parcelles de l'overlay général.
   setCadastre(null);
@@ -1775,6 +1782,7 @@ function renderDetail(row) {
       <strong>${int(row.prix_m2)} €/m² · ${euro(row.prix)}</strong>
       <span>${escapeHtml(row.adresse || "Adresse DVF non renseignée")}</span>
       <span>${escapeHtml(row.code_postal || "")} ${escapeHtml(row.commune || "")}</span>
+      <span id="detailLieuDit" class="detail-lieudit" hidden></span>
     </div>
     ${communeModif}
     <div class="detail-grid">
@@ -1785,6 +1793,29 @@ function renderDetail(row) {
     ${detailSection("Bâtiment (RNB / BDNB)", bdnbFields)}
     <div id="detailStreetView" class="detail-street"><span class="street-muted">Recherche d'une vue rue ouverte...</span></div>
   `;
+}
+
+// Rattache le bien à sa localité (lieu-dit cadastral) — seule maille nommée infra-communale.
+async function loadComparableLieuDit(row) {
+  if (row.lon == null || row.lat == null) return;
+  const dept = currentDept();
+  if (!dept) return;
+  const url = new URL("/api/lieudit", window.location.origin);
+  url.searchParams.set("dept", dept);
+  url.searchParams.set("lon", row.lon);
+  url.searchParams.set("lat", row.lat);
+  let data = null;
+  try {
+    const response = await fetch(url);
+    if (response.ok) data = await response.json();
+  } catch {
+    data = null;
+  }
+  if (selectedComparableUid !== row.uid) return; // sélection changée entre-temps
+  const el = document.querySelector("#detailLieuDit");
+  if (!el || !data || !data.nom) return;
+  el.textContent = `Lieu-dit : ${data.nom}`;
+  el.hidden = false;
 }
 
 async function loadComparableStreetView(row) {
