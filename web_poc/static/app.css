@@ -1202,28 +1202,10 @@ body.dragging {
   gap: 8px;
 }
 
-.limit-control {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: #66736d;
-  font-size: 11px;
-}
-
-.limit-control[hidden] {
-  display: none;
-}
-
-.limit-control input {
-  width: 56px;
-  height: 28px;
-  border: 1px solid #cbd3ce;
-  border-radius: 6px;
-  padding: 0 6px;
-  background: #fff;
-  color: #18211f;
-  font: inherit;
-  font-size: 12px;
+/* Sentinelle de chargement progressif : 1px observé en bas de liste, sans rien afficher. */
+.list-sentinel {
+  height: 1px;
+  pointer-events: none;
 }
 
 .sort-menu {
@@ -1510,6 +1492,31 @@ body.dragging {
 .bati-item:hover {
   border-color: #e0a000;
   background: #fffaf0;
+}
+
+/* Une adresse est longue : l'item occupe toute la ligne (pas la 1/2 colonne du detail-grid)
+   et le libellé s'enroule au lieu d'être tronqué. */
+.adresse-item {
+  grid-column: 1 / -1;
+  gap: 10px;
+}
+
+.adresse-item > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 600;
+  color: #18211f;
+}
+
+.adresse-tag {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7770;
+  white-space: nowrap;
 }
 
 .hint {

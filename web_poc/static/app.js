@@ -64,8 +64,6 @@ const salesChip = document.querySelector("#salesChip");
 const scopeDetails = document.querySelector("#scopeDetails");
 const marketScopeDetails = document.querySelector("#marketScopeDetails");
 const addressLabel = document.querySelector("#addressLabel");
-const maxComparablesInput = document.querySelector("#maxComparables");
-const limitControl = document.querySelector("#limitControl");
 const MIN_COMPARABLES = 5;
 const radiusSteps = [100, 150, 200, 300, 400, 500, 1000, 1500, 2000, 3000, 4000, 5000, 10000, 20000];
 const MARKET_CATEGORIES = ["Maison", "Appartement", "Terrain", "Dépendance", "Local"];
@@ -80,6 +78,16 @@ let selectedAddress = null;
 let targetMarker = null;
 let currentComparables = [];
 let currentComparablesTotal = null;
+// Fenêtrage de la liste : on ne rend dans le DOM qu'une fenêtre [0, renderedCount) de la cohorte
+// (qui, elle, est entièrement en mémoire et triée globalement). Rendre des milliers de cartes
+// d'un coup fait planter le navigateur (reflow). On remplit le panneau visible puis on charge
+// davantage au scroll, via un IntersectionObserver sur une sentinelle en bas de liste.
+const SCROLL_BATCH = 20;        // cartes ajoutées à chaque chargement au scroll
+const MAX_INITIAL_CARDS = 30;   // plafond du lot initial (sinon = ce que le panneau peut contenir)
+let renderedCount = 0;
+let measuredCardHeight = 0;     // hauteur réelle d'une carte, mesurée au 1er rendu (auto-fit)
+let listSentinel = null;
+let listObserver = null;
 let selectedMarketType = "";
 let searchTimer = null;
 let radiusTimer = null;
@@ -255,6 +263,29 @@ const map = new maplibregl.Map({
             ["match", ["get", "type"], "02", "#b8741a", "#a83523"]],
           "line-width": ["case", ["boolean", ["feature-state", "hover"], false], 3, 1.2]
         }
+      },
+      {
+        // Repli copropriété : contour de la parcelle PORTEUSE voisine (atténué, distinct du violet parcelle DVF).
+        id: "parcelle-detail-porteuse-outline",
+        type: "line",
+        source: "parcelleDetail",
+        filter: ["==", ["get", "kind"], "parcelle_porteuse"],
+        paint: { "line-color": "#1f8a8a", "line-width": 1.6, "line-dasharray": [1, 2], "line-opacity": 0.75 }
+      },
+      {
+        // Bâtiment RNB rattaché, porté par la parcelle voisine : teal atténué, ≠ rouge/orange du bâti propre.
+        id: "parcelle-detail-voisin-fill",
+        type: "fill",
+        source: "parcelleDetail",
+        filter: ["==", ["get", "kind"], "batiment_rnb_voisin"],
+        paint: { "fill-color": "#1f8a8a", "fill-opacity": 0.28 }
+      },
+      {
+        id: "parcelle-detail-voisin-line",
+        type: "line",
+        source: "parcelleDetail",
+        filter: ["==", ["get", "kind"], "batiment_rnb_voisin"],
+        paint: { "line-color": "#176b6b", "line-width": 1.2, "line-dasharray": [2, 1], "line-opacity": 0.85 }
       },
       {
         id: "comparables-heat",
@@ -448,6 +479,10 @@ async function loadComparableBatiments(row) {
   const url = new URL("/api/batiments", window.location.origin);
   url.searchParams.set("dept", dept);
   url.searchParams.set("parcelle", row.id_parcelle);
+  // Garde-fou repli copropriété : on ne transmet le rnb_id (→ bâti de la parcelle voisine) que
+  // si l'identification du bâtiment est en confiance HAUTE — pas les rattachements spatiaux
+  // faibles, justement ceux où RNB avertit qu'un bâtiment peut viser une mauvaise parcelle.
+  if (row.rnb_id && row.confiance === "haute") url.searchParams.set("rnb_id", row.rnb_id);
   let data = null;
   try {
     const response = await fetch(url);
@@ -456,9 +491,19 @@ async function loadComparableBatiments(row) {
     data = null;
   }
   if (selectedComparableUid !== row.uid) return; // sélection changée entre-temps
-  if (!data || !data.features.length) {
+  // Deux échecs DISTINCTS, à ne pas confondre (ni avec la section « Cadastre » au-dessus, qui
+  // n'affiche que des identifiants issus du texte DVF, sans géométrie) :
+  if (!data) {
+    // Erreur technique/transitoire de lecture (réseau, serveur) — pas un fait sur le bien.
     setParcelleDetail(null);
-    if (container) container.innerHTML = `<span class="street-muted">Cadastre indisponible pour cette parcelle.</span>`;
+    if (container) container.innerHTML = `<span class="street-muted">Lecture du plan cadastral momentanément indisponible. Re-sélectionne le bien pour réessayer.</span>`;
+    return;
+  }
+  if (!data.features.length) {
+    // Parcelle introuvable dans le plan cadastral : l'identifiant vient de la vente DVF, mais sa
+    // géométrie n'existe pas dans le cadastre Etalab (couverture incomplète sur ce secteur).
+    setParcelleDetail(null);
+    if (container) container.innerHTML = `<span class="street-muted">Parcelle absente du plan cadastral Etalab (couverture incomplète ici). Son identifiant vient de la vente DVF, mais le cadastre n'en fournit pas la géométrie.</span>`;
     return;
   }
   // Id stable par bâtiment (= idx) pour piloter le feature-state au survol de la liste.
@@ -466,13 +511,34 @@ async function loadComparableBatiments(row) {
     if (f.properties.kind === "batiment") f.id = f.properties.idx;
   }
   setParcelleDetail(data);
-  const batiments = data.features.filter((f) => f.properties.kind === "batiment");
-  if (container) container.innerHTML = renderBatimentsList(batiments);
+  if (!container) return;
+  if (data.fallback_rnb) {
+    container.innerHTML = renderRnbVoisinList(data);
+  } else {
+    container.innerHTML = renderBatimentsList(data.features.filter((f) => f.properties.kind === "batiment"));
+  }
+}
+
+// Cas copropriété / division en volumes : la parcelle DVF ne porte pas le bâti (parcelle de
+// référence), on affiche le bâtiment RNB rattaché, porté par la parcelle voisine, + un « i »
+// qui explique pourquoi (sinon « pas d'empreinte » laisserait croire à un terrain nu).
+function renderRnbVoisinList(data) {
+  const voisins = data.features.filter((f) => f.properties.kind === "batiment_rnb_voisin");
+  const pid = data.parcelle_porteuse || "voisine";
+  const total = voisins.reduce((sum, b) => sum + (b.properties.surface_m2 || 0), 0);
+  const plural = voisins.length > 1 ? "s" : "";
+  const info = `Cette parcelle ne porte aucune empreinte bâtie : c'est une parcelle de référence de copropriété ou de division en volumes — le cadastre y rattache le lot et l'adresse, mais le bâtiment est physiquement sur une parcelle voisine. Le bâti ci-dessous est celui identifié pour ce bien par le Référentiel National des Bâtiments (RNB), porté par la parcelle ${pid}. On l'affiche pour ne pas laisser croire à un terrain nu ; il ne désigne pas un logement précis.`;
+  return `
+    <div class="batiments-head">Bâti rattaché via RNB · parcelle voisine ${escapeHtml(pid)} <span class="hint" data-tip="${escapeHtml(info)}">i</span></div>
+    <div class="detail-grid">
+      <div class="detail-field"><span>${voisins.length} bâtiment${plural} (sur ${escapeHtml(pid)})</span><b>${int(total)} m²</b></div>
+    </div>
+  `;
 }
 
 function renderBatimentsList(batiments) {
   if (!batiments.length) {
-    return `<span class="street-muted">Aucun bâti cadastral sur la parcelle (terrain nu / jardin).</span>`;
+    return `<span class="street-muted">Pas d'empreinte bâtie sur cette parcelle. Possible terrain nu, mais aussi micro-parcelle de copropriété ou de volume dont le bâtiment est porté par une parcelle voisine.</span>`;
   }
   const total = batiments.reduce((sum, b) => sum + (b.properties.surface_m2 || 0), 0);
   const items = batiments.map((b) => {
@@ -486,6 +552,52 @@ function renderBatimentsList(batiments) {
   const headHint = "Somme des empreintes au sol des bâtiments de la parcelle (aire au sol) — différente de la surface habitable DVF et de l'emprise BDNB, qui viennent d'autres sources.";
   return `
     <div class="batiments-head">${batiments.length} bâtiment${plural} · emprise au sol ${int(total)} m² <span class="hint" data-tip="${escapeHtml(headHint)}">?</span></div>
+    <div class="detail-grid">${items}</div>
+  `;
+}
+
+// Remplit la sous-section « Adresses (lien parcellaire) » : adresses rattachées à la parcelle
+// par lien cadastral DIRECT (codesParcelles + BAN cad_parcelles), sans pivot RNB.
+async function loadComparableAdresses(row) {
+  const container = document.querySelector(`.comparable-detail[data-uid="${CSS.escape(String(row.uid))}"] #detailAdresses`)
+    || document.querySelector("#detailAdresses");
+  const dept = currentDept();
+  if (!dept || !row.id_parcelle) {
+    if (container) container.innerHTML = `<span class="street-muted">Parcelle non renseignée.</span>`;
+    return;
+  }
+  const url = new URL("/api/parcelle-adresses", window.location.origin);
+  url.searchParams.set("dept", dept);
+  url.searchParams.set("parcelle", row.id_parcelle);
+  let data = null;
+  try {
+    const response = await fetch(url);
+    if (response.ok) data = await response.json();
+  } catch {
+    data = null;
+  }
+  if (selectedComparableUid !== row.uid) return; // sélection changée entre-temps
+  if (container) container.innerHTML = renderAdressesList(data ? data.adresses : []);
+}
+
+// Description courte affichée à l'utilisateur (le « ? » de l'en-tête). La mécanique de
+// construction (sources, fusion, harmonisation) reste dans la doc, pas ici.
+const ADRESSES_PARCELLE_HINT = "Adresse(s) officielle(s) rattachée(s) à la parcelle. Intérêt : l'adresse de la vente (DVF) affichée plus haut est souvent imprécise ou incomplète ; celle-ci est l'adresse réelle du bien, sert de point de contact probable du propriétaire (sans révéler son identité), et fait apparaître toutes les entrées d'une parcelle qui en compte plusieurs. En copropriété, plusieurs adresses possibles sans désigner un logement précis.";
+
+function renderAdressesList(adresses) {
+  if (!adresses || !adresses.length) {
+    return `<span class="street-muted">Aucune adresse rattachée à la parcelle dans l'open data.</span>`;
+  }
+  const SRC = { cadastre: "Cadastre", ban: "BAN" };
+  const items = adresses.map((a) => {
+    const ligne1 = `${a.numero || ""} ${a.voie || ""}`.trim() || "Adresse sans voie";
+    const ligne2 = `${a.code_postal || ""} ${a.ville || ""}`.trim();
+    const tags = [SRC[a.source] || a.source, a.destination].filter(Boolean).join(" · ");
+    return `<div class="detail-field adresse-item"><span>${escapeHtml(ligne1)}${ligne2 ? `<span class="street-muted">, ${escapeHtml(ligne2)}</span>` : ""}</span><b class="adresse-tag">${escapeHtml(tags)}</b></div>`;
+  }).join("");
+  const plural = adresses.length > 1 ? "s" : "";
+  return `
+    <div class="batiments-head">${adresses.length} adresse${plural} rattachée${plural}</div>
     <div class="detail-grid">${items}</div>
   `;
 }
@@ -709,34 +821,6 @@ radiusSlider.addEventListener("input", () => {
     radiusTimer = setTimeout(run, 300);
   }
 });
-
-maxComparablesInput.addEventListener("change", () => {
-  normalizeMaxComparablesInput();
-  if (selectedAddress) run();
-});
-
-maxComparablesInput.addEventListener("keydown", (event) => {
-  if (event.key !== "Enter") return;
-  event.preventDefault();
-  // On retire le focus : le `change` déclenché par le blur relance une seule fois,
-  // ça enlève le caret et évite le double-run (glitch) au clic à côté.
-  maxComparablesInput.blur();
-});
-
-function normalizeMaxComparablesInput() {
-  const raw = maxComparablesInput.value.trim();
-  if (raw === "") {
-    const fallback = currentComparablesTotal ?? 200;
-    maxComparablesInput.value = String(fallback);
-    return fallback;
-  }
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value < MIN_COMPARABLES) {
-    maxComparablesInput.value = String(MIN_COMPARABLES);
-    return MIN_COMPARABLES;
-  }
-  return value;
-}
 
 function onHistoryInput() {
   let lo = Number(historyMinInput.value);
@@ -1074,7 +1158,7 @@ for (const button of sortButtons) {
     if (selectedAddress) {
       run();
     } else {
-      renderComparableList();
+      renderComparableList({ reset: true });
     }
   });
 }
@@ -1213,8 +1297,6 @@ function resetAll() {
   document.querySelector("#surface").value = "65";
   document.querySelector("#rooms").value = "3";
   document.querySelector("#askedPrice").value = "";
-  maxComparablesInput.max = "20000";
-  maxComparablesInput.value = "200";
   radiusSlider.value = "7";
   selectedRadius = radiusSteps[7];
   radiusLabel.textContent = formatRadius(selectedRadius);
@@ -1284,7 +1366,6 @@ function applyMode() {
   surfaceControl.hidden = !explore;
   roomsControl.hidden = !explore;
   syncMarketFilterAvailability();
-  limitControl.hidden = false;
   addressLabel.textContent = explore ? "Adresse, code postal ou commune" : "Adresse";
   estimateBtn.textContent = explore ? "Explorer" : "Estimer";
   resultEl.hidden = true;
@@ -1366,7 +1447,6 @@ async function runMarket() {
     radius_m: String(selectedRadius),
     history_min_years: String(selectedHistoryMinYears),
     history_max_years: String(selectedHistoryMaxYears),
-    max_comparables: String(normalizeMaxComparablesInput()),
     type: marketType,
     sort_key: comparableSortKey || "",
     sort_dir: comparableSortDirection
@@ -1463,7 +1543,6 @@ async function estimate() {
     radius_m: String(selectedRadius),
     history_min_years: String(selectedHistoryMinYears),
     history_max_years: String(selectedHistoryMaxYears),
-    max_comparables: String(normalizeMaxComparablesInput()),
     sort_key: comparableSortKey || "",
     sort_dir: comparableSortDirection
   });
@@ -1620,14 +1699,9 @@ function renderComparables(rows, points, total) {
   tableWrap.classList.remove("collapsed");
   setResultsAvailable(rows.length > 0);
   setParcelleDetail(null);
-  tableMeta.textContent = `${rows.length}/${currentComparablesTotal} affichés`;
-  // Si on a demandé plus de comparables qu'il n'en existe, on ramène le champ « Max » au réel disponible.
-  if (total != null) {
-    maxComparablesInput.max = String(Math.min(total, 20000));
-    maxComparablesInput.value = String(Math.min(normalizeMaxComparablesInput(), total));
-  }
+  tableMeta.textContent = `${currentComparablesTotal} comparable${currentComparablesTotal > 1 ? "s" : ""}`;
   updateSortControl();
-  renderComparableList();
+  renderComparableList({ reset: true });
   if (selectedAddress) {
     updateScopeGeometry();
   }
@@ -1638,45 +1712,101 @@ function addComparableToDisplayed(row) {
     return;
   }
   currentComparables = [...currentComparables, row];
-  tableMeta.textContent = `${currentComparables.length}/${currentComparablesTotal ?? currentComparables.length} affichés`;
+  currentComparablesTotal = (currentComparablesTotal ?? 0) + 1;
+  tableMeta.textContent = `${currentComparablesTotal} comparable${currentComparablesTotal > 1 ? "s" : ""}`;
+}
+
+function createComparableCard(row) {
+  const viewed = viewedComparableUids.has(row.uid);
+  const card = document.createElement("article");
+  card.className = "comparable-card";
+  card.classList.toggle("selected", row.uid === selectedComparableUid);
+  card.classList.toggle("viewed", viewed);
+  card.dataset.uid = row.uid;
+
+  const item = document.createElement("button");
+  item.type = "button";
+  item.className = "comparable";
+  item.dataset.uid = row.uid;
+  item.classList.toggle("selected", row.uid === selectedComparableUid);
+  item.innerHTML = `
+    <b>${int(row.prix_m2)} €/m²</b>
+    <b>${euro(row.prix)}</b>
+    <span>${escapeHtml(row.commune || "")} · ${int(row.distance_m)} m · ${escapeHtml(String(row.surface ?? "-"))} m² · ${escapeHtml(String(row.pieces || "-"))} p.</span>
+    <span class="result-date">${escapeHtml(row.date_mutation || "")}${viewed ? `<span class="viewed-tick" title="Détail consulté" aria-label="Détail consulté">✓</span>` : ""}</span>
+  `;
+  item.addEventListener("click", () => selectComparable(row.uid, { fit: true }));
+  item.addEventListener("mouseenter", () => setComparableHover(row.uid, true));
+  item.addEventListener("mouseleave", () => setComparableHover(row.uid, false));
+  card.append(item);
+  if (row.uid === selectedComparableUid) {
+    const detail = document.createElement("div");
+    detail.className = "comparable-detail";
+    detail.dataset.uid = row.uid;
+    card.append(detail);
+    renderDetail(row, detail);
+  }
+  return card;
+}
+
+// Nombre de cartes à rendre pour remplir le panneau visible (auto-ajusté à la hauteur de l'écran,
+// plafonné à MAX_INITIAL_CARDS). measuredCardHeight est connu dès le 1er rendu ; à défaut on estime.
+function initialCardCount() {
+  const listHeight = comparablesList.clientHeight || 560;
+  const cardHeight = measuredCardHeight || 64;
+  return Math.max(MIN_COMPARABLES, Math.min(MAX_INITIAL_CARDS, Math.ceil(listHeight / cardHeight) + 1));
 }
 
 function renderComparableList(options = {}) {
   const previousPositions = options.previousPositions || (options.animate ? comparableCardPositions() : null);
-  comparablesList.innerHTML = "";
-  for (const row of displayedComparables()) {
-    const viewed = viewedComparableUids.has(row.uid);
-    const card = document.createElement("article");
-    card.className = "comparable-card";
-    card.classList.toggle("selected", row.uid === selectedComparableUid);
-    card.classList.toggle("viewed", viewed);
-    card.dataset.uid = row.uid;
+  const rows = displayedComparables();
+  if (options.reset) renderedCount = 0;
+  if (!renderedCount) renderedCount = initialCardCount();
+  renderedCount = Math.min(renderedCount, rows.length);
 
-    const item = document.createElement("button");
-    item.type = "button";
-    item.className = "comparable";
-    item.dataset.uid = row.uid;
-    item.classList.toggle("selected", row.uid === selectedComparableUid);
-    item.innerHTML = `
-      <b>${int(row.prix_m2)} €/m²</b>
-      <b>${euro(row.prix)}</b>
-      <span>${escapeHtml(row.commune || "")} · ${int(row.distance_m)} m · ${escapeHtml(String(row.surface ?? "-"))} m² · ${escapeHtml(String(row.pieces || "-"))} p.</span>
-      <span class="result-date">${escapeHtml(row.date_mutation || "")}${viewed ? `<span class="viewed-tick" title="Détail consulté" aria-label="Détail consulté">✓</span>` : ""}</span>
-    `;
-    item.addEventListener("click", () => selectComparable(row.uid, { fit: true }));
-    item.addEventListener("mouseenter", () => setComparableHover(row.uid, true));
-    item.addEventListener("mouseleave", () => setComparableHover(row.uid, false));
-    card.append(item);
-    if (row.uid === selectedComparableUid) {
-      const detail = document.createElement("div");
-      detail.className = "comparable-detail";
-      detail.dataset.uid = row.uid;
-      card.append(detail);
-      renderDetail(row, detail);
-    }
-    comparablesList.append(card);
+  comparablesList.innerHTML = "";
+  for (const row of rows.slice(0, renderedCount)) comparablesList.append(createComparableCard(row));
+
+  if (!measuredCardHeight) {
+    const firstCard = comparablesList.querySelector(".comparable-card");
+    if (firstCard) measuredCardHeight = firstCard.getBoundingClientRect().height + 6; // + marge inter-cartes
   }
+  refreshListSentinel(rows.length);
   animateComparableReorder(previousPositions);
+}
+
+// Sentinelle + observer : tant qu'elle est visible (panneau pas plein, ou scroll arrivé en bas),
+// on révèle SCROLL_BATCH cartes de plus. Retirée quand toute la cohorte est rendue.
+function refreshListSentinel(total) {
+  if (!listObserver) {
+    listObserver = new IntersectionObserver(
+      (entries) => { if (entries.some((e) => e.isIntersecting)) revealMoreComparables(); },
+      { root: comparablesList, rootMargin: "300px" },
+    );
+  }
+  if (!listSentinel) {
+    listSentinel = document.createElement("div");
+    listSentinel.className = "list-sentinel";
+    listSentinel.setAttribute("aria-hidden", "true");
+  }
+  listObserver.unobserve(listSentinel);
+  if (renderedCount >= total) {
+    listSentinel.remove();
+    return;
+  }
+  comparablesList.append(listSentinel);
+  listObserver.observe(listSentinel);
+}
+
+function revealMoreComparables() {
+  const rows = displayedComparables();
+  if (renderedCount >= rows.length) return;
+  const from = renderedCount;
+  renderedCount = Math.min(rows.length, renderedCount + SCROLL_BATCH);
+  const fragment = document.createDocumentFragment();
+  for (const row of rows.slice(from, renderedCount)) fragment.append(createComparableCard(row));
+  comparablesList.insertBefore(fragment, listSentinel); // append AVANT la sentinelle : scroll préservé
+  refreshListSentinel(rows.length);
 }
 
 function comparableCardPositions() {
@@ -2063,6 +2193,7 @@ function selectComparable(uid, options = { fit: false }, fallbackRow = null) {
   // et on retire les autres parcelles de l'overlay général.
   setCadastre(null);
   loadComparableBatiments(row);
+  loadComparableAdresses(row);
   if (options.fit) {
     map.flyTo({ center: [row.lon, row.lat], zoom: Math.max(map.getZoom(), 16) });
   }
@@ -2124,6 +2255,7 @@ function renderDetail(row, container = detailBody) {
     ${detailSection("Cadastre", cadastreFields)}
     ${collapsible("Bâti cadastral", `<div id="detailBatiments" class="detail-batiments"><span class="street-muted">Lecture du cadastre…</span></div>`)}
     ${detailSection("Bâtiment (RNB / BDNB)", bdnbFields)}
+    ${collapsible("Adresses (lien parcellaire)", `<div id="detailAdresses" class="detail-adresses"><span class="street-muted">Lecture du lien parcelle↔adresse…</span></div>`, { hint: ADRESSES_PARCELLE_HINT })}
   `;
 }
 
@@ -2242,11 +2374,12 @@ function detailSection(title, fieldsHtml) {
   return collapsible(title, `<div class="detail-grid">${fieldsHtml}</div>`);
 }
 
-function collapsible(title, innerHtml, { id = "" } = {}) {
+function collapsible(title, innerHtml, { id = "", hint = "" } = {}) {
   const attr = id ? ` id="${id}"` : "";
+  const help = hint ? ` <span class="hint" data-tip="${escapeHtml(hint)}">?</span>` : "";
   return `
     <div class="collapsible"${attr}>
-      <button type="button" class="collapsible-summary">${escapeHtml(title)}</button>
+      <button type="button" class="collapsible-summary">${escapeHtml(title)}${help}</button>
       <div class="collapsible-body"><div class="collapsible-inner">${innerHtml}</div></div>
     </div>
   `;

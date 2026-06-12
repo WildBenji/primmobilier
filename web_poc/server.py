@@ -25,10 +25,9 @@ INTERIM = ROOT / "data" / "interim"
 HOST = "127.0.0.1"
 PORT = 8765
 MIN_COMPARABLES = 5
-DEFAULT_MAX_COMPARABLES = 200
-# Plafond de sécurité des points carte (payload allégé) : en pratique = « tous les points ».
+# Plafond de sécurité (payload allégé) des points carte ET de la liste : en pratique = « tout ».
+# La liste renvoie la cohorte complète triée ; le client la fenêtre (rendu DOM progressif au scroll).
 POINTS_HARD_CAP = 20000
-MAX_COMPARABLES_LIMIT = POINTS_HARD_CAP
 PARCELLE_IDS_CAP = 2000
 PARCELLE_BBOX_CAP = 4000
 DEFAULT_RADIUS_M = 1500
@@ -616,18 +615,109 @@ BATIMENT_TYPE_LABELS = {"01": "Bâti en dur", "02": "Bâti léger"}
 BATIMENT_BBOX_MARGIN_DEG = 0.002
 
 
+def _read_parcelle_geom(con: duckdb.DuckDBPyConnection, parc_path: Path, pid: str):
+    """GeoJSON (tracé) + WKB + bbox d'une parcelle, en un appel. None si absente."""
+    return con.execute(
+        """
+        SELECT ST_AsGeoJSON(g), geom_wkb, ST_XMin(g), ST_YMin(g), ST_XMax(g), ST_YMax(g)
+        FROM (SELECT geom_wkb, ST_GeomFromWKB(geom_wkb) AS g
+              FROM read_parquet(?) WHERE id = ? LIMIT 1)
+        """,
+        [str(parc_path), pid],
+    ).fetchone()
+
+
+def _parcelle_footprints(con: duckdb.DuckDBPyConnection, bat_path: Path, parc_wkb, bbox) -> list:
+    """Empreintes cadastrales intersectant une parcelle : préfiltre bbox (clon/clat = centroïde
+    bâtiment, marge généreuse) puis ST_Intersects exact (le filtre qui fait foi)."""
+    xmin, ymin, xmax, ymax = bbox
+    m = BATIMENT_BBOX_MARGIN_DEG
+    return con.execute(
+        """
+        SELECT b.type, b.created, ST_AsGeoJSON(ST_GeomFromWKB(b.geom_wkb)),
+               ST_Area_Spheroid(ST_GeomFromWKB(b.geom_wkb))
+        FROM read_parquet(?) b
+        WHERE b.clon BETWEEN ? AND ? AND b.clat BETWEEN ? AND ?
+          AND ST_Intersects(ST_GeomFromWKB(b.geom_wkb), ST_GeomFromWKB(?))
+        ORDER BY 4 DESC
+        """,
+        [str(bat_path), xmin - m, xmax + m, ymin - m, ymax + m, parc_wkb],
+    ).fetchall()
+
+
+def _batiment_feature(kind: str, idx: int, btype, created, geo: str, surface) -> dict:
+    return {
+        "type": "Feature",
+        "properties": {
+            "kind": kind,
+            "idx": idx,
+            "type": btype,
+            "type_label": BATIMENT_TYPE_LABELS.get(btype, "Bâti"),
+            "surface_m2": round(surface) if surface is not None else None,
+            "annee": str(created)[:4] if created else None,
+        },
+        "geometry": json.loads(geo),
+    }
+
+
+def _rnb_neighbour_footprints(con, dept: str, parc_full_path: Path, bat_path: Path,
+                              dvf_parcelle: str, rnb_id: str):
+    """REPLI copropriété/volume : la parcelle DVF est une *parcelle de référence* (cf. PDL des
+    fichiers fonciers) qui porte le lot/l'adresse mais PAS l'emprise du bâtiment — celui-ci est
+    sur une parcelle voisine. On retrouve cette parcelle porteuse par le `rnb_id` (déjà résolu,
+    et — garde-fou appelant — seulement en confiance HAUTE) via `rnb_plots`, en prenant la
+    parcelle de plus fort `bdg_cover_ratio` (part géométrique du bâtiment sur la parcelle ;
+    RNB avertit qu'un bâtiment peut intersecter une mauvaise parcelle → on prend la dominante).
+    Renvoie (parcelle porteuse + ses empreintes) ou None si rien de fiable.
+    """
+    plots_path = INTERIM / f"rnb_plots_service_{dept}.parquet"
+    if not plots_path.exists():
+        plots_path = INTERIM / f"rnb_plots_{dept}.parquet"
+    if not plots_path.exists():
+        return None
+    carrier = con.execute(
+        """
+        SELECT id_parcelle, TRY_CAST(bdg_cover_ratio AS DOUBLE) AS r
+        FROM read_parquet(?) WHERE rnb_id = ? AND id_parcelle <> ?
+        ORDER BY r DESC NULLS LAST LIMIT 1
+        """,
+        [str(plots_path), rnb_id, dvf_parcelle],
+    ).fetchone()
+    if not carrier or not carrier[0]:
+        return None
+    pid = carrier[0]
+    # Parcelle porteuse lue dans le cadastre COMPLET : ce n'est pas une parcelle DVF, donc
+    # absente des artefacts `*_service` réduits au graphe.
+    geom = _read_parcelle_geom(con, parc_full_path, pid)
+    if not geom:
+        return None
+    pg_json, pg_wkb, xmin, ymin, xmax, ymax = geom
+    footprints = _parcelle_footprints(con, bat_path, pg_wkb, (xmin, ymin, xmax, ymax))
+    if not footprints:
+        return None
+    return {"pid": pid, "ratio": carrier[1], "geojson": pg_json, "footprints": footprints}
+
+
 def batiments_rows(params: dict[str, list[str]]) -> dict:
     """Empreintes des bâtiments cadastraux rattachés à une parcelle (intersection spatiale).
 
     Renvoie une FeatureCollection : le contour de la parcelle (`kind=parcelle`) + chaque
     bâtiment (`kind=batiment`, `type_label`, `surface_m2`). Permet de dessiner maison /
     garage / annexes distinctement plutôt que le seul contour parcellaire.
+
+    REPLI : si la parcelle DVF n'a aucune empreinte ET qu'un `rnb_id` fiable est fourni
+    (gate confiance HAUTE côté client), on dessine le bâtiment RNB rattaché, porté par sa
+    parcelle voisine (`kind=parcelle_porteuse` + `kind=batiment_rnb_voisin`), avec `fallback_rnb`
+    et `parcelle_porteuse` au niveau racine. Cas des copropriétés / divisions en volumes.
     """
     empty = {"type": "FeatureCollection", "features": []}
     dept = params.get("dept", [""])[0]
     parcelle = params.get("parcelle", [""])[0]
+    rnb_id = params.get("rnb_id", [""])[0]
     if not re.fullmatch(r"\d{2,3}|2[AB]", dept) or not re.fullmatch(r"[0-9A-Z]{10,16}", parcelle or ""):
         return empty
+    if rnb_id and not re.fullmatch(r"[0-9A-Z]{12}", rnb_id):  # garde-fou format identifiant RNB
+        rnb_id = ""
     parc_path = INTERIM / f"cadastre_parcelles_service_{dept}.parquet"
     if not parc_path.exists():
         parc_path = INTERIM / f"cadastre_parcelles_{dept}.parquet"
@@ -635,39 +725,17 @@ def batiments_rows(params: dict[str, list[str]]) -> dict:
     if not parc_path.exists() or not bat_path.exists():
         return empty
     con = duckdb.connect()
+    fallback = None
     try:
         load_spatial(con)
-        # Parcelle lue une seule fois : GeoJSON pour le tracé, WKB + bbox pour la jointure.
-        parc = con.execute(
-            """
-            SELECT ST_AsGeoJSON(g), geom_wkb,
-                   ST_XMin(g), ST_YMin(g), ST_XMax(g), ST_YMax(g)
-            FROM (SELECT geom_wkb, ST_GeomFromWKB(geom_wkb) AS g
-                  FROM read_parquet(?) WHERE id = ? LIMIT 1)
-            """,
-            [str(parc_path), parcelle],
-        ).fetchone()
+        parc = _read_parcelle_geom(con, parc_path, parcelle)
         if not parc:
             return empty
         parc_geojson, parc_wkb, xmin, ymin, xmax, ymax = parc
-        # Préfiltre bbox élargi (clon/clat = centroïde du bâtiment) puis intersection exacte.
-        # La marge évite de jeter un bâtiment qui déborde la parcelle (footprint plus grand
-        # que la parcelle, mitoyens…) dont le centroïde tombe hors de la bbox parcelle.
-        # Le ST_Intersects reste le filtre exact : la marge ne fait qu'élargir les candidats.
-        m = BATIMENT_BBOX_MARGIN_DEG
-        rows = con.execute(
-            """
-            SELECT b.type, b.created,
-                   ST_AsGeoJSON(ST_GeomFromWKB(b.geom_wkb)),
-                   ST_Area_Spheroid(ST_GeomFromWKB(b.geom_wkb))
-            FROM read_parquet(?) b
-            WHERE b.clon BETWEEN ? AND ?
-              AND b.clat BETWEEN ? AND ?
-              AND ST_Intersects(ST_GeomFromWKB(b.geom_wkb), ST_GeomFromWKB(?))
-            ORDER BY 4 DESC
-            """,
-            [str(bat_path), xmin - m, xmax + m, ymin - m, ymax + m, parc_wkb],
-        ).fetchall()
+        rows = _parcelle_footprints(con, bat_path, parc_wkb, (xmin, ymin, xmax, ymax))
+        if not rows and rnb_id:
+            parc_full = INTERIM / f"cadastre_parcelles_{dept}.parquet"
+            fallback = _rnb_neighbour_footprints(con, dept, parc_full, bat_path, parcelle, rnb_id)
     finally:
         con.close()
     features = [{
@@ -676,19 +744,54 @@ def batiments_rows(params: dict[str, list[str]]) -> dict:
         "geometry": json.loads(parc_geojson),
     }]
     for i, (btype, created, geo, surface) in enumerate(rows):
+        features.append(_batiment_feature("batiment", i + 1, btype, created, geo, surface))
+    result = {"type": "FeatureCollection", "features": features}
+    if not rows and fallback:
         features.append({
             "type": "Feature",
-            "properties": {
-                "kind": "batiment",
-                "idx": i + 1,
-                "type": btype,
-                "type_label": BATIMENT_TYPE_LABELS.get(btype, "Bâti"),
-                "surface_m2": round(surface) if surface is not None else None,
-                "annee": str(created)[:4] if created else None,
-            },
-            "geometry": json.loads(geo),
+            "properties": {"kind": "parcelle_porteuse", "id": fallback["pid"]},
+            "geometry": json.loads(fallback["geojson"]),
         })
-    return {"type": "FeatureCollection", "features": features}
+        for i, (btype, created, geo, surface) in enumerate(fallback["footprints"]):
+            features.append(_batiment_feature("batiment_rnb_voisin", i + 1, btype, created, geo, surface))
+        result["fallback_rnb"] = True
+        result["parcelle_porteuse"] = fallback["pid"]
+    return result
+
+
+def parcelle_adresses_rows(params: dict[str, list[str]]) -> dict:
+    """Adresses rattachées à une parcelle par lien cadastral DIRECT (codesParcelles + BAN
+    cad_parcelles), indépendamment du pivot RNB — cf. data/interim/parcelle_adresse_{dept}.
+
+    Proxy d'adresse propriétaire : l'adresse enregistrée SUR la parcelle. En immeuble une
+    parcelle peut en porter plusieurs (sans désigner un lot précis). L'open data n'encode pas
+    l'identité du propriétaire (Fichiers Fonciers/MAJIC) — d'où `fiabilite` = proxy, pas certitude.
+    """
+    empty = {"parcelle": "", "adresses": []}
+    dept = params.get("dept", [""])[0]
+    parcelle = params.get("parcelle", [""])[0]
+    if not re.fullmatch(r"\d{2,3}|2[AB]", dept) or not re.fullmatch(r"[0-9A-Z]{10,16}", parcelle or ""):
+        return empty
+    path = INTERIM / f"parcelle_adresse_{dept}.parquet"
+    if not path.exists():
+        return empty
+    con = duckdb.connect()
+    try:
+        rows = con.execute(
+            """
+            SELECT numero, voie, code_postal, ville, destination, source, lon, lat
+            FROM read_parquet(?) WHERE id_parcelle = ?
+            ORDER BY source, voie, numero
+            """,
+            [str(path), parcelle],
+        ).fetchall()
+    finally:
+        con.close()
+    adresses = [{
+        "numero": r[0], "voie": r[1], "code_postal": r[2], "ville": r[3],
+        "destination": r[4], "source": r[5], "lon": r[6], "lat": r[7],
+    } for r in rows]
+    return {"parcelle": parcelle, "adresses": adresses}
 
 
 def comparable_rows(params: dict[str, list[str]]) -> dict:
@@ -705,8 +808,6 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
     history_min_years, history_max_years = history_window_from_params(params)
     radius_m = as_int(params, "radius_m", DEFAULT_RADIUS_M) or DEFAULT_RADIUS_M
     radius_m = min(MAX_RADIUS_M, max(MIN_RADIUS_M, radius_m))
-    max_comparables = as_int(params, "max_comparables", DEFAULT_MAX_COMPARABLES) or DEFAULT_MAX_COMPARABLES
-    max_comparables = min(MAX_COMPARABLES_LIMIT, max(MIN_COMPARABLES, max_comparables))
     sort_key = params.get("sort_key", [""])[0] or None
     sort_dir = params.get("sort_dir", ["desc"])[0]
     if scope_mode not in {"radius", "cadastre", "postcode", "city"}:
@@ -739,6 +840,7 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
     bdnb_select = ", ".join(optional_comp_col(name) for name in [
         "batiment_groupe_id",
         "resolution_statut",
+        "confiance",
         "usage_principal_bdnb_open",
         "usage_niveau_1_txt",
         "nb_log",
@@ -887,7 +989,7 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
         r["uid"] = uid
         r["sim"] = similarity_score(r, surface, rooms, max_distance)
     points = cohort_sorted[:POINTS_HARD_CAP]      # carte : tous les points (allégés)
-    detailed = sorted_for_display(cohort_sorted, sort_key, sort_dir)[:max_comparables]    # liste : tri global puis limite
+    detailed = sorted_for_display(cohort_sorted, sort_key, sort_dir)[:POINTS_HARD_CAP]    # liste : cohorte COMPLÈTE triée globalement (le client fenêtre l'affichage)
 
     return {
         "target": {
@@ -960,6 +1062,7 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
                 "rnb_id": r["rnb_id"],
                 "batiment_groupe_id": r["batiment_groupe_id"],
                 "resolution_statut": r["resolution_statut"],
+                "confiance": r["confiance"],
                 "usage_principal_bdnb_open": r["usage_principal_bdnb_open"],
                 "usage_niveau_1_txt": r["usage_niveau_1_txt"],
                 "nb_log": r["nb_log"],
@@ -1000,8 +1103,6 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     history_min_years, history_max_years = history_window_from_params(params)
     radius_m = as_int(params, "radius_m", DEFAULT_RADIUS_M) or DEFAULT_RADIUS_M
     radius_m = min(MAX_RADIUS_M, max(MIN_RADIUS_M, radius_m))
-    max_biens = as_int(params, "max_comparables", DEFAULT_MAX_COMPARABLES) or DEFAULT_MAX_COMPARABLES
-    max_biens = min(MAX_COMPARABLES_LIMIT, max(MIN_COMPARABLES, max_biens))
     sort_key = params.get("sort_key", [""])[0] or None
     sort_dir = params.get("sort_dir", ["desc"])[0]
     selected_type = params.get("type", [""])[0] or None
@@ -1051,6 +1152,7 @@ def market_rows(params: dict[str, list[str]]) -> dict:
         "rnb_id",
         "batiment_groupe_id",
         "resolution_statut",
+        "confiance",
         "usage_principal_bdnb_open",
         "usage_niveau_1_txt",
         "nb_log",
@@ -1309,7 +1411,7 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     for uid, r in enumerate(cohort):
         r["uid"] = uid
     points = cohort[:POINTS_HARD_CAP]      # carte : tous les points (allégés)
-    detailed = sorted_for_display(cohort, sort_key, sort_dir)[:max_biens]          # liste : tri global puis limite
+    detailed = sorted_for_display(cohort, sort_key, sort_dir)[:POINTS_HARD_CAP]          # liste : cohorte COMPLÈTE triée globalement (le client fenêtre l'affichage)
 
     return {
         "target": {
@@ -1375,6 +1477,7 @@ def market_rows(params: dict[str, list[str]]) -> dict:
                 "rnb_id": r["rnb_id"],
                 "batiment_groupe_id": r["batiment_groupe_id"],
                 "resolution_statut": r["resolution_statut"],
+                "confiance": r["confiance"],
                 "usage_principal_bdnb_open": r["usage_principal_bdnb_open"],
                 "usage_niveau_1_txt": r["usage_niveau_1_txt"],
                 "nb_log": r["nb_log"],
@@ -1417,6 +1520,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/market": market_rows,
             "/api/parcelles": parcelles_rows,
             "/api/batiments": batiments_rows,
+            "/api/parcelle-adresses": parcelle_adresses_rows,
             "/api/codepostal": postcode_rows,
             "/api/commune": commune_rows,
             "/api/lieudit": lieudit_rows,
