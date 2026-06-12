@@ -33,6 +33,17 @@ def charger(con: duckdb.DuckDBPyConnection, dept: str) -> None:
     con.execute(f"CREATE VIEW plots AS SELECT * FROM read_parquet('{_service_or_base('rnb_plots', dept)}')")
     con.execute(f"CREATE VIEW adr AS SELECT * FROM read_parquet('{_service_or_base('rnb_adr', dept)}')")
     con.execute(f"CREATE VIEW recup AS SELECT * FROM read_parquet('{_exiger(INTERIM / f'recup_liens_final_{dept}.parquet')}')")
+    # DPE optionnel (construit à part par preparer_dpe, au fur et à mesure) : on ne garde que les
+    # lignes joignables (id_rnb gold + étiquette fiable). Vue vide si le dept n'a pas encore son DPE.
+    dpe_path = INTERIM / f"dpe_{dept}.parquet"
+    if dpe_path.exists():
+        con.execute(f"""CREATE VIEW dpe AS SELECT id_rnb, etiquette_energie, surface_habitable, date_etablissement
+                        FROM read_parquet('{dpe_path}')
+                        WHERE id_rnb IS NOT NULL AND etiquette_energie IS NOT NULL""")
+    else:
+        con.execute("""CREATE TEMP VIEW dpe AS SELECT NULL::VARCHAR AS id_rnb,
+                       NULL::VARCHAR AS etiquette_energie, NULL::DOUBLE AS surface_habitable,
+                       NULL::DATE AS date_etablissement WHERE false""")
     bdnb = INTERIM / f"bdnb_batiments_service_{dept}.parquet"
     if not bdnb.exists():
         bdnb = INTERIM / f"bdnb_batiments_{dept}.parquet"
@@ -211,12 +222,23 @@ def construire_comparables(con: duckdb.DuckDBPyConnection) -> None:
                pont.nb_lot_garpark_rnc, pont.nb_lot_tertiaire_rnc, pont.surface_emprise_sol,
                pont.hauteur_mean, pont.nb_niveau, pont.annee_construction,
                pont.type_batiment_dpe, pont.fiabilite_emprise_sol, pont.fiabilite_hauteur,
+               dpe.etiquette_energie AS etiquette_dpe, dpe.date_etablissement AS dpe_date,
                f.flag_multi_bien, f.flag_multi_adresse
         FROM biens b
         JOIN mut m USING (id_mutation)
         JOIN parc p USING (id_mutation, id_parcelle)
         JOIN flags f USING (id_mutation)
         LEFT JOIN pont USING (id_mutation, id_parcelle)
+        -- Étiquette DPE du bâtiment (clé gold rnb_id) : le DPE dont la surface est la plus proche
+        -- de la vente = le lot le plus probable ; tie-break le plus récent.
+        LEFT JOIN LATERAL (
+            SELECT d.etiquette_energie, d.date_etablissement
+            FROM dpe d
+            WHERE d.id_rnb = pont.rnb_id
+            ORDER BY abs(d.surface_habitable - TRY_CAST(b.surface_reelle_bati AS DOUBLE)) NULLS LAST,
+                     d.date_etablissement DESC
+            LIMIT 1
+        ) dpe ON true
         WHERE b.type_local IN ('Maison', 'Appartement')
           AND pont.confiance IS DISTINCT FROM 'perdu'
         """

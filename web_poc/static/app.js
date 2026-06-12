@@ -454,14 +454,22 @@ function setParcelleDetail(featureCollection) {
 // Survol d'un bâtiment dans la liste -> illumine son empreinte sur la carte.
 let hoveredBatiId = null;
 
+// Illumine en synchronisation l'empreinte sur la carte (feature-state) ET sa box « Bâti cadastral »
+// dans le détail (classe .bati-hover = même rendu que :hover) — dans les DEUX sens de survol.
 function setBatiHover(id) {
   if (id === hoveredBatiId) return;
   if (hoveredBatiId !== null) {
     map.setFeatureState({ source: "parcelleDetail", id: hoveredBatiId }, { hover: false });
+    document.querySelectorAll(`[data-bati-idx="${hoveredBatiId}"]`).forEach((el) => el.classList.remove("bati-hover"));
   }
   hoveredBatiId = id;
   if (id !== null) {
     map.setFeatureState({ source: "parcelleDetail", id }, { hover: true });
+    document.querySelectorAll(`[data-bati-idx="${id}"]`).forEach((el) => {
+      el.classList.add("bati-hover");
+      // Survol carte alors que « Bâti cadastral » est replié → on l'ouvre pour révéler la box.
+      el.closest(".collapsible")?.classList.add("open");
+    });
   }
 }
 
@@ -580,8 +588,70 @@ async function loadComparableAdresses(row) {
   if (container) container.innerHTML = renderAdressesList(data ? data.adresses : []);
 }
 
+// Panneau DPE du bâtiment du comparable (clé gold rnb_id). Affiche le DPE de surface la plus
+// proche de la vente, + le récap des autres DPE du bâtiment.
+async function loadComparableDpe(row) {
+  const container = document.querySelector(`.comparable-detail[data-uid="${CSS.escape(String(row.uid))}"] #detailDpe`)
+    || document.querySelector("#detailDpe");
+  if (!container) return;
+  const dept = currentDept();
+  if (!dept || !row.rnb_id) {
+    container.innerHTML = `<span class="street-muted">Pas de bâtiment RNB identifié — DPE non rattachable.</span>`;
+    return;
+  }
+  const url = new URL("/api/dpe", window.location.origin);
+  url.searchParams.set("dept", dept);
+  url.searchParams.set("rnb_id", row.rnb_id);
+  if (row.surface != null) url.searchParams.set("surface", row.surface);
+  let data = null;
+  try {
+    const response = await fetch(url);
+    if (response.ok) data = await response.json();
+  } catch {
+    data = null;
+  }
+  if (selectedComparableUid !== row.uid) return;
+  if (!data || !data.dpe.length) {
+    container.innerHTML = `<span class="street-muted">Aucun DPE rattaché à ce bâtiment.</span>`;
+    return;
+  }
+  container.innerHTML = renderDpePanel(data);
+}
+
+function renderDpePanel(data) {
+  const list = data.dpe;
+  const m = list[data.matched != null ? data.matched : 0];
+  const energyType = m.type_energie ? m.type_energie.replace(/_/g, " ") : "—";
+  const millesime = m.source === "pre_2021" ? "avant 2021" : "depuis 2021";
+  const head = `
+    <div class="dpe-panel-head">
+      <span class="dpe-pair">Énergie${dpeBadge(m.etiquette_energie) || ' <span class="street-muted">n.c.</span>'}</span>
+      <span class="dpe-pair">GES${dpeBadge(m.etiquette_ges) || ' <span class="street-muted">n.c.</span>'}</span>
+    </div>
+    <div class="detail-grid">
+      ${detailField("Énergie chauffage", energyType)}
+      ${m.surface != null ? detailField("Surface DPE", `${Math.round(m.surface)} m²`) : ""}
+      ${m.date ? detailField("Établi le", m.date) : ""}
+      ${m.periode ? detailField("Construction", m.periode) : ""}
+      ${detailField("Millésime", millesime)}
+    </div>`;
+  if (list.length === 1) {
+    return head + `<p class="detail-note">DPE du bâtiment via RNB — ne désigne pas le lot exact.</p>`;
+  }
+  // Bâtiment à N DPE (jusqu'à des milliers) : distribution par classe, pas une liste de badges.
+  const counts = {};
+  for (const d of list) counts[d.etiquette_energie || "?"] = (counts[d.etiquette_energie || "?"] || 0) + 1;
+  const distrib = ["A", "B", "C", "D", "E", "F", "G", "?"].filter((k) => counts[k]).map((k) =>
+    `<span class="dpe-distrib-item">${k === "?" ? '<span class="street-muted">n.c.</span>' : dpeBadge(k)}<small>×${counts[k]}</small></span>`).join("");
+  return head
+    + `<p class="detail-note">${list.length} DPE sur ce bâtiment (RNB) — affiché : surface la plus proche de la vente.</p>`
+    + `<div class="dpe-distrib">${distrib}</div>`;
+}
+
 // Description courte affichée à l'utilisateur (le « ? » de l'en-tête). La mécanique de
 // construction (sources, fusion, harmonisation) reste dans la doc, pas ici.
+const DPE_HINT = "Diagnostic de performance énergétique du BÂTIMENT, rattaché via son identifiant RNB. Un bâtiment porte un DPE par logement : on affiche celui dont la surface est la plus proche de la vente (le lot le plus probable), mais ce n'est pas une certitude en copropriété. Étiquettes énergie + GES (A-G), type d'énergie de chauffage et date d'établissement (validité 10 ans).";
+
 const ADRESSES_PARCELLE_HINT = "Adresse(s) officielle(s) rattachée(s) à la parcelle. Intérêt : l'adresse de la vente (DVF) affichée plus haut est souvent imprécise ou incomplète ; celle-ci est l'adresse réelle du bien, sert de point de contact probable du propriétaire (sans révéler son identité), et fait apparaître toutes les entrées d'une parcelle qui en compte plusieurs. En copropriété, plusieurs adresses possibles sans désigner un logement précis.";
 
 function renderAdressesList(adresses) {
@@ -1202,6 +1272,19 @@ map.on("mouseleave", "comparables-points", () => {
   setComparableHover(hoveredComparableUid, false, { fromMap: true });
 });
 
+// Sens inverse : survol d'un bâtiment détecté SUR LA CARTE -> illumine son empreinte + sa box dans
+// le détail. La source `parcelleDetail` ne contient que les bâtiments du comparable sélectionné
+// (détail ouvert) -> intrinsèquement limité à celui qu'on regarde, pas à tous les bâtiments.
+map.on("mousemove", "parcelle-detail-bati-fill", (event) => {
+  if (!event.features.length) return;
+  map.getCanvas().style.cursor = "pointer";
+  setBatiHover(event.features[0].id);
+});
+map.on("mouseleave", "parcelle-detail-bati-fill", () => {
+  map.getCanvas().style.cursor = "";
+  setBatiHover(null);
+});
+
 // Double-clic SUR un comparable : zoom rapproché (pas au max) + ouverture du détail.
 map.on("dblclick", "comparables-points", (event) => {
   const feature = event.features && event.features[0];
@@ -1716,6 +1799,13 @@ function addComparableToDisplayed(row) {
   tableMeta.textContent = `${currentComparablesTotal} comparable${currentComparablesTotal > 1 ? "s" : ""}`;
 }
 
+// Badge classe énergie DPE (A-G) rattaché au bâtiment via RNB — vide si pas de DPE joignable.
+function dpeBadge(etiquette) {
+  if (!etiquette) return "";
+  const c = String(etiquette).toLowerCase();
+  return ` <span class="dpe-badge dpe-${c}" title="DPE classe ${escapeHtml(String(etiquette))} (bâtiment, via RNB)">${escapeHtml(String(etiquette))}</span>`;
+}
+
 function createComparableCard(row) {
   const viewed = viewedComparableUids.has(row.uid);
   const card = document.createElement("article");
@@ -1732,7 +1822,7 @@ function createComparableCard(row) {
   item.innerHTML = `
     <b>${int(row.prix_m2)} €/m²</b>
     <b>${euro(row.prix)}</b>
-    <span>${escapeHtml(row.commune || "")} · ${int(row.distance_m)} m · ${escapeHtml(String(row.surface ?? "-"))} m² · ${escapeHtml(String(row.pieces || "-"))} p.</span>
+    <span>${escapeHtml(row.commune || "")} · ${int(row.distance_m)} m · ${escapeHtml(String(row.surface ?? "-"))} m² · ${escapeHtml(String(row.pieces || "-"))} p.${dpeBadge(row.etiquette_dpe)}</span>
     <span class="result-date">${escapeHtml(row.date_mutation || "")}${viewed ? `<span class="viewed-tick" title="Détail consulté" aria-label="Détail consulté">✓</span>` : ""}</span>
   `;
   item.addEventListener("click", () => selectComparable(row.uid, { fit: true }));
@@ -2194,6 +2284,7 @@ function selectComparable(uid, options = { fit: false }, fallbackRow = null) {
   setCadastre(null);
   loadComparableBatiments(row);
   loadComparableAdresses(row);
+  loadComparableDpe(row);
   if (options.fit) {
     map.flyTo({ center: [row.lon, row.lat], zoom: Math.max(map.getZoom(), 16) });
   }
@@ -2255,6 +2346,7 @@ function renderDetail(row, container = detailBody) {
     ${detailSection("Cadastre", cadastreFields)}
     ${collapsible("Bâti cadastral", `<div id="detailBatiments" class="detail-batiments"><span class="street-muted">Lecture du cadastre…</span></div>`)}
     ${detailSection("Bâtiment (RNB / BDNB)", bdnbFields)}
+    ${collapsible("DPE (énergie)", `<div id="detailDpe" class="detail-dpe"><span class="street-muted">Lecture du DPE…</span></div>`, { hint: DPE_HINT })}
     ${collapsible("Adresses (lien parcellaire)", `<div id="detailAdresses" class="detail-adresses"><span class="street-muted">Lecture du lien parcelle↔adresse…</span></div>`, { hint: ADRESSES_PARCELLE_HINT })}
   `;
 }

@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.6.0 - 2026-06-12
+
+- **DPE (performance énergétique) — chaîne complète.** Nouveau fichier socle `dpe_{dept}.parquet` : récupération **pré-2021** (parquet S3 d'enrichissement) + **post-2021** (API ADEME data-fair), mix, nettoyage et harmonisation en 20 colonnes utiles à l'appli, puis jointure sur les comparables. C'est ce fichier local, lui seul, qui alimente l'appli (les sources distantes ne servent qu'à le bâtir).
+  - **Acquisition résumable** (`telechargement/recuperer_dpe_post2021.py`) : le serveur ADEME est lent et globalement throttlé (parallélisation testée et écartée, ×0,3) ; le fetch checkpointe le curseur et reprend après coupure (~12 min/dept). Filtre par `qs=code_departement_ban` + curseur `next` + `select` réduit.
+  - **Nettoyage/harmonisation** (`telechargement/preparer_dpe.py`) : surface clippée [8–1000] m², année [1700–année] sinon null, période de construction unifiée pré/post, étiquettes A-G strictes, DPE vierges flaggés et étiquette annulée (faux « A »), 14 types d'énergie normalisés en tokens, coords WGS84 hors-France→null + flag de précision géo, dédup inter-millésime restreinte aux maisons (la géo ne distingue pas les logements d'un immeuble).
+  - **Intégration appli** : étiquette énergie jointe aux comparables via `id_rnb` (`pipeline/construire_comparables.py`), badge classe-énergie A-G (échelle officielle) sur les cartes, et **panneau « DPE (énergie) »** dans la fiche détail (endpoint `/api/dpe` : DPE du bâtiment, le plus proche en surface, distribution par classe pour les bâtiments à N diagnostics).
+  - Étape DPE ajoutée à `lancer_pipeline`. Documentation : `docs/EXPLORATION_DPE.md` (vérifications API/S3, audit, spec de nettoyage). _Limite connue : couverture du match encore basse (28 % des maisons) — chantier des angles de jointure sans clé en cours._
+- **Survol bâti cadastral bidirectionnel** : survoler une empreinte de bâtiment sur la carte illumine la box correspondante du détail (et inversement, comme avant) ; ouvre automatiquement le panneau « Bâti cadastral » s'il est replié.
+
 ## v1.5.0 - 2026-06-12
 
 - **Adresse parcellaire** : nouveau lien **direct** parcelle↔adresse (adresses extraites du cadastre `codesParcelles` + BAN `cad_parcelles`, fusionnées et harmonisées à la source pour dédupliquer les doublons inter-sources). Affiché au clic d'un comparable comme **proxy de l'adresse propriétaire** (jamais son identité), avec l'adresse officielle BAN privilégiée et un « ? » qui en explique l'intérêt face à l'adresse de vente DVF. Couvre aussi les parcelles sans bâtiment RNB adressé (94,6 % des parcelles DVF sur le 33, mesuré par un spike de joignabilité).

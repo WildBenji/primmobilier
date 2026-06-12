@@ -26,6 +26,7 @@ from pipeline.qualite_jointure import main as mesurer
 from pipeline.recuperation_non_match import main as recuperer
 from pipeline.reduire_referentiels import main as reduire
 from telechargement.preparer_codes_postaux import main as telecharger_codes_postaux
+from telechargement.preparer_dpe import preparer_dpe as construire_dpe
 from telechargement.preparer_donnees import main as telecharger
 
 
@@ -37,7 +38,7 @@ def main(dept: str, mesure: bool = False) -> None:
     t0 = time.time()
     print(f"### Pipeline comparables — département {dept} ###")
 
-    total = 5
+    total = 6
 
     _etape(1, total, "Acquisition des données (DVF / RNB / BDNB / BAN)")
     telecharger(dept)
@@ -57,7 +58,10 @@ def main(dept: str, mesure: bool = False) -> None:
     _etape(4, total, "Réduction des référentiels au graphe DVF")
     reduire(dept)
 
-    _etape(5, total, "Construction de la table comparables + pont + adresses_ref")
+    _etape(5, total, "DPE — récupération (pré S3 + post API résumable) + mix nettoyé")
+    construire_dpe(dept)
+
+    _etape(6, total, "Construction de la table comparables + pont + adresses_ref")
     construire(dept)
 
     print(f"\n### Terminé en {time.time() - t0:.0f}s "
