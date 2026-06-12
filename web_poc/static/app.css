@@ -1202,21 +1202,12 @@ button#reset:hover {
   font-size: 16px;
   cursor: pointer;
   box-shadow: var(--shadow-pop);
-  /* Languette fantôme : simple indice quand le panneau est replié… */
+  /* Languette fantôme : simple indice (panneau ouvert ou replié)… */
   opacity: 0.22;
   transition: opacity 0.35s, color 0.2s, width 0.15s var(--ease);
 }
 
-/* …invisible quand le panneau est ouvert (elle gâcherait la carte)… */
-.panel:not(.collapsed) + .expand-estimation:not(:hover):not(:focus-visible) {
-  opacity: 0;
-}
-
-.table-wrap:not(.collapsed) .expand-comparables:not(:hover):not(:focus-visible) {
-  opacity: 0;
-}
-
-/* …et pleinement révélée sous la souris ou au focus clavier. */
+/* …pleinement révélée sous la souris ou au focus clavier. */
 .expand-estimation:hover,
 .expand-estimation:focus-visible,
 .expand-comparables:hover,
