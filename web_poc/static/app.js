@@ -1218,16 +1218,13 @@ function syncMarketTypeMenu() {
     : MARKET_CATEGORIES.filter((c) => selectedMarketTypes.has(c)).join(" + ");
 }
 
-// Bascule une catégorie depuis les lignes de stats du bas (sens inverse du menu).
-// Depuis « Tous », retirer une catégorie = garder explicitement les quatre autres.
+// Bascule une catégorie depuis les lignes de stats du bas — MÊME sémantique que le menu :
+// depuis « Tous », cliquer « Maison » filtre sur Maison seule ; re-cliquer la retire
+// (dernière retirée -> Set vide -> retour à « Tous »).
 function toggleMarketCategory(categorie) {
   if (!MARKET_CATEGORIES.includes(categorie)) return;
-  if (selectedMarketTypes.size === 0) {
-    for (const c of MARKET_CATEGORIES) {
-      if (c !== categorie) selectedMarketTypes.add(c);
-    }
-  } else if (selectedMarketTypes.has(categorie)) {
-    selectedMarketTypes.delete(categorie); // dernière retirée -> Set vide -> « Tous »
+  if (selectedMarketTypes.has(categorie)) {
+    selectedMarketTypes.delete(categorie);
   } else {
     selectedMarketTypes.add(categorie);
   }
@@ -1667,14 +1664,17 @@ function renderMarket(data) {
   configureScopeChip(marketScope, marketScopeDetails, data.target, data.summary.scope, marketStats);
   marketStats.innerHTML = "";
   for (const t of data.summary.types) {
-    // Ligne cliquable, corrélée au menu Type : cliquer retire la catégorie de la sélection
-    // (et le menu se met à jour) — le sens inverse du menu.
+    // Ligne cliquable, corrélée au menu Type (même bascule) : depuis « Tous », cliquer
+    // filtre sur cette seule catégorie ; si elle est sélectionnée, cliquer la retire.
+    const isSelected = selectedMarketTypes.has(t.categorie);
     const row = document.createElement("button");
     row.type = "button";
     row.className = `market-row${t.qualite === "indicatif" ? " indicatif" : ""}`;
-    row.title = `Retirer « ${t.categorie} » de la sélection`;
+    row.title = isSelected
+      ? `Retirer « ${t.categorie} » de la sélection`
+      : `N'afficher que « ${t.categorie} »`;
     row.innerHTML = `
-      <span class="cat"><span class="dot" style="background:${CATEGORY_COLORS[t.categorie] || "#66736d"}"></span>${escapeHtml(String(t.categorie || ""))}<span class="row-toggle" aria-hidden="true">×</span></span>
+      <span class="cat"><span class="dot" style="background:${CATEGORY_COLORS[t.categorie] || "#66736d"}"></span>${escapeHtml(String(t.categorie || ""))}<span class="row-toggle ${isSelected ? "remove" : "focus"}" aria-hidden="true">${isSelected ? "×" : "◎"}</span></span>
       <span class="sub">${int(t.count)} ventes · ${euro(t.median_prix)} médian${t.qualite === "indicatif" ? " · indicatif" : ""}</span>
       <span class="m2">${int(t.median_m2)} €/m²</span>
     `;

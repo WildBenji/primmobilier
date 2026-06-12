@@ -1165,6 +1165,14 @@ button#reset:hover {
 
 .market-row:hover .row-toggle {
   opacity: 1;
+}
+
+/* ◎ = « n'afficher que » (filtre positif) ; × = « retirer de la sélection ». */
+.market-row:hover .row-toggle.focus {
+  color: var(--accent);
+}
+
+.market-row:hover .row-toggle.remove {
   color: var(--danger);
 }
 
