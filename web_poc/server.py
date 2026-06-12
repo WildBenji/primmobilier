@@ -1269,12 +1269,12 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     radius_m = min(MAX_RADIUS_M, max(MIN_RADIUS_M, radius_m))
     sort_key = params.get("sort_key", [""])[0] or None
     sort_dir = params.get("sort_dir", ["desc"])[0]
-    selected_type = params.get("type", [""])[0] or None
-    if selected_type not in MARKET_BOUNDS:
-        requested = [c for c in (params.get("types", [""])[0] or "").split(",") if c in MARKET_BOUNDS]
-        selected_type = requested[0] if len(requested) == 1 else None
-    wanted = {selected_type} if selected_type else set(MARKET_CATEGORIES)
-    pieces_filter_enabled = selected_type in {"Maison", "Appartement"}
+    # Sélection MULTIPLE de catégories : `types=Maison,Terrain` (le singulier `type` reste
+    # accepté pour compatibilité). Vide ou inconnu -> toutes les catégories.
+    raw_types = params.get("types", [""])[0] or params.get("type", [""])[0] or ""
+    requested = [c for c in raw_types.split(",") if c in MARKET_BOUNDS]
+    wanted = set(requested) if requested else set(MARKET_CATEGORIES)
+    pieces_filter_enabled = bool(requested) and wanted <= {"Maison", "Appartement"}
 
     if scope_mode not in {"radius", "cadastre", "postcode", "city"}:
         scope_mode = "radius"
@@ -1367,19 +1367,22 @@ def market_rows(params: dict[str, list[str]]) -> dict:
         parcelle_expr="c.id_parcelle",
     )
     autres_filters = ["d.type_local IS NULL OR d.type_local IN ('Dépendance', 'Local industriel. commercial ou assimilé')"]
-    if selected_type in {"Maison", "Appartement"}:
+    # Chaque partie de l'UNION ne lit que les catégories demandées (le filtre de bornes €/m²
+    # final, construit sur `wanted`, re-garantit la restriction par catégorie).
+    logement_types = sorted(wanted & {"Maison", "Appartement"})
+    if not logement_types:
+        logement_filters.append("FALSE")
+    elif len(logement_types) == 1:
         logement_filters.append("c.type_local = ?")
-        logement_args.append(selected_type)
-        autres_filters.append("FALSE")
-    elif selected_type == "Terrain":
-        logement_filters.append("FALSE")
-        autres_filters.append("d.type_local IS NULL")
-    elif selected_type == "Dépendance":
-        logement_filters.append("FALSE")
-        autres_filters.append("d.type_local = 'Dépendance'")
-    elif selected_type == "Local":
-        logement_filters.append("FALSE")
-        autres_filters.append("d.type_local = 'Local industriel. commercial ou assimilé'")
+        logement_args.append(logement_types[0])
+    autres_conds = []
+    if "Terrain" in wanted:
+        autres_conds.append("d.type_local IS NULL")
+    if "Dépendance" in wanted:
+        autres_conds.append("d.type_local = 'Dépendance'")
+    if "Local" in wanted:
+        autres_conds.append("d.type_local = 'Local industriel. commercial ou assimilé'")
+    autres_filters.append(f"({' OR '.join(autres_conds)})" if autres_conds else "FALSE")
     bounds_filters = []
     bounds_args: list[object] = []
     for category in MARKET_CATEGORIES:
@@ -1583,7 +1586,7 @@ def market_rows(params: dict[str, list[str]]) -> dict:
             "dept": dept, "lon": lon, "lat": lat,
             "postcode": postcode, "citycode": citycode,
             "scope_mode": scope_mode, "radius_m": radius_m,
-            "type": selected_type,
+            "types": sorted(wanted) if requested else [],
             "history_min_years": history_min_years, "history_max_years": history_max_years,
             "section": section,
         },

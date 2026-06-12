@@ -91,7 +91,8 @@ let renderedCount = 0;
 let measuredCardHeight = 0;     // hauteur réelle d'une carte, mesurée au 1er rendu (auto-fit)
 let listSentinel = null;
 let listObserver = null;
-let selectedMarketType = "";
+// Sélection MULTIPLE de catégories en Exploration. Vide = « Tous ».
+const selectedMarketTypes = new Set();
 let searchTimer = null;
 let radiusTimer = null;
 let historyTimer = null;
@@ -891,15 +892,21 @@ function onMarketTypeChange() {
   if (selectedAddress) runMarket();
 }
 
+// Multi-sélection : chaque clic bascule la catégorie (le menu RESTE ouvert pour enchaîner
+// les choix — pas de just-picked/blur ici, contrairement aux menus à choix unique).
+// « Tous » vide la sélection ; sélectionner les 5 catégories revient à « Tous ».
 for (const button of marketTypeButtons) {
   button.addEventListener("click", () => {
-    selectedMarketType = button.dataset.marketType || "";
-    marketTypeLabel.textContent = button.textContent;
-    for (const other of marketTypeButtons) {
-      other.classList.toggle("active", other === button);
+    const value = button.dataset.marketType || "";
+    if (!value) {
+      selectedMarketTypes.clear();
+    } else if (selectedMarketTypes.has(value)) {
+      selectedMarketTypes.delete(value);
+    } else {
+      selectedMarketTypes.add(value);
+      if (selectedMarketTypes.size === MARKET_CATEGORIES.length) selectedMarketTypes.clear();
     }
-    marketTypeMenu.classList.add("just-picked");
-    button.blur();
+    syncMarketTypeMenu();
     onMarketTypeChange();
   });
 }
@@ -1194,21 +1201,39 @@ function roomsText() {
 }
 
 function roomsFilterApplies() {
-  const type = currentMarketType();
-  return type === "Maison" || type === "Appartement";
+  // Le filtre pièces n'a de sens que si la sélection est entièrement du logement.
+  return selectedMarketTypes.size > 0
+    && [...selectedMarketTypes].every((t) => t === "Maison" || t === "Appartement");
 }
 
-function currentMarketType() {
-  return selectedMarketType;
-}
-
-function setMarketType(value) {
-  selectedMarketType = value || "";
+// Aligne le menu (boutons actifs + libellé) sur la sélection courante.
+function syncMarketTypeMenu() {
+  const tous = selectedMarketTypes.size === 0;
   for (const button of marketTypeButtons) {
-    const active = (button.dataset.marketType || "") === selectedMarketType;
-    button.classList.toggle("active", active);
-    if (active) marketTypeLabel.textContent = button.textContent;
+    const value = button.dataset.marketType || "";
+    button.classList.toggle("active", tous ? !value : Boolean(value) && selectedMarketTypes.has(value));
   }
+  marketTypeLabel.textContent = tous
+    ? "Tous"
+    : MARKET_CATEGORIES.filter((c) => selectedMarketTypes.has(c)).join(" + ");
+}
+
+// Bascule une catégorie depuis les lignes de stats du bas (sens inverse du menu).
+// Depuis « Tous », retirer une catégorie = garder explicitement les quatre autres.
+function toggleMarketCategory(categorie) {
+  if (!MARKET_CATEGORIES.includes(categorie)) return;
+  if (selectedMarketTypes.size === 0) {
+    for (const c of MARKET_CATEGORIES) {
+      if (c !== categorie) selectedMarketTypes.add(c);
+    }
+  } else if (selectedMarketTypes.has(categorie)) {
+    selectedMarketTypes.delete(categorie); // dernière retirée -> Set vide -> « Tous »
+  } else {
+    selectedMarketTypes.add(categorie);
+  }
+  if (selectedMarketTypes.size === MARKET_CATEGORIES.length) selectedMarketTypes.clear();
+  syncMarketTypeMenu();
+  onMarketTypeChange();
 }
 
 function syncMarketFilterAvailability() {
@@ -1462,7 +1487,8 @@ function resetAll() {
   for (const b of modeButtons) {
     b.classList.toggle("active", b.dataset.mode === "estimation");
   }
-  setMarketType("");
+  selectedMarketTypes.clear();
+  syncMarketTypeMenu();
 
   // Filtres de marché -> aucune limite
   priceBounds = { ...DEFAULT_PRICE_BOUNDS };
@@ -1569,7 +1595,6 @@ async function runMarket() {
   const props = selectedAddress.properties;
   const [lon, lat] = selectedAddress.geometry.coordinates;
   const dept = currentDept() || "";
-  const marketType = currentMarketType();
   const seq = ++runSeq;
 
   const params = new URLSearchParams({
@@ -1582,7 +1607,7 @@ async function runMarket() {
     radius_m: String(selectedRadius),
     history_min_years: String(selectedHistoryMinYears),
     history_max_years: String(selectedHistoryMaxYears),
-    type: marketType,
+    types: [...selectedMarketTypes].join(","),
     sort_key: comparableSortKey || "",
     sort_dir: comparableSortDirection
   });
@@ -1642,13 +1667,18 @@ function renderMarket(data) {
   configureScopeChip(marketScope, marketScopeDetails, data.target, data.summary.scope, marketStats);
   marketStats.innerHTML = "";
   for (const t of data.summary.types) {
-    const row = document.createElement("div");
+    // Ligne cliquable, corrélée au menu Type : cliquer retire la catégorie de la sélection
+    // (et le menu se met à jour) — le sens inverse du menu.
+    const row = document.createElement("button");
+    row.type = "button";
     row.className = `market-row${t.qualite === "indicatif" ? " indicatif" : ""}`;
+    row.title = `Retirer « ${t.categorie} » de la sélection`;
     row.innerHTML = `
-      <span class="cat"><span class="dot" style="background:${CATEGORY_COLORS[t.categorie] || "#66736d"}"></span>${escapeHtml(String(t.categorie || ""))}</span>
+      <span class="cat"><span class="dot" style="background:${CATEGORY_COLORS[t.categorie] || "#66736d"}"></span>${escapeHtml(String(t.categorie || ""))}<span class="row-toggle" aria-hidden="true">×</span></span>
       <span class="sub">${int(t.count)} ventes · ${euro(t.median_prix)} médian${t.qualite === "indicatif" ? " · indicatif" : ""}</span>
       <span class="m2">${int(t.median_m2)} €/m²</span>
     `;
+    row.addEventListener("click", () => toggleMarketCategory(t.categorie));
     marketStats.append(row);
   }
   renderComparables(data.biens, data.points, data.summary.count);
