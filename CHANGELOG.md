@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.7.0 - 2026-06-12
+
+- **Refonte visuelle complète du POC web** : système de design à tokens en **double thème** (sombre « aerial » par défaut / clair nordique, bascule persistée), panneaux en verre dépoli, typographie Space Grotesk, curseurs et menus redessinés, contrôles MapLibre thématisés, marqueur cible animé. Le fond de carte suit le thème (Dark Matter ↔ Positron, noirs relevés via `raster-brightness` pour rester lisible) sans écraser un choix manuel. Languettes de panneaux « fantômes » (indice discret, révélées au survol/focus), sous-menus de fond de carte ouverts vers la droite avec ponts anti-fermeture au survol.
+- **Frise temporelle du marché** : histogramme des ventes par mois sous la carte, sélection libre **[début, fin]** à deux poignées (d'un mois à tout l'historique), lecture animée qui fait glisser la fenêtre, ticker ventes + €/m² médian sur la période, filtrage carte instantané (`setFilter`, sans re-requête). Double-clic : la barre se replie en pastille lumineuse (morphing fluide), double-clic pour la redéployer.
+- **Couche données — récupération maximisée** (audit vérifié via data.gouv, mesuré dept 33) :
+  - **DPE joignables 26 % → 61 %** : résolution `id_rnb` en cascade (`identifiant_ban`→clé BAN mono-bâtiment, puis spatial ≤ 15 m sur géocodage précis), lien qualifié `rnb_lien` exposé jusqu'à la fiche ; couverture étiquette des comparables 34,7 % → 42,3 %. Champs riches conservés et affichés : conso kWh/m², GES chiffré, étage, validité (DPE expirés signalés), adresse BAN.
+  - **Clé d'adresse avec suffixe bis/ter** (partagée `pipeline/commun.py`) : fin des matchs « voisin nu » sur les 8,8 k adresses suffixées.
+  - **Copropriétés RNIC** (nouvelle source, jointure cadastrale directe par parcelle) : lots habitation/total/stationnement, période, syndic, QPV — 21,5 % des biens enrichis, section « Copropriété (RNIC) » dans la fiche.
+  - **Carte des loyers** (nouvelle source, toutes communes × 4 segments) : loyer de référence + **rendement brut** dans l'estimation, intervalle de prédiction en infobulle.
+  - **Perf** : fenêtres spatiales en équi-jointure 9 cellules (le range-join `BETWEEN` dégénérait en quasi-cartésien, >30 min CPU → secondes), instance DuckDB partagée + curseurs par requête, cache de schémas parquet, parquets triés sur leurs clés de recherche.
+- **Exploration multi-types** : sélection multiple des catégories (menu à bascule qui reste ouvert, « Tous » = vide), **corrélée dans les deux sens** avec les lignes de stats du bas — cliquer une catégorie en bas filtre sur elle seule, re-cliquer revient à tout.
+
 ## v1.6.0 - 2026-06-12
 
 - **DPE (performance énergétique) — chaîne complète.** Nouveau fichier socle `dpe_{dept}.parquet` : récupération **pré-2021** (parquet S3 d'enrichissement) + **post-2021** (API ADEME data-fair), mix, nettoyage et harmonisation en 20 colonnes utiles à l'appli, puis jointure sur les comparables. C'est ce fichier local, lui seul, qui alimente l'appli (les sources distantes ne servent qu'à le bâtir).

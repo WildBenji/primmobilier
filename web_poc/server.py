@@ -40,6 +40,16 @@ SPATIAL_INSTALLED = False
 MONO_CACHE: dict[str, Path] = {}
 MONO_CACHE_LOCK = Lock()
 
+# Instance DuckDB partagée du processus : l'extension spatial n'est installée/chargée qu'UNE fois,
+# et chaque requête HTTP travaille sur un curseur léger (connexion dérivée, thread-safe) au lieu
+# de payer connect() + INSTALL/LOAD à chaque appel (mesuré : plusieurs dizaines de ms par requête).
+_DB: duckdb.DuckDBPyConnection | None = None
+_DB_LOCK = Lock()
+
+# Schémas parquet : DESCRIBE par requête coûte un open/scan du footer — mémoïsé par (path, mtime).
+_SCHEMA_CACHE: dict[tuple[str, int], set[str]] = {}
+_SCHEMA_LOCK = Lock()
+
 
 def available_departements() -> list[str]:
     return sorted(
@@ -55,6 +65,35 @@ def load_spatial(con: duckdb.DuckDBPyConnection) -> None:
         con.execute("INSTALL spatial;")
         SPATIAL_INSTALLED = True
     con.execute("LOAD spatial;")
+
+
+def db_cursor() -> duckdb.DuckDBPyConnection:
+    """Curseur sur l'instance partagée (extension spatial déjà chargée). À fermer après usage
+    (close() ferme le curseur, pas l'instance)."""
+    global _DB
+    with _DB_LOCK:
+        if _DB is None:
+            _DB = duckdb.connect()
+            load_spatial(_DB)
+        return _DB.cursor()
+
+
+def parquet_columns(path: Path) -> set[str]:
+    """Colonnes d'un parquet, mémoïsées par (chemin, mtime) — robuste aux régénérations."""
+    key = (str(path), path.stat().st_mtime_ns)
+    with _SCHEMA_LOCK:
+        cached = _SCHEMA_CACHE.get(key)
+        if cached is not None:
+            return cached
+    con = db_cursor()
+    try:
+        cols = {r[0] for r in con.execute(
+            "DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]).fetchall()}
+    finally:
+        con.close()
+    with _SCHEMA_LOCK:
+        _SCHEMA_CACHE[key] = cols
+    return cols
 
 
 def mono_mutations_path(dept: str, dvf: Path) -> Path:
@@ -368,7 +407,7 @@ def resolve_section(dept: str, lon: float, lat: float) -> dict | None:
     path = INTERIM / f"cadastre_sections_{dept}.parquet"
     if not path.exists():
         return None
-    con = duckdb.connect()
+    con = db_cursor()
     try:
         load_spatial(con)
         row = con.execute(
@@ -392,7 +431,7 @@ def resolve_lieu_dit(dept: str, lon: float, lat: float) -> dict | None:
     path = INTERIM / f"cadastre_lieux_dits_{dept}.parquet"
     if not path.exists():
         return None
-    con = duckdb.connect()
+    con = db_cursor()
     try:
         load_spatial(con)
         row = con.execute(
@@ -438,7 +477,7 @@ def _read_contour_geojson(path: Path, key_col: str, value: str) -> dict | None:
     """Lit une géométrie de contour (GeoJSON) d'un parquet local filtré par clé."""
     if not path.exists():
         return None
-    con = duckdb.connect()
+    con = db_cursor()
     try:
         load_spatial(con)
         row = con.execute(
@@ -488,7 +527,7 @@ def scope_communes_rows(params: dict[str, list[str]]) -> dict:
     ban = INTERIM / f"ban_{dept}.parquet"
     if not ban.exists():
         return {"communes": []}
-    con = duckdb.connect()
+    con = db_cursor()
     try:
         if scope_mode == "postcode" and re.fullmatch(r"\d{5}", postcode or ""):
             rows = con.execute(
@@ -570,7 +609,7 @@ def parcelles_rows(params: dict[str, list[str]]) -> dict:
         return empty
     ids = [x for x in (params.get("ids", [""])[0] or "").split(",") if x][:PARCELLE_IDS_CAP]
     bbox = params.get("bbox", [""])[0]
-    con = duckdb.connect()
+    con = db_cursor()
     try:
         load_spatial(con)
         if ids:
@@ -724,7 +763,7 @@ def batiments_rows(params: dict[str, list[str]]) -> dict:
     bat_path = INTERIM / f"cadastre_batiments_{dept}.parquet"
     if not parc_path.exists() or not bat_path.exists():
         return empty
-    con = duckdb.connect()
+    con = db_cursor()
     fallback = None
     try:
         load_spatial(con)
@@ -775,7 +814,7 @@ def parcelle_adresses_rows(params: dict[str, list[str]]) -> dict:
     path = INTERIM / f"parcelle_adresse_{dept}.parquet"
     if not path.exists():
         return empty
-    con = duckdb.connect()
+    con = db_cursor()
     try:
         rows = con.execute(
             """
@@ -813,12 +852,22 @@ def dpe_rows(params: dict[str, list[str]]) -> dict:
         surf = float(params.get("surface", [""])[0])
     except (TypeError, ValueError):
         surf = None
-    con = duckdb.connect()
+    # Champs « riches » (étage, conso/GES chiffrées, validité, lien RNB qualifié) : présents
+    # depuis la résolution id_rnb du pipeline ; NULL si le parquet du dept est antérieur.
+    cols = parquet_columns(path)
+
+    def opt(name: str, default: str = "NULL") -> str:
+        return name if name in cols else f"{default} AS {name}"
+
+    con = db_cursor()
     try:
         rows = con.execute(
-            """
+            f"""
             SELECT etiquette_energie, etiquette_ges, type_energie_principale, surface_habitable,
-                   date_etablissement, periode_construction, source_dpe, dpe_vierge
+                   date_etablissement, periode_construction, source_dpe, dpe_vierge,
+                   {opt('etage')}, {opt('conso_ep_m2')}, {opt('emission_ges_m2')},
+                   {opt('date_fin_validite')}, {opt('rnb_lien', "'ademe'")}, {opt('rnb_dist_m')},
+                   {opt('adresse_ban')}
             FROM read_parquet(?) WHERE id_rnb = ?
             ORDER BY date_etablissement DESC NULLS LAST
             """,
@@ -826,10 +875,15 @@ def dpe_rows(params: dict[str, list[str]]) -> dict:
         ).fetchall()
     finally:
         con.close()
+    today = date.today().isoformat()
     dpe = [{
         "etiquette_energie": r[0], "etiquette_ges": r[1], "type_energie": r[2],
         "surface": r[3], "date": str(r[4]) if r[4] else None,
         "periode": r[5], "source": r[6], "vierge": r[7],
+        "etage": r[8], "conso_ep_m2": r[9], "emission_ges_m2": r[10],
+        "fin_validite": str(r[11]) if r[11] else None,
+        "expire": bool(r[11]) and str(r[11]) < today,
+        "rnb_lien": r[12], "rnb_dist_m": r[13], "adresse_ban": r[14],
     } for r in rows]
     matched = None
     if surf is not None:
@@ -837,6 +891,47 @@ def dpe_rows(params: dict[str, list[str]]) -> dict:
         if cand:
             matched = min(cand, key=lambda x: abs(x[1] - surf))[0]
     return {"rnb_id": rnb_id, "dpe": dpe, "matched": matched}
+
+
+def loyer_reference(citycode: str | None, target_type: str, rooms: int | None) -> dict | None:
+    """Indicateur de loyer de la commune cible (« Carte des loyers » SDES×ANIL, modèle
+    hédonique sur annonces, charges comprises). Segment choisi au plus près du bien :
+    maison ; appartement 1-2 pièces ; appartement 3 pièces et plus ; sinon appartement (tous).
+
+    C'est une PRÉDICTION de modèle par commune, pas une observation : l'intervalle (bas/haut)
+    et la maille de prédiction sont renvoyés pour que l'appli l'affiche honnêtement.
+    """
+    path = INTERIM / "loyers_communes.parquet"
+    if not citycode or not path.exists():
+        return None
+    if target_type == "Maison":
+        categorie = "maison"
+    elif rooms is not None and rooms <= 2:
+        categorie = "appartement_1_2p"
+    elif rooms is not None:
+        categorie = "appartement_3p_plus"
+    else:
+        categorie = "appartement"
+    con = db_cursor()
+    try:
+        row = con.execute(
+            """SELECT loyer_m2, loyer_m2_bas, loyer_m2_haut, maille_prediction, r2, millesime
+               FROM read_parquet(?) WHERE code_insee = ? AND categorie = ? LIMIT 1""",
+            [str(path), citycode, categorie],
+        ).fetchone()
+    finally:
+        con.close()
+    if not row or row[0] is None:
+        return None
+    return {
+        "loyer_m2": round(row[0], 1),
+        "loyer_m2_bas": round(row[1], 1) if row[1] is not None else None,
+        "loyer_m2_haut": round(row[2], 1) if row[2] is not None else None,
+        "maille": row[3],
+        "r2": round(row[4], 2) if row[4] is not None else None,
+        "millesime": row[5],
+        "categorie": categorie,
+    }
 
 
 def comparable_rows(params: dict[str, list[str]]) -> dict:
@@ -872,13 +967,11 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
         if not section:
             return {"error": "Aucune section cadastrale trouvée à cette adresse (cadastre du département requis)."}
 
-    con = duckdb.connect()
+    con = db_cursor()
     comp = INTERIM / f"comparables_{dept}.parquet"
     dvf = INTERIM / f"dvf_{dept}.parquet"
-    comp_columns = {
-        row[0]
-        for row in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(comp)]).fetchall()
-    }
+    comp_columns = parquet_columns(comp)
+
     def optional_comp_col(name: str) -> str:
         return f"c.{name}" if name in comp_columns else f"NULL AS {name}"
 
@@ -897,6 +990,15 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
         "annee_construction",
         "type_batiment_dpe",
         "etiquette_dpe",
+        "dpe_lien",
+        "copro_n_sur_parcelle",
+        "copro_lots_habitation",
+        "copro_lots_total",
+        "copro_lots_stationnement",
+        "copro_periode_construction",
+        "copro_type_syndic",
+        "copro_residence_service",
+        "copro_qpv",
         "fiabilite_emprise_sol",
         "fiabilite_hauteur",
     ])
@@ -1034,6 +1136,11 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
     for uid, r in enumerate(cohort_sorted):
         r["uid"] = uid
         r["sim"] = similarity_score(r, surface, rooms, max_distance)
+
+    # Contexte locatif : loyer de référence de la commune + rendement brut sur le prix estimé.
+    loyer = loyer_reference(citycode, target_type, rooms)
+    if loyer and median_m2:
+        loyer["rendement_brut_pct"] = round(loyer["loyer_m2"] * 12 / median_m2 * 100, 1)
     points = cohort_sorted[:POINTS_HARD_CAP]      # carte : tous les points (allégés)
     detailed = sorted_for_display(cohort_sorted, sort_key, sort_dir)[:POINTS_HARD_CAP]    # liste : cohorte COMPLÈTE triée globalement (le client fenêtre l'affichage)
 
@@ -1066,6 +1173,7 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
             "dispersion_pct": round(dispersion_pct, 1) if dispersion_pct is not None else None,
             "confidence": confidence(len(cohort), dispersion_pct),
             "asked_position_pct": round(asked_position, 1) if asked_position is not None else None,
+            "loyer": loyer,
         },
         "points": [
             {
@@ -1120,6 +1228,15 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
                 "annee_construction": r["annee_construction"],
                 "type_batiment_dpe": r["type_batiment_dpe"],
                 "etiquette_dpe": r["etiquette_dpe"],
+                "dpe_lien": r["dpe_lien"],
+                "copro_n_sur_parcelle": r["copro_n_sur_parcelle"],
+                "copro_lots_habitation": r["copro_lots_habitation"],
+                "copro_lots_total": r["copro_lots_total"],
+                "copro_lots_stationnement": r["copro_lots_stationnement"],
+                "copro_periode_construction": r["copro_periode_construction"],
+                "copro_type_syndic": r["copro_type_syndic"],
+                "copro_residence_service": r["copro_residence_service"],
+                "copro_qpv": r["copro_qpv"],
                 "fiabilite_emprise_sol": r["fiabilite_emprise_sol"],
                 "fiabilite_hauteur": r["fiabilite_hauteur"],
                 "similarity": r["sim"],
@@ -1152,12 +1269,12 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     radius_m = min(MAX_RADIUS_M, max(MIN_RADIUS_M, radius_m))
     sort_key = params.get("sort_key", [""])[0] or None
     sort_dir = params.get("sort_dir", ["desc"])[0]
-    selected_type = params.get("type", [""])[0] or None
-    if selected_type not in MARKET_BOUNDS:
-        requested = [c for c in (params.get("types", [""])[0] or "").split(",") if c in MARKET_BOUNDS]
-        selected_type = requested[0] if len(requested) == 1 else None
-    wanted = {selected_type} if selected_type else set(MARKET_CATEGORIES)
-    pieces_filter_enabled = selected_type in {"Maison", "Appartement"}
+    # Sélection MULTIPLE de catégories : `types=Maison,Terrain` (le singulier `type` reste
+    # accepté pour compatibilité). Vide ou inconnu -> toutes les catégories.
+    raw_types = params.get("types", [""])[0] or params.get("type", [""])[0] or ""
+    requested = [c for c in raw_types.split(",") if c in MARKET_BOUNDS]
+    wanted = set(requested) if requested else set(MARKET_CATEGORIES)
+    pieces_filter_enabled = bool(requested) and wanted <= {"Maison", "Appartement"}
 
     if scope_mode not in {"radius", "cadastre", "postcode", "city"}:
         scope_mode = "radius"
@@ -1172,7 +1289,7 @@ def market_rows(params: dict[str, list[str]]) -> dict:
         if not section:
             return {"error": "Aucune section cadastrale trouvée à cette adresse (cadastre du département requis)."}
 
-    con = duckdb.connect()
+    con = db_cursor()
     comp = str(INTERIM / f"comparables_{dept}.parquet")
     dvf_path = INTERIM / f"dvf_{dept}.parquet"
     dvf = str(dvf_path)
@@ -1250,19 +1367,22 @@ def market_rows(params: dict[str, list[str]]) -> dict:
         parcelle_expr="c.id_parcelle",
     )
     autres_filters = ["d.type_local IS NULL OR d.type_local IN ('Dépendance', 'Local industriel. commercial ou assimilé')"]
-    if selected_type in {"Maison", "Appartement"}:
+    # Chaque partie de l'UNION ne lit que les catégories demandées (le filtre de bornes €/m²
+    # final, construit sur `wanted`, re-garantit la restriction par catégorie).
+    logement_types = sorted(wanted & {"Maison", "Appartement"})
+    if not logement_types:
+        logement_filters.append("FALSE")
+    elif len(logement_types) == 1:
         logement_filters.append("c.type_local = ?")
-        logement_args.append(selected_type)
-        autres_filters.append("FALSE")
-    elif selected_type == "Terrain":
-        logement_filters.append("FALSE")
-        autres_filters.append("d.type_local IS NULL")
-    elif selected_type == "Dépendance":
-        logement_filters.append("FALSE")
-        autres_filters.append("d.type_local = 'Dépendance'")
-    elif selected_type == "Local":
-        logement_filters.append("FALSE")
-        autres_filters.append("d.type_local = 'Local industriel. commercial ou assimilé'")
+        logement_args.append(logement_types[0])
+    autres_conds = []
+    if "Terrain" in wanted:
+        autres_conds.append("d.type_local IS NULL")
+    if "Dépendance" in wanted:
+        autres_conds.append("d.type_local = 'Dépendance'")
+    if "Local" in wanted:
+        autres_conds.append("d.type_local = 'Local industriel. commercial ou assimilé'")
+    autres_filters.append(f"({' OR '.join(autres_conds)})" if autres_conds else "FALSE")
     bounds_filters = []
     bounds_args: list[object] = []
     for category in MARKET_CATEGORIES:
@@ -1466,7 +1586,7 @@ def market_rows(params: dict[str, list[str]]) -> dict:
             "dept": dept, "lon": lon, "lat": lat,
             "postcode": postcode, "citycode": citycode,
             "scope_mode": scope_mode, "radius_m": radius_m,
-            "type": selected_type,
+            "types": sorted(wanted) if requested else [],
             "history_min_years": history_min_years, "history_max_years": history_max_years,
             "section": section,
         },

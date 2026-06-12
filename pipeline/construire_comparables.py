@@ -18,7 +18,7 @@ import sys
 import duckdb
 import polars as pl
 
-from pipeline.commun import INTERIM, RAW, _exiger
+from pipeline.commun import INTERIM, RAW, _exiger, cle_adresse_dvf
 
 
 def _service_or_base(prefix: str, dept: str) -> str:
@@ -34,16 +34,45 @@ def charger(con: duckdb.DuckDBPyConnection, dept: str) -> None:
     con.execute(f"CREATE VIEW adr AS SELECT * FROM read_parquet('{_service_or_base('rnb_adr', dept)}')")
     con.execute(f"CREATE VIEW recup AS SELECT * FROM read_parquet('{_exiger(INTERIM / f'recup_liens_final_{dept}.parquet')}')")
     # DPE optionnel (construit à part par preparer_dpe, au fur et à mesure) : on ne garde que les
-    # lignes joignables (id_rnb gold + étiquette fiable). Vue vide si le dept n'a pas encore son DPE.
+    # lignes joignables (id_rnb résolu + étiquette fiable). Vue vide si le dept n'a pas encore son DPE.
+    # `rnb_lien` (ademe/cle_ban/spatial) qualifie la solidité du rattachement — absent des dpe_
+    # générés avant la récupération id_rnb, d'où le repli sur 'ademe' (seul lien qui existait alors).
     dpe_path = INTERIM / f"dpe_{dept}.parquet"
     if dpe_path.exists():
-        con.execute(f"""CREATE VIEW dpe AS SELECT id_rnb, etiquette_energie, surface_habitable, date_etablissement
+        colonnes = set(pl.scan_parquet(dpe_path).collect_schema().names())
+        lien = "rnb_lien" if "rnb_lien" in colonnes else "'ademe' AS rnb_lien"
+        con.execute(f"""CREATE VIEW dpe AS SELECT id_rnb, etiquette_energie, surface_habitable,
+                               date_etablissement, {lien}
                         FROM read_parquet('{dpe_path}')
                         WHERE id_rnb IS NOT NULL AND etiquette_energie IS NOT NULL""")
     else:
         con.execute("""CREATE TEMP VIEW dpe AS SELECT NULL::VARCHAR AS id_rnb,
                        NULL::VARCHAR AS etiquette_energie, NULL::DOUBLE AS surface_habitable,
-                       NULL::DATE AS date_etablissement WHERE false""")
+                       NULL::DATE AS date_etablissement, NULL::VARCHAR AS rnb_lien WHERE false""")
+    # Copropriétés RNIC (optionnel) : agrégées par parcelle — la plus grande (lots habitation)
+    # représente la parcelle, n_copros signale les parcelles multi-copropriétés.
+    copro_path = INTERIM / f"copro_{dept}.parquet"
+    if copro_path.exists():
+        con.execute(f"""
+            CREATE VIEW copro_parcelle AS
+            SELECT id_parcelle,
+                   count(*) AS copro_n_sur_parcelle,
+                   arg_max(nombre_lots_habitation, coalesce(nombre_lots_habitation, -1)) AS copro_lots_habitation,
+                   arg_max(nombre_total_lots, coalesce(nombre_lots_habitation, -1)) AS copro_lots_total,
+                   arg_max(nombre_lots_stationnement, coalesce(nombre_lots_habitation, -1)) AS copro_lots_stationnement,
+                   arg_max(periode_construction, coalesce(nombre_lots_habitation, -1)) AS copro_periode_construction,
+                   arg_max(type_syndic, coalesce(nombre_lots_habitation, -1)) AS copro_type_syndic,
+                   arg_max(residence_service, coalesce(nombre_lots_habitation, -1)) AS copro_residence_service,
+                   arg_max(nom_qp_2024, coalesce(nombre_lots_habitation, -1)) AS copro_qpv
+            FROM read_parquet('{copro_path}')
+            GROUP BY 1
+        """)
+    else:
+        con.execute("""CREATE TEMP VIEW copro_parcelle AS SELECT NULL::VARCHAR AS id_parcelle,
+                       NULL::BIGINT AS copro_n_sur_parcelle, NULL::INT AS copro_lots_habitation,
+                       NULL::INT AS copro_lots_total, NULL::INT AS copro_lots_stationnement,
+                       NULL::VARCHAR AS copro_periode_construction, NULL::VARCHAR AS copro_type_syndic,
+                       NULL::VARCHAR AS copro_residence_service, NULL::VARCHAR AS copro_qpv WHERE false""")
     bdnb = INTERIM / f"bdnb_batiments_service_{dept}.parquet"
     if not bdnb.exists():
         bdnb = INTERIM / f"bdnb_batiments_{dept}.parquet"
@@ -81,13 +110,13 @@ def charger(con: duckdb.DuckDBPyConnection, dept: str) -> None:
 
 def construire_pont(con: duckdb.DuckDBPyConnection) -> None:
     """(id_mutation, id_parcelle) -> identifiants bâtiment sourcés quand ils sont déterministes."""
+    cle = cle_adresse_dvf()
     con.execute(
-        """
+        f"""
         CREATE TEMP TABLE pont AS
         WITH sales AS (
             SELECT DISTINCT id_mutation, id_parcelle,
-                   code_commune || '_' || lower(adresse_code_voie) || '_'
-                       || lpad(adresse_numero, 5, '0') AS cle
+                   {cle} AS cle
             FROM dvf
             WHERE type_local IN ('Maison', 'Appartement') AND id_parcelle IS NOT NULL
         ),
@@ -223,19 +252,28 @@ def construire_comparables(con: duckdb.DuckDBPyConnection) -> None:
                pont.hauteur_mean, pont.nb_niveau, pont.annee_construction,
                pont.type_batiment_dpe, pont.fiabilite_emprise_sol, pont.fiabilite_hauteur,
                dpe.etiquette_energie AS etiquette_dpe, dpe.date_etablissement AS dpe_date,
+               dpe.rnb_lien AS dpe_lien,
+               cp.copro_n_sur_parcelle, cp.copro_lots_habitation, cp.copro_lots_total,
+               cp.copro_lots_stationnement, cp.copro_periode_construction,
+               cp.copro_type_syndic, cp.copro_residence_service, cp.copro_qpv,
                f.flag_multi_bien, f.flag_multi_adresse
         FROM biens b
         JOIN mut m USING (id_mutation)
         JOIN parc p USING (id_mutation, id_parcelle)
         JOIN flags f USING (id_mutation)
         LEFT JOIN pont USING (id_mutation, id_parcelle)
-        -- Étiquette DPE du bâtiment (clé gold rnb_id) : le DPE dont la surface est la plus proche
-        -- de la vente = le lot le plus probable ; tie-break le plus récent.
+        -- Copropriété RNIC par lien cadastral direct : pertinent surtout pour les appartements ;
+        -- une maison sur parcelle de copro (lotissement en volumes) reste un signal utile.
+        LEFT JOIN copro_parcelle cp ON b.id_parcelle = cp.id_parcelle
+        -- Étiquette DPE du bâtiment (id_rnb résolu) : le DPE dont la surface est la plus proche
+        -- de la vente = le lot le plus probable ; à surface égale, le rattachement le plus sûr
+        -- (ademe > cle_ban > spatial) puis le plus récent.
         LEFT JOIN LATERAL (
-            SELECT d.etiquette_energie, d.date_etablissement
+            SELECT d.etiquette_energie, d.date_etablissement, d.rnb_lien
             FROM dpe d
             WHERE d.id_rnb = pont.rnb_id
             ORDER BY abs(d.surface_habitable - TRY_CAST(b.surface_reelle_bati AS DOUBLE)) NULLS LAST,
+                     CASE d.rnb_lien WHEN 'ademe' THEN 0 WHEN 'cle_ban' THEN 1 ELSE 2 END,
                      d.date_etablissement DESC
             LIMIT 1
         ) dpe ON true
@@ -268,10 +306,18 @@ def main(dept: str) -> None:
     construire_comparables(con)
     construire_adresses_ref(con)
 
+    # Écritures TRIÉES : les requêtes serveur filtrent par commune/parcelle (comparables, pont)
+    # et par rnb_id (adresses_ref) — le tri aligne les statistiques de row-groups parquet sur
+    # ces prédicats et permet à DuckDB d'élaguer la lecture.
+    ordres = {
+        "comparables": "ORDER BY code_commune, id_parcelle",
+        "pont_batiment": "ORDER BY id_parcelle",
+        "adresses_ref": "ORDER BY rnb_id",
+    }
     for nom in ("comparables", "pont_batiment", "adresses_ref"):
         table = "pont" if nom == "pont_batiment" else nom
         out = INTERIM / f"{nom}_{dept}.parquet"
-        con.execute(f"COPY {table} TO '{out}' (FORMAT parquet)")
+        con.execute(f"COPY (SELECT * FROM {table} {ordres[nom]}) TO '{out}' (FORMAT parquet)")
 
     print("=== Volumes ===")
     con.sql("""

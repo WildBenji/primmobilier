@@ -236,7 +236,18 @@ sur ces parcelles puis sur les `batiment_groupe_id` restants.
 
 **Superflu pour le départ** : la masse des champs techniques de calcul réglementaire (parois, ponts thermiques, systèmes, consos…) — on ne retient que clé BAN, classe, GES, type, géopoint, qualité géocodage, dates.
 
-**Clés de jointure** : `identifiant_ban` ↔ **même namespace que `BAN.id` et `RNB.cle_interop_ban`** → jointure directe par clé viable (vérifié : formats compatibles). ⚠️ Caveat à mesurer : une partie des `identifiant_ban` est **au niveau voie sans numéro** (ex. `48002_koo2vl`) → ne matche pas une adresse à la maison ; + qualité variable (`score_ban`). Pas de lien parcelle direct → passer par BAN (`cad_parcelles`) ou RNB (`plots`).
+**Clés de jointure** : `identifiant_ban` ↔ **même namespace que `BAN.id` et `RNB.cle_interop_ban`** → jointure directe par clé viable (vérifié : formats compatibles). ⚠️ Caveat MESURÉ (33) : 39 % des `identifiant_ban` orphelins ne matchent pas le RNB (clés au niveau voie, adresses non bâties). Pas de lien parcelle direct → passer par BAN (`cad_parcelles`) ou RNB (`plots`).
+
+**✅ Rattachement RNB résolu (mesuré 33, 2026-06-12)** — l'ADEME ne fournit `id_rnb` que sur ~47 % des DPE post-2021 et jamais en pré-2021, or toute la chaîne aval joint sur `id_rnb` : sans résolution, 26 % seulement des 653 k DPE du dept étaient joignables. `preparer_dpe._resoudre_rnb` complète en cascade, du plus sûr au plus interprété (colonne `rnb_lien` exposée jusqu'à l'appli pour l'avertissement de fiabilité) :
+
+| `rnb_lien` | Mécanisme | Volume (33) |
+| --- | --- | --- |
+| `ademe` | id_rnb natif ADEME (post-2021) | 170 776 |
+| `cle_ban` | `identifiant_ban` = `RNB.cle_interop_ban`, clé **mono-bâtiment** seulement (70,9 % des clés RNB) | 35 874 |
+| `spatial` | plus proche bâtiment RNB ≤ 15 m, géocodage `precise` (médiane 12,1 m) | 189 560 |
+| — | ni clé exploitable ni géocodage précis | 257 240 |
+
+→ **61 % des DPE joignables** (contre 26 %), pré-2021 inclus. Effet sur les comparables (33) : couverture étiquette DPE **34,7 % → 42,3 %**, chaque étiquette qualifiée par `dpe_lien`. Champs riches conservés au mix : `etage`, `conso_ep_m2`, `emission_ges_m2`, `date_fin_validite`, `adresse_ban`, `score_ban` (valeur chiffrée derrière l'étiquette, étage du lot, DPE expirés signalés). ⚠ Perf : la fenêtre spatiale 3×3 doit être une **équi-jointure sur 9 cellules dupliquées** — un `BETWEEN` en condition de jointure dégénère en range-join quasi cartésien (>30 min CPU vs secondes).
 
 ## 3.2 DPE Logements neufs (depuis juillet 2021)
 
@@ -263,14 +274,21 @@ sur ces parcelles puis sur les `batiment_groupe_id` restants.
 
 - **Artefact** : `data/interim/parcelle_adresse_{dept}.parquet` (`id_parcelle, numero, voie, code_postal, ville, code_insee, lon, lat, destination, source`), produit par [`telechargement/preparer_adresses_parcelle.py`](../telechargement/preparer_adresses_parcelle.py) (fusion cadastre + BAN, scoped dept, idempotent). Exposé via l'endpoint POC `/api/parcelle-adresses` (affiché au clic d'une parcelle). **Lien direct seulement** : pas d'inférence géométrique adjacent/proximité (palier « parcelle » du pattern piscines). **Harmonisation à la source** : une même adresse vue par le cadastre et par BAN (ex. « Péchauriol Est » vs « Péchauriol-est ») est dédupliquée sur une **clé canonique** numéro+voie+commune (dé-accentuée, minuscule, non-alphanumérique → espace unique, bords élagués). Cette clé ne sert qu'à la comparaison — **jamais affichée**. Pour l'affichage on garde le **libellé officiel de la BAN** quand il existe, tout en **préservant la `destination` issue du cadastre**. En immeuble, une parcelle garde toutes ses adresses **réellement distinctes**, sans désigner un lot.
 
-## 3.4 Registre national d'immatriculation des copropriétés
+## 3.4 Registre national d'immatriculation des copropriétés (RNIC)
 
 - **ID data.gouv** : `62da71c068871f4c54258c7c` · Organisation : ANAH · Licence : `lov2` · Fréquence : **quotidienne** · MàJ catalogue : 2026-06-09 · 18 ressources
-- **Statut** : ⏳ À approfondir
-- **Définition** : recensement des copropriétés à usage d'habitation (taille, période, situation administrative, adresse de référence).
-- **Position** : enrichissement « facteur d'appartement » (taille de copropriété) ; jointure par adresse/commune. Hors socle initial.
+- **Statut** : ✅ **Intégrée** — [`telechargement/preparer_copro.py`](../telechargement/preparer_copro.py) → `copro_{dept}.parquet`, joint aux comparables **par parcelle** (33 : 16 359 liens, 12 222 copros, 21,5 % des biens enrichis).
+- **Définition** : recensement des copropriétés à usage d'habitation (taille, période, situation administrative, adresse de référence). CSV national ~430 Mo, URL stable par resource-id.
+- **Position** : la jointure ne passe **ni par l'adresse ni par la commune** : le RNIC publie les **références cadastrales** (`reference_cadastrale_1..3`) au **même format 14 caractères que `id_parcelle` DVF** → **lien cadastral direct**, zéro géocodage. Seul croisement open data donnant la **taille réelle de la copropriété** (lots habitation / total / stationnement — « facteur d'appartement » du CONTEXT), la **période de construction** déclarée au règlement, le **type de syndic**, résidence-services et QPV. Une parcelle peut porter plusieurs copros : agrégation à la construction des comparables (la plus grande + `copro_n_sur_parcelle`). Données déclarées par les syndics : fiables sur la structure, parfois datées.
 
-## 3.5 GASPAR — risques
+## 3.5 « Carte des loyers » — indicateurs de loyers d'annonce par commune
+
+- **ID data.gouv** : `693aa2feed1bf4da603faa49` (millésime 2025) · Organisation : Ministère de la Transition écologique (SDES × ANIL) · Annuel
+- **Statut** : ✅ **Intégrée** — [`telechargement/preparer_loyers.py`](../telechargement/preparer_loyers.py) → `loyers_communes.parquet` (national : 34 900 communes × 4 segments).
+- **Définition** : loyer d'annonce **prédit par un modèle hédonique** (annonces leboncoin + SeLoger + PAP), **charges comprises**, pour toutes les communes. Segments : maison, appartement (tous), appartement 1-2 pièces, appartement 3 pièces et plus. Conservés : prédiction (€/m²), **intervalle de prédiction**, maille, nb d'observations commune, R².
+- **Position** : seule référence locative open data exhaustive. Jointure triviale `code_insee` = `citycode` de l'adresse résolue. Affichée dans l'estimation (loyer de référence + **rendement brut** = 12 loyers / prix médian estimé) avec une infobulle qui assume le statut de **prédiction de modèle**. ⚠️ Format source : CSV `;`, décimales à virgule, Latin-1, CRLF.
+
+## 3.6 GASPAR — risques
 
 - **ID data.gouv** : `536995eea3a729239d20486b` · Organisation : Min. Transition écologique · Licence : `fr-lo` · Fréquence : **quotidienne** · MàJ catalogue : 2025-12-16
 - **Statut** : ⏳ À approfondir

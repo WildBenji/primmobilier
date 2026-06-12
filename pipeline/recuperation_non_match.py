@@ -23,7 +23,7 @@ import sys
 import duckdb
 import polars as pl
 
-from pipeline.commun import INTERIM, RAW, _exiger, points_rnb, preparer_mutations
+from pipeline.commun import INTERIM, RAW, _exiger, cle_adresse_dvf, points_rnb, preparer_mutations
 
 
 def _ban(dept: str) -> pl.DataFrame:
@@ -70,11 +70,10 @@ def preparer_recuperation(con: duckdb.DuckDBPyConnection) -> None:
 
     # lignes DVF de logement appartenant aux mutations NON matchées
     con.execute(
-        """
+        f"""
         CREATE OR REPLACE TEMP TABLE nm_lignes AS
         SELECT d.id_mutation, d.id_parcelle,
-               d.code_commune || '_' || lower(d.adresse_code_voie) || '_'
-                   || lpad(d.adresse_numero, 5, '0') AS cle_adr,
+               {cle_adresse_dvf('d')} AS cle_adr,
                TRY_CAST(d.longitude AS DOUBLE) AS lon,
                TRY_CAST(d.latitude  AS DOUBLE) AS lat
         FROM dvf d JOIN mut ON d.id_mutation = mut.id_mutation AND mut.matched = 0
@@ -82,7 +81,9 @@ def preparer_recuperation(con: duckdb.DuckDBPyConnection) -> None:
         """
     )
 
-    # C : plus proche bâtiment RNB par fenêtre de grille (~111m) puis distance réelle (haversine)
+    # C : plus proche bâtiment RNB par fenêtre de grille (~111m) puis distance réelle (haversine).
+    # Fenêtre 3×3 en ÉQUI-jointure (chaque mutation dupliquée sur ses 9 cellules) : un BETWEEN en
+    # condition de jointure dégénère en range-join quasi cartésien contre 1M+ points RNB.
     con.execute(
         """
         CREATE OR REPLACE TEMP TABLE spatial AS
@@ -91,19 +92,24 @@ def preparer_recuperation(con: duckdb.DuckDBPyConnection) -> None:
                    CAST(floor(lon * 1000) AS INT) gx, CAST(floor(lat * 1000) AS INT) gy
             FROM nm_lignes WHERE lon IS NOT NULL
         ),
+        q9 AS (
+            SELECT q.*, q.gx + dx.v AS jx, q.gy + dy.v AS jy
+            FROM q
+            CROSS JOIN (VALUES (-1), (0), (1)) dx(v)
+            CROSS JOIN (VALUES (-1), (0), (1)) dy(v)
+        ),
         p AS (
             SELECT rnb_id, lon, lat,
                    CAST(floor(lon * 1000) AS INT) gx, CAST(floor(lat * 1000) AS INT) gy
             FROM pts
         ),
         cand AS (
-            SELECT q.id_mutation, p.rnb_id,
+            SELECT q9.id_mutation, p.rnb_id,
                    2 * 6371000 * asin(sqrt(
-                       power(sin(radians(p.lat - q.lat) / 2), 2)
-                       + cos(radians(q.lat)) * cos(radians(p.lat))
-                         * power(sin(radians(p.lon - q.lon) / 2), 2))) AS d
-            FROM q JOIN p ON p.gx BETWEEN q.gx - 1 AND q.gx + 1
-                          AND p.gy BETWEEN q.gy - 1 AND q.gy + 1
+                       power(sin(radians(p.lat - q9.lat) / 2), 2)
+                       + cos(radians(q9.lat)) * cos(radians(p.lat))
+                         * power(sin(radians(p.lon - q9.lon) / 2), 2))) AS d
+            FROM q9 JOIN p ON p.gx = q9.jx AND p.gy = q9.jy
         )
         SELECT id_mutation, arg_min(rnb_id, d) AS rnb_id, min(d) AS dist_m
         FROM cand GROUP BY id_mutation

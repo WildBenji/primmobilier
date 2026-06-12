@@ -16,6 +16,22 @@ ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw"
 INTERIM = ROOT / "data" / "interim"
 
+def cle_adresse_dvf(alias: str = "") -> str:
+    """Fragment SQL : clé d'interopérabilité BAN reconstruite depuis DVF
+    (insee_voie_numero[_suffixe]).
+
+    Le suffixe (bis/ter/a…) fait partie de la clé BAN ('33207_2190_00345_bis') :
+    l'omettre faisait matcher un « 12 bis » sur le bâtiment du « 12 » (mesuré 33 :
+    8 828 adresses suffixées, 6 796 matchs « voisin nu » évités, +271 matchs exacts).
+    """
+    p = f"{alias}." if alias else ""
+    return (
+        f"{p}code_commune || '_' || lower({p}adresse_code_voie) || '_'"
+        f" || lpad({p}adresse_numero, 5, '0')"
+        f" || CASE WHEN {p}adresse_suffixe IS NOT NULL AND trim({p}adresse_suffixe) != ''"
+        f"         THEN '_' || lower(trim({p}adresse_suffixe)) ELSE '' END"
+    )
+
 
 def _exiger(chemin: Path) -> Path:
     """Échoue avec un message clair si un artefact amont manque."""
