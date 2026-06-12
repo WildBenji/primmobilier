@@ -58,7 +58,13 @@ export function initTheme(map) {
     const other = AUTO_BASE[theme === "dark" ? "light" : "dark"];
     const visible = map.getLayoutProperty(`base-${other}`, "visibility") !== "none";
     if (!visible) return;
-    document.querySelector(`[data-layer="${wanted}"]`)?.click();
+    const button = document.querySelector(`[data-layer="${wanted}"]`);
+    if (!button) return;
+    button.click();
+    // Le clic pose "just-picked" (anti-réouverture après un choix manuel à la souris).
+    // Ici le clic est programmatique : laissé en place, il bloquerait la PREMIÈRE
+    // ouverture du menu au survol — on le retire aussitôt.
+    button.closest(".layer-menu")?.classList.remove("just-picked");
   };
 
   toggle.addEventListener("click", () => {
