@@ -1489,7 +1489,8 @@ body.dragging {
   transition: border-color 0.12s ease, background 0.12s ease;
 }
 
-.bati-item:hover {
+.bati-item:hover,
+.bati-item.bati-hover {
   border-color: #e0a000;
   background: #fffaf0;
 }
@@ -1699,4 +1700,56 @@ body.dragging {
   .comparable-detail .detail-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* Badge classe énergie DPE (A-G) — échelle officielle vert→rouge. */
+.dpe-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  margin-left: 4px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  vertical-align: middle;
+}
+.dpe-a { background: #319a3d; }
+.dpe-b { background: #54b153; }
+.dpe-c { background: #a6c63a; color: #1c1c1c; }
+.dpe-d { background: #f5e003; color: #1c1c1c; }
+.dpe-e { background: #f2a900; }
+.dpe-f { background: #ea6c1f; }
+.dpe-g { background: #d8232a; }
+
+/* Panneau DPE de la fiche détail. */
+.dpe-panel-head {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.dpe-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
+}
+.detail-dpe .detail-note { margin-top: 6px; }
+.dpe-distrib {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.dpe-distrib-item {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  color: #555;
 }

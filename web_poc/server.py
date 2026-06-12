@@ -794,6 +794,51 @@ def parcelle_adresses_rows(params: dict[str, list[str]]) -> dict:
     return {"parcelle": parcelle, "adresses": adresses}
 
 
+def dpe_rows(params: dict[str, list[str]]) -> dict:
+    """DPE rattachés au bâtiment d'un comparable — clé gold `id_rnb` (cf. data/interim/dpe_{dept}).
+
+    Un bâtiment porte N DPE (un par logement) : on les renvoie tous, le plus récent d'abord, et on
+    marque (`matched`) celui dont la surface est la plus proche de la vente = le lot le plus probable.
+    Niveau bâtiment : ne désigne pas le lot exact en collectif (cf. docs/EXPLORATION_DPE.md §6.6).
+    """
+    empty = {"rnb_id": "", "dpe": [], "matched": None}
+    dept = params.get("dept", [""])[0]
+    rnb_id = params.get("rnb_id", [""])[0]
+    if not re.fullmatch(r"\d{2,3}|2[AB]", dept) or not re.fullmatch(r"[0-9A-Z]{6,20}", rnb_id or ""):
+        return empty
+    path = INTERIM / f"dpe_{dept}.parquet"
+    if not path.exists():
+        return empty
+    try:
+        surf = float(params.get("surface", [""])[0])
+    except (TypeError, ValueError):
+        surf = None
+    con = duckdb.connect()
+    try:
+        rows = con.execute(
+            """
+            SELECT etiquette_energie, etiquette_ges, type_energie_principale, surface_habitable,
+                   date_etablissement, periode_construction, source_dpe, dpe_vierge
+            FROM read_parquet(?) WHERE id_rnb = ?
+            ORDER BY date_etablissement DESC NULLS LAST
+            """,
+            [str(path), rnb_id],
+        ).fetchall()
+    finally:
+        con.close()
+    dpe = [{
+        "etiquette_energie": r[0], "etiquette_ges": r[1], "type_energie": r[2],
+        "surface": r[3], "date": str(r[4]) if r[4] else None,
+        "periode": r[5], "source": r[6], "vierge": r[7],
+    } for r in rows]
+    matched = None
+    if surf is not None:
+        cand = [(i, d["surface"]) for i, d in enumerate(dpe) if d["surface"] is not None]
+        if cand:
+            matched = min(cand, key=lambda x: abs(x[1] - surf))[0]
+    return {"rnb_id": rnb_id, "dpe": dpe, "matched": matched}
+
+
 def comparable_rows(params: dict[str, list[str]]) -> dict:
     dept = params.get("dept", [""])[0]
     scope_mode = params.get("scope_mode", ["radius"])[0]
@@ -851,6 +896,7 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
         "nb_niveau",
         "annee_construction",
         "type_batiment_dpe",
+        "etiquette_dpe",
         "fiabilite_emprise_sol",
         "fiabilite_hauteur",
     ])
@@ -1073,6 +1119,7 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
                 "nb_niveau": r["nb_niveau"],
                 "annee_construction": r["annee_construction"],
                 "type_batiment_dpe": r["type_batiment_dpe"],
+                "etiquette_dpe": r["etiquette_dpe"],
                 "fiabilite_emprise_sol": r["fiabilite_emprise_sol"],
                 "fiabilite_hauteur": r["fiabilite_hauteur"],
                 "similarity": r["sim"],
@@ -1163,6 +1210,7 @@ def market_rows(params: dict[str, list[str]]) -> dict:
         "nb_niveau",
         "annee_construction",
         "type_batiment_dpe",
+        "etiquette_dpe",
         "fiabilite_emprise_sol",
         "fiabilite_hauteur",
     ]
@@ -1488,6 +1536,7 @@ def market_rows(params: dict[str, list[str]]) -> dict:
                 "nb_niveau": r["nb_niveau"],
                 "annee_construction": r["annee_construction"],
                 "type_batiment_dpe": r["type_batiment_dpe"],
+                "etiquette_dpe": r["etiquette_dpe"],
                 "fiabilite_emprise_sol": r["fiabilite_emprise_sol"],
                 "fiabilite_hauteur": r["fiabilite_hauteur"],
             }
@@ -1521,6 +1570,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/parcelles": parcelles_rows,
             "/api/batiments": batiments_rows,
             "/api/parcelle-adresses": parcelle_adresses_rows,
+            "/api/dpe": dpe_rows,
             "/api/codepostal": postcode_rows,
             "/api/commune": commune_rows,
             "/api/lieudit": lieudit_rows,
