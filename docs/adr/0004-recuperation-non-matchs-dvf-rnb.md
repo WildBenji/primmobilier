@@ -22,7 +22,7 @@ inexploitable** plutôt que faussement rattaché.
 
 | Ordre | `methode` | Mécanisme | `confiance` |
 | --- | --- | --- | --- |
-| A | `adresse` | clé BAN reconstruite `insee_codevoie_numero` (codevoie en minuscules) → `RNB.adresses` | `haute` si bâtiment ≤ 25 m, sinon `moyenne` |
+| A | `adresse` | clé BAN reconstruite `insee_codevoie_numero[_suffixe]` (codevoie en minuscules, suffixe bis/ter inclus — garde-fou anti-faux-match, cf. `pipeline/commun.py`) → `RNB.adresses` | `haute` si bâtiment ≤ 25 m, sinon `moyenne` |
 | B | `parcelle_ban` | parcelle DVF → `BAN.cad_parcelles` → clé → `RNB.adresses` | `moyenne` |
 | C | `spatial` | coords DVF → plus proche bâtiment RNB (haversine) | `moyenne` ≤ 25 m, `basse` 25–50 m |
 | D | `ban_geocode` | géocodage texte BAN (api-adresse) → plus proche bâtiment RNB | `moyenne` ≤ 25 m, `basse` 25–50 m |

@@ -50,7 +50,7 @@ Suivi d'exploration des sources publiques candidates au **socle immobilier carto
 ## 1.2 BAN — Base Adresse Nationale
 
 - **ID data.gouv** : `5530fbacc751df5ff937dddb` · Organisation : BAN · Licence : `lov2` · Fréquence : **quotidienne** · MàJ catalogue : 2026-06-09
-- **Statut** : ✅ Décidé — **API seule en v1, pas d'ingestion locale** (cf. ci-dessous). Les colonnes du CSV ne sont à échantillonner que si l'ingestion devient nécessaire.
+- **Statut** : ✅ Décidé — **API pour le géocodage de l'adresse cible ; ingestion départementale CIBLÉE par ailleurs** (contours CP §1.4, crosswalk parcelle↔adresse §3.3, cascade ADR 0004, repli commune des comparables). La décision « pas d'ingestion nationale » tient.
 - **Définition** : référentiel d'adresses **officiel** de l'État (donnée de référence du Service Public de la Donnée). Sert au géocodage, à l'autocomplétion, à la normalisation d'adresse et au rattachement adresse → coordonnées → parcelle.
 - **Décision (v1)** : usage via **API BAN uniquement** pour géocoder l'**adresse cible** saisie. Pas d'ingestion BAN nationale : les sources socle (DVF, DPE, RNB, Cadastre) sont déjà géolocalisées, donc aucun géocodage de masse n'est requis. Endpoint recommandé : tester l'API Géoplateforme (`data.geopf.fr/geocodage/`) et conserver `api-adresse.data.gouv.fr` en repli.
 
@@ -223,18 +223,12 @@ sur ces parcelles puis sur les `batiment_groupe_id` restants.
 ## 3.1 DPE Logements existants (depuis juillet 2021)  ⭐ jointure clé
 
 - **ID data.gouv** : `67f7e557cb268460ce66c8d4` · Organisation : ADEME · Licence : `lov2` · Fréquence : **hebdomadaire** · MàJ catalogue : 2026-06-08
-- **Statut** : 🔎 À échantillonner · **~14,9 M enregistrements**
+- **Statut** : ✅ **Intégrée (33)** · **~14,9 M enregistrements** — acquisition, schéma final et règles de nettoyage : cf. [EXPLORATION_DPE.md](EXPLORATION_DPE.md) (§2 champs source, §6.4 méthode API, §6.6 schéma builder).
 - **Définition** : ensemble des **diagnostics de performance énergétique** réalisés sur les logements existants depuis juillet 2021 (classe énergie/GES, consommation, caractéristiques du logement). Source du **signal énergétique** (cf. CONTEXT) destiné à remplacer l'ajustement DPE manuel.
 
-**Fichiers / accès** : données hébergées par l'**ADEME** (`data.ademe.fr/datasets/dpe03existant`) — consultation, **description des champs** et **API** documentées là-bas (pas de fichier tabulaire data.gouv direct).
+**Fichiers / accès** : données hébergées par l'**ADEME** (`data.ademe.fr/datasets/dpe03existant`) — consultation, description des champs et API documentées là-bas (pas de fichier tabulaire data.gouv direct).
 
-**Champs clés retenus** (noms réels de l'API ADEME, vérifiés — 145 champs au total) :
-- Identification / jointure : `numero_dpe`, **`identifiant_ban`** (clé BAN cle_interop, ex. `48027_z3ta9n_00091`), `code_departement_ban`, `code_insee_ban`, `code_postal_ban`, `nom_commune_ban`, `nom_rue_ban`, `numero_voie_ban`, `adresse_ban`, `_geopoint` (lat,lon), `score_ban` + `statut_geocodage` (qualité géocodage).
-- Métier : `etiquette_dpe`, `etiquette_ges`, `type_batiment` (maison/appartement/immeuble), `date_reception_dpe`, `version_dpe`.
-
-> **Correction** : contrairement à une lecture optimiste de la doc ADEME, le DPE existant en open data **ne porte NI `rnb_id` NI identifiant parcelle**. Le seul lien sortant est `identifiant_ban`.
-
-**Superflu pour le départ** : la masse des champs techniques de calcul réglementaire (parois, ponts thermiques, systèmes, consos…) — on ne retient que clé BAN, classe, GES, type, géopoint, qualité géocodage, dates.
+> **Liens sortants** : le CSV tabulaire n'expose pas `id_rnb` ; l'**API** le fournit sur ~47 % des DPE post-2021. **Aucun identifiant parcelle** dans les deux cas — l'autre lien est `identifiant_ban`.
 
 **Clés de jointure** : `identifiant_ban` ↔ **même namespace que `BAN.id` et `RNB.cle_interop_ban`** → jointure directe par clé viable (vérifié : formats compatibles). ⚠️ Caveat MESURÉ (33) : 39 % des `identifiant_ban` orphelins ne matchent pas le RNB (clés au niveau voie, adresses non bâties). Pas de lien parcelle direct → passer par BAN (`cad_parcelles`) ou RNB (`plots`).
 
@@ -251,9 +245,8 @@ sur ces parcelles puis sur les `batiment_groupe_id` restants.
 
 ## 3.2 DPE Logements neufs (depuis juillet 2021)
 
-- **ID data.gouv** : `67f7e5758ffc5d79ab9e8c27` · Organisation : ADEME · Licence : `lov2` · Fréquence : **hebdomadaire**
-- **Statut** : ⏳ À approfondir
-- **Définition** : équivalent du DPE existants pour les **logements neufs**. Même structure de champs ; à combiner avec le DPE existant selon ancien/neuf (recoupe les ventes VEFA de DVF).
+- **ID data.gouv** : `67f7e5758ffc5d79ab9e8c27` · Organisation : ADEME · Licence : `lov2` · Fréquence : **hebdomadaire** · **Statut** : ⏳ Non implémenté
+- Même structure que les existants, à fusionner avec `origine_dpe='neuf'` (recoupe les ventes VEFA de DVF) — cf. [EXPLORATION_DPE.md](EXPLORATION_DPE.md) §1.2/§6.3.
 
 ## 3.3 Adresses extraites du cadastre
 
@@ -287,6 +280,7 @@ sur ces parcelles puis sur les `batiment_groupe_id` restants.
 - **Statut** : ✅ **Intégrée** — [`telechargement/preparer_loyers.py`](../telechargement/preparer_loyers.py) → `loyers_communes.parquet` (national : 34 900 communes × 4 segments).
 - **Définition** : loyer d'annonce **prédit par un modèle hédonique** (annonces leboncoin + SeLoger + PAP), **charges comprises**, pour toutes les communes. Segments : maison, appartement (tous), appartement 1-2 pièces, appartement 3 pièces et plus. Conservés : prédiction (€/m²), **intervalle de prédiction**, maille, nb d'observations commune, R².
 - **Position** : seule référence locative open data exhaustive. Jointure triviale `code_insee` = `citycode` de l'adresse résolue. Affichée dans l'estimation (loyer de référence + **rendement brut** = 12 loyers / prix médian estimé) avec une infobulle qui assume le statut de **prédiction de modèle**. ⚠️ Format source : CSV `;`, décimales à virgule, Latin-1, CRLF.
+- **Source écartée — encadrement des loyers Bordeaux (2023)** : plafonds **réglementaires** de loyer (à distinguer des loyers d'annonce ci-dessus), dataset [encadrement-des-loyers-de-bordeaux-2023](https://www.data.gouv.fr/datasets/encadrement-des-loyers-de-bordeaux-2023) + zonage compagnon [encadrement-des-loyers-sur-bordeaux-secteurs-geographiques](https://www.data.gouv.fr/datasets/encadrement-des-loyers-sur-bordeaux-secteurs-geographiques) (indispensable pour appliquer les plafonds). Locale à Bordeaux, hors socle — à reprendre si un usage réglementaire local revient.
 
 ## 3.6 GASPAR — risques
 
@@ -297,17 +291,15 @@ sur ces parcelles puis sur les `batiment_groupe_id` restants.
 
 ---
 
-# 4. APIs (dataservices) — à approfondir
+# 4. APIs (dataservices)
 
 | API | ID dataservice | Usage | Statut |
 | --- | --- | --- | --- |
-| API Adresse (BAN / Géoplateforme) | `672cf67802ef6b1be63b8975` | Géocodage et autocomplétion à la saisie (`/search`, `/reverse`, `/search/csv`) | ⏳ |
-| API Cadastre data.gouv (bundler Etalab) | `6661eadade5469423f58a6b4` | Exports parcelle/commune/EPCI | ⏳ |
-| API Carto Cadastre (IGN) | `672cf6658e2b8878bf0a5e6c` | Géométrie/centroïde de parcelle, divisions cadastrales | ⏳ |
-| API Carto GPU (urbanisme, IGN) | `672cf67520c9ae9747b4015c` | Zonage, servitudes, prescriptions intersectant un point/parcelle | ⏳ |
-| API BDNB Open | `69427c378a39a6a5051349e7` | Bâtiments groupes par parcelle et attributs métier | ✅ |
-
-> Note notebook : l'API actuelle (`api-adresse.data.gouv.fr`) doit être testée vs l'API Géoplateforme (`data.geopf.fr/geocodage/`).
+| API Adresse (BAN / Géoplateforme) | `672cf67802ef6b1be63b8975` | Géocodage et autocomplétion à la saisie (`/search`, `/reverse`) | ✅ utilisée en prod (POC + cascade D de l'ADR 0004) |
+| API Cadastre data.gouv (bundler Etalab) | `6661eadade5469423f58a6b4` | Exports parcelle/commune/EPCI | ❌ écartée — ingestion locale (§1.3) |
+| API Carto Cadastre (IGN) | `672cf6658e2b8878bf0a5e6c` | Géométrie/centroïde de parcelle | ❌ écartée — ingestion locale (§1.3) |
+| API Carto GPU (urbanisme, IGN) | `672cf67520c9ae9747b4015c` | Zonage, servitudes, prescriptions intersectant un point/parcelle | ⏳ seul vrai backlog |
+| API BDNB Open | `69427c378a39a6a5051349e7` | Bâtiments groupes par parcelle et attributs métier | ❌ écartée — ingestion locale (§2.2, ADR 0006) |
 
 ---
 
@@ -344,12 +336,7 @@ Le **RNB (`rnb_id`) est le pivot bâtiment** qui relie les sources entre elles :
 2. **DVF → bâtiment/groupe** : DVF (`id_parcelle`) → RNB (`plots`) → `rnb_id` quand la parcelle ou l'adresse tranche ; DVF (`id_parcelle`) → BDNB (`parcelle_id`) → `batiment_groupe_id` quand la parcelle BDNB n'a qu'un groupe. Si plusieurs groupes restent possibles, on conserve le niveau parcelle.
 3. **DPE → bâtiment** : DPE (`identifiant_ban`) → RNB (`addresses.cle_interop_ban`) → `rnb_id`. Fallback : spatial (DPE `_geopoint` ↔ RNB `point`) ou BAN crosswalk.
 
-**Points durs à valider sur échantillon (dépt 33)**
-- Taux de match direct `DPE.identifiant_ban` ↔ `RNB.cle_interop_ban` (+ part des clés DPE au niveau voie sans numéro, et qualité `score_ban`).
-- Couverture des `plots` RNB sur les parcelles DVF (`id_parcelle`).
-- Cardinalité parcelle ↔ bâtiment (combien de bâtiments par parcelle) → ambiguïté DVF→bâtiment→DPE.
-- Apport réel de la BAN (`cad_parcelles`) en plus de RNB : nécessaire ou redondant ?
-- Taux de couverture du fallback spatial (distance DPE↔RNB) quand la clé échoue.
+**Points durs** : tous mesurés depuis → résultats en §6, cascade DPE en §3.1, décisions en ADR [0003](adr/0003-rnb-pivot-batiment.md)/[0004](adr/0004-recuperation-non-matchs-dvf-rnb.md)/[0005](adr/0005-organisation-des-donnees-table-comparables.md).
 
 ---
 
@@ -370,16 +357,7 @@ Notebook : [notebooks/spike_jointures_33.ipynb](../notebooks/spike_jointures_33.
 
 ## 6.1 Récupération des 4,96% non-matchs DVF → RNB
 
-Les 6 274 ventes de logement (4,96%) non rattachées par la parcelle ont *toutes* une parcelle valide en DVF **absente de `RNB.plots`** ; ~100% des bâtiments existent dans le RNB sur une **autre parcelle** → **renumérotation cadastrale**, pas un trou de couverture. Une cascade de récupération (cf. [ADR 0004](adr/0004-recuperation-non-matchs-dvf-rnb.md)) les rattache par fiabilité décroissante :
-
-| Étape | Mécanisme | Récupérés (cumul) |
-| --- | --- | --- |
-| A — clé adresse | `insee_codevoie_numero` reconstruite → `RNB.adresses` | 4 811 |
-| B — pont parcelle BAN | parcelle → `BAN.cad_parcelles` → clé → RNB | 4 903 |
-| C — plus proche bâtiment | coords DVF → bâtiment RNB ≤ 50 m | 5 667 |
-| D — géocodage BAN | api-adresse, **score ≥ 0,95** + type précis + bâtiment ≤ 50 m | **5 733** |
-
-**Entonnoir : 120 119 match direct + 5 733 récupérées = 99,57% exploitable, 541 perdues (0,43%)**, ces dernières dominées par adresses lieu-dit / numéros fictifs absentes de toute référence. Artefacts : `data/interim/recup_liens_final_{dept}.parquet` (autorité, avec `methode`/`confiance`) + `pertes_{dept}.parquet` (raison de perte).
+Les non-matchs sont des **renumérotations cadastrales** (parcelle DVF absente de `RNB.plots`, bâtiment présent sur une autre parcelle), pas un trou de couverture. Récupérés par une cascade A-D par fiabilité décroissante → **99,57 % de ventes exploitables** (541 perdues, lieux-dits/numéros fictifs). Mécanismes, garde-fous, chiffres et artefacts (`recup_liens_final_{dept}`, `pertes_{dept}`) : [ADR 0004](adr/0004-recuperation-non-matchs-dvf-rnb.md).
 
 ---
 
@@ -387,25 +365,23 @@ Les 6 274 ventes de logement (4,96%) non rattachées par la parcelle ont *toutes
 
 | Source | Rôle | Statut |
 | --- | --- | --- |
-| DVF géolocalisé | Socle — comparables | ✅ mesuré (33) |
-| BAN | Socle — adresse/géocodage | ✅ API-only (validé) |
-| Cadastre | Socle — parcelle/section | 🔎 |
-| RNB | Pivot bâtiment | ✅ mesuré (33) |
-| DPE existants | Enrichissement — signal énergétique | ✅ mesuré (33) |
-| DPE neufs | Enrichissement | ⏳ |
-| BDNB | Enrichissement lourd | ⏳ |
-| Adresses cadastre | Appoint jointure | ⏳ |
-| Copropriétés | Enrichissement facteur appart. | ⏳ |
-| GASPAR | Contexte risques | ⏳ |
-| APIs (BAN, Cadastre, GPU) | Géocodage / géométrie / urbanisme | ⏳ |
+| DVF géolocalisé | Socle — comparables | ✅ intégré (4 depts) |
+| BAN | Socle — adresse/géocodage | ✅ API + ingestion ciblée (§1.2) |
+| Cadastre | Socle — parcelle/section/bâti | ✅ intégré (§1.3, §10) |
+| RNB | Pivot bâtiment | ✅ intégré (ADR 0003/0004) |
+| DPE existants | Enrichissement — signal énergétique | ✅ intégré (33) — cascade §3.1 |
+| DPE neufs | Enrichissement | ⏳ non implémenté (§3.2) |
+| BDNB | Enrichissement lourd | ✅ intégré (ADR 0006) |
+| Adresses cadastre | Crosswalk parcelle↔adresse | ✅ intégré (§3.3) |
+| Copropriétés (RNIC) | Enrichissement facteur appart. | ✅ intégré (§3.4) |
+| Carte des loyers | Référence locative / rendement | ✅ intégré (§3.5) |
+| GASPAR | Contexte risques | ⏳ hors socle initial |
+| API GPU (urbanisme) | Zonage / servitudes | ⏳ backlog |
 
-**Prochaines étapes**
-1. ~~Échantillonner le dépt 33 et mesurer les taux de match~~ → **fait** (cf. §6).
-1bis. ~~Récupérer les ~5% de non-matchs DVF→RNB~~ → **fait** : 99,57% exploitable sur 33 (cf. §6.1, [ADR 0004](adr/0004-recuperation-non-matchs-dvf-rnb.md)).
-1ter. ~~Figer l'organisation des données (table comparables)~~ → **fait** : grain bien logement + pont parcelle→bâtiment + ref adresses élagué ([ADR 0005](adr/0005-organisation-des-donnees-table-comparables.md)). Sur 33 : 138 804 biens, **57% rattachés au bâtiment sûr**, 39% à la parcelle. Artefacts : `comparables_{dept}`, `pont_batiment_{dept}`, `adresses_ref_{dept}`.
-2. Départager bâtiment/logement sur parcelle multi-bâtiments : **plafond mesuré ~60%** (adresse 46%, surface 33% — cf. ADR 0005) → escalade DPE/BDNB seulement si un usage l'exige. Comprendre les ~13% de DPE non matchés.
-3. Confirmer les colonnes _(à confirmer)_ du Cadastre (parcelles/sections) sur extrait réel.
-4. Décider du périmètre d'ingestion (national direct vs progressif) — désormais possible sur la base des taux mesurés.
+**Étapes encore ouvertes**
+1. Départager bâtiment/logement sur parcelle multi-bâtiments : **plafond mesuré ~60%** (adresse 46%, surface 33% — cf. ADR 0005) → escalade DPE/BDNB seulement si un usage l'exige.
+2. DPE neufs (`origine_dpe='neuf'`, §3.2) ; généraliser le DPE aux depts 17/24/47 (cf. HAND-OFF.md).
+3. GASPAR et GPU si un usage risques/urbanisme apparaît.
 
 ---
 
@@ -417,7 +393,8 @@ Fonds raster utilisés par le sélecteur « Fond de carte » du POC web ([web_po
 
 | Fond (valeur sélecteur) | Fournisseur | URL | Clé / inscription | Attribution |
 | --- | --- | --- | --- | --- |
-| `ignplan` *(défaut)* | IGN Géoplateforme | WMTS `GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2` | Non | © IGN / cartes.gouv.fr |
+| `cartodark` *(défaut, thème sombre)* | CARTO Dark Matter (`dark_all`) | `basemaps.cartocdn.com/dark_all/...` | Non | © OSM contributors © CARTO |
+| `ignplan` | IGN Géoplateforme | WMTS `GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2` | Non | © IGN / cartes.gouv.fr |
 | `carto` | CARTO Positron (`light_all`) | `basemaps.cartocdn.com/light_all/...` | Non | © OSM contributors © CARTO |
 | `voyager` | CARTO Voyager | `basemaps.cartocdn.com/rastertiles/voyager/...` | Non | © OSM contributors © CARTO |
 | `osm` | OpenStreetMap standard | `tile.openstreetmap.org/...` | Non | © OSM contributors |
@@ -440,7 +417,7 @@ Le POC web a deux modes : **Estimation** (comparables d'un bien cible, via `comp
 
 **Pourquoi mono-ligne** : dans DVF brut, `valeur_fonciere` est au grain **mutation** (dupliquée sur chaque ligne bâti + terrain d'une même vente). Calculer un €/m² par ligne sur les ventes multi-lignes fausserait le prix. On ne retient donc, pour terrain/dépendance/local, que les **mutations à une seule ligne** (≈ 68 k sur le 33) où `valeur_fonciere` = prix d'un bien unique sans ambiguïté. **Limite assumée** : les terrains/dépendances vendus dans des mutations multi-lignes sont écartés → panorama indicatif, non exhaustif.
 
-**Découplage carte / liste** (perf) : `/api/market` et `/api/estimate` renvoient deux tableaux — `points` (tous les biens de l'emprise, payload allégé : coords + type + prix, plafond de sécurité 20 000) pour la carte WebGL, et `comparables`/`biens` (liste détaillée plafonnée par le paramètre `max_comparables`, défaut 200) pour le tableau DOM. Les statistiques (médiane €/m²) sont calculées sur la **cohorte complète**, pas sur l'échantillon affiché.
+**Découplage carte / liste** (perf) : `/api/market` et `/api/estimate` renvoient deux tableaux — `points` (tous les biens de l'emprise, payload allégé : coords + type + prix) pour la carte WebGL, et la liste détaillée = **cohorte complète triée globalement** (plafond de sécurité serveur), que le client fenêtre à l'affichage (scroll). Les statistiques (médiane €/m²) sont calculées sur la **cohorte complète**, pas sur la fenêtre affichée.
 
 ---
 

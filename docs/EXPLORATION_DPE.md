@@ -221,93 +221,18 @@ Même problème sur `classe_estimation_ges` : `C, N, B, D, E, A, F, G, S, I, 1, 
 
 ---
 
-## 5. Stratégie de fusion en une table unique
+## 5. Stratégie de fusion (historique — schéma v0, supplanté par §6.6)
 
-### 5.1 Principe
+Le schéma cible détaillé esquissé ici (« dpe_unifie », ~30 champs) a été remplacé par
+le **schéma final du builder** : §6.6 et la constante `COMMON` de
+[`telechargement/preparer_dpe.py`](../telechargement/preparer_dpe.py). Les mappings
+(type_batiment, classes A-G, géocodage pré-2021) y sont implémentés. Reste valable :
 
-On ne cherche **pas à unifier les 230 champs post-2021 avec les 20 champs pré-2021**. On définit un **schéma cible commun** avec les champs pertinents pour le socle immobilier, et on y projette les deux sources.
-
-### 5.2 Schéma cible proposé — `dpe_unifie`
-
-| Champ cible | Type | Source pré-2021 | Source post-2021 | Notes |
-|---|---|---|---|---|
-| `numero_dpe` | string | `numero_dpe` | `numero_dpe` | Identifiant unique |
-| `source_dpe` | string | `"pre_2021"` | `"post_2021"` | Distingue l'origine |
-| `date_etablissement` | date | `date_etablissement_dpe` | `date_etablissement_dpe` |  |
-| `date_fin_validite` | date | *(absent)* | `date_fin_validite_dpe` | Null pour pré-2021 |
-| `type_batiment` | string | `tr002_type_batiment_description` → mapping | `type_batiment` | Voir §5.3 |
-| `type_dpe_libelle` | string | `tr001_modele_dpe_type_libelle` | `methode_application_dpe` | Vente/Location/Neuf… |
-| `surface_habitable` | number | `surface_thermique_lot` | `surface_habitable_logement` | m² |
-| `annee_construction` | integer | `annee_construction` | `annee_construction` |  |
-| `periode_construction` | string | *(absent)* | `periode_construction` | Null pré-2021 |
-| `etiquette_energie` | string | `classe_consommation_energie` **nettoyée** | `etiquette_dpe` | ⚠️ Voir §5.4 |
-| `etiquette_ges` | string | `classe_estimation_ges` **nettoyée** | `etiquette_ges` | ⚠️ Voir §5.4 |
-| `consommation_energie` | number | `consommation_energie` (3 usages) | `conso_5_usages_ep` (5 usages, non comparable) | ⚠️ Voir §5.5 |
-| `estimation_ges` | number | `estimation_ges` (3 usages) | `emission_ges_5_usages` (5 usages) | ⚠️ Voir §5.5 |
-| `conso_5_usages_par_m2_ep` | number | *(absent)* | `conso_5_usages_par_m2_ep` | Null pré-2021 |
-| `emission_ges_5_usages_par_m2` | number | *(absent)* | `emission_ges_5_usages_par_m2` | Null pré-2021 |
-| `type_energie_principale` | string | *(absent)* | `type_energie_n1` | Null pré-2021 |
-| `code_insee` | string | `code_insee_commune_actualise` | `code_insee_ban` |  |
-| `code_postal` | string | *(absent)* | `code_postal_ban` | Null pré-2021 |
-| `code_departement` | string | `tv016_departement_code` | `code_departement_ban` |  |
-| `nom_commune` | string | *(absent)* | `nom_commune_ban` | Null pré-2021 |
-| `identifiant_ban` | string | *(absent)* | `identifiant_ban` | ⭐ clé de jointure RNB |
-| `adresse_geocodee` | string | `geo_adresse` | `adresse_ban` |  |
-| `latitude` | number | `latitude` | Extraire de `_geopoint` |  |
-| `longitude` | number | `longitude` | Extraire de `_geopoint` |  |
-| `geopoint` | string | `_geopoint` | `_geopoint` | "lat,lon" |
-| `score_geocodage` | number | `geo_score` | `score_ban` | Échelles différentes |
-| `nb_pieces` | integer | *(absent)* | *(absent du tabulaire, présent dans le dump SQL)* | Via `typologie_logement` ou lookup |
-| `classe_inertie` | string | *(absent)* | `classe_inertie_batiment` | Null pré-2021 |
-| `type_installation_chauffage` | string | *(absent)* | `type_installation_chauffage` | Null pré-2021 |
-| `type_ventilation` | string | *(absent)* | `type_ventilation` | Null pré-2021 |
-| `donnees_completes` | boolean | `false` | `true` | Flag indiquant si les 230 champs sont dispos |
-
-### 5.3 Mapping `type_batiment`
-
-| Pré-2021 | Post-2021 | Valeur unifiée |
-|---|---|---|
-| `Maison Individuelle` | `maison` | `maison` |
-| `Logement` | `appartement` | `appartement` |
-| `Bâtiment collectif à usage principal d'habitation` | `immeuble` | `immeuble` |
-
-> ⚠️ Le pré-2021 utilise `Logement` pour un appartement individuel ET `Bâtiment collectif` pour l'immeuble. Post-2021 distingue `appartement` et `immeuble`. Le mapping `Bâtiment collectif` → `immeuble` est sémantiquement correct mais attention : un DPE `Bâtiment collectif` pré-2021 peut correspondre à un immeuble entier, pas au logement.
-
-### 5.4 Nettoyage des classes énergétiques pré-2021
-
-Les valeurs brutes `classe_consommation_energie` pré-2021 contiennent du bruit :
-
-```
-Valeurs valides : A, B, C, D, E, F, G
-Valeurs parasites : N, S, I, H, 0, 1, 2, 3, 4, 5, 6, 7, 8, -
-```
-
-**Règle de nettoyage** :
-1. Conserver uniquement A à G (7 classes)
-2. Mapper `-` → `NULL`
-3. Supprimer toutes les autres valeurs parasites → `NULL`
-4. Ajouter un flag `etiquette_energie_fiable = false` pour les DPE pré-2021 dont la classe a été nettoyée
-
-Idem pour `classe_estimation_ges` (valeurs parasites : N, S, I, 1, -, 2, 0, 7, H).
-
-### 5.5 Note sur la comparabilité des consommations
-
-**Les consommations pré et post 2021 ne sont pas comparables** :
-
-- Pré-2021 : 3 usages, méthode variable (3CL v1, factures, conventionnelle…)
-- Post-2021 : 5 usages, méthode 3CL 2021 unifiée
-
-En pratique pour le socle immobilier, les consommations servent au **classement énergétique** (A-G), pas à la comparaison fine des kWh/m². On conserve les deux valeurs mais on **ne les mélange pas** dans un même calcul. Les étiquettes normalisées (A-G) sont l'information principale utilisable.
-
-### 5.6 Géocodage du pré-2021
-
-Les DPE pré-2021 n'ont **pas d'`identifiant_ban`**. Pour les rendre joignables au RNB :
-
-1. **Fallback spatial** : utiliser `latitude`/`longitude` pour un point-dans-polygone RNB (bâtiment le plus proche)
-2. **Géocodage BAN rétroactif** : envoyer `geo_adresse` à l'API BAN pour obtenir un `identifiant_ban`
-3. **Jointure par coordonnées** : `ST_Distance` DPE ↔ RNB ≤ seuil (ex. 50m)
-
-Étant donné que seulement 3,3 M de DPE pré-2021 ont une `geo_adresse` remplie et 2,5 M ont des coordonnées, le taux de récupération sera partiel. À mesurer sur le département 33.
+**Doctrine de non-comparabilité des consommations** — les kWh/m² pré et post 2021 ne
+sont **pas comparables** (3 usages méthode variable vs 5 usages 3CL 2021 unifiée).
+Conséquence implémentée : les valeurs chiffrées pré-2021 ne sont **pas conservées**
+(`conso_ep_m2`/`emission_ges_m2` null en pré, cf. `_project_pre`) ; seules les
+**étiquettes A-G** sont l'information cross-source.
 
 ---
 
@@ -316,11 +241,8 @@ Les DPE pré-2021 n'ont **pas d'`identifiant_ban`**. Pour les rendre joignables 
 ### 6.1 DPE post-2021 (recommandé)
 
 - **API Data-Fair** : `https://data.ademe.fr/data-fair/api/v1/datasets/dpe03existant/lines`
-  - Filtrage par département : `?code_departement_ban=33&size=10000`
-    > ⚠️ **Faux — voir §6.4.** Testé le 2026-06-12 : `?code_departement_ban=33` est **ignoré** (renvoie des DPE des dépts 11 et 59). Bonne syntaxe : `?qs=code_departement_ban:33`. Et `size=10000` seul ne suffit pas : pagination par **curseur `next`** obligatoire (dept 33 = 378 013 lignes).
-  - Format CSV/JSON/GeoJSON
-  - Authentification recommandée pour les gros volumes
-- **Dump SQL complet** : `https://opendata.ademe.fr/dump_dpev2_prod_fdld.sql.gz` (PostgreSQL, ~plusieurs Go)
+  — syntaxe de filtrage et pagination par curseur : **voir §6.4 (méthode vérifiée, qui fait foi)**.
+- **Dump SQL complet** : `https://opendata.ademe.fr/dump_dpev2_prod_fdld.sql.gz` (PostgreSQL, **~70 Go**)
   - Contient les 230 champs + tables de référence
   - Dictionnaire technique : joint au dataset (fichier XLSX `DPE_dictionnaire_de_donnees_DUMP.xlsx`)
   - Tables énumérateurs : `DPE_enum_tables.xlsx`
@@ -385,9 +307,9 @@ Le **pré-2021 est résolu** (déjà sur S3, §6.2). **Tout l'effort porte sur l
 - **Acquisition POC = impasse prod.** Il lit des **CSV locaux exportés à la main** depuis un notebook (avril 2024, ~9 dépts cherry-pickés, vue tabulaire). Marqué `⚠ TEMPORAIRE — NE PAS DÉPLOYER`. Sa justification (« API trop lente, ~2 pages/min ») est **fausse** : mesuré le 2026-06-12 avec la méthode §6.4 (qs + curseur + select) = **2 075 lignes/s → dept 33 en ~3 min**. La lenteur venait de la mauvaise pagination (`page` au lieu de curseur) et de l'absence de `select`.
 - **Conséquence : le fichier `dpe_{dept}.parquet` produit n'est PAS exploitable** pour la stratégie validée. Le CSV source ne contient ni `numero_dpe`, ni `id_rnb`, ni dates → dans le parquet : **`id_rnb` à 0 %** (clé de jointure n°1, §8.1), `numero_dpe` post **synthétique/garbage** (`./`, `/`, `0000000000`), **dates post à 0 %** (pas d'incrémental/validité), données **figées avril 2024**. Seuls `etiquette` (92 %) et `surface` (99,5 %) sont bons ; le rattachement au bien est cassé.
 - **La voie API récupère tout ça** : mesuré, l'API livre **`id_rnb` à 52 %** (mieux que les 18 % du dictionnaire — backfill RNB en cours) et **`identifiant_ban` à 99,9 %**, plus le vrai `numero_dpe` et les dates. → Refonder `preparer_dpe.py` sur §6.4 débloque la jointure RNB directe.
-- **Le nettoyage `nettoyer_dpe.py` est à garder** (CRS Lambert-93→WGS84 confirmé, étage 448 formats→entier, escalier fourre-tout décomposé). Seul défaut : **code mort** dans `normaliser_crs` (un `return` laisse ~60 lignes dupliquées inaccessibles, à supprimer). À chaîner après l'acquisition API, sur l'extrait complet.
+- ~~Le nettoyage `nettoyer_dpe.py` est à garder~~ — **finalement supprimé** : ses corrections (CRS, étage, escalier) visaient l'ancien CSV ; le nettoyage vit dans les projections de `preparer_dpe.py` (cf. §6.6).
 
-**Plan post-2021** : `preparer_dpe.py` (API §6.4, ~25 champs dont `id_rnb`/`numero_dpe`/dates) → `nettoyer_dpe.py` (CRS/étage/escalier) → `dpe_{dept}.parquet`. Abandonner la lecture CSV locale (ou la garder en fallback offline strict).
+**Plan post-2021 (réalisé, cf. §6.6)** : `preparer_dpe.py` (API §6.4, nettoyage intégré aux projections) → `dpe_{dept}.parquet`. Lecture CSV locale abandonnée (fallback offline : §12).
 
 #### Débit serveur ADEME — plancher incompressible (testé 2026-06-12)
 
@@ -424,11 +346,13 @@ Le DPE suit **le même modèle que DVF/cadastre/RNB/parcelle_adresse** : **fetch
 
 ### 6.6 ✅ Builder final implémenté + nettoyage (2026-06-12)
 
-[`telechargement/preparer_dpe.py`](../telechargement/preparer_dpe.py) : `fetch post (API résumable) + fetch pré (S3) → projection/nettoyage → mix + dédup → data/interim/dpe_{dept}.parquet`. **20 colonnes**, mesuré sur le 33 : **653 450 DPE** (289 k pré + 364 k post), **signal énergie exploitable 93,5 %**, **rattachable 80,9 %**.
+[`telechargement/preparer_dpe.py`](../telechargement/preparer_dpe.py) : `fetch post (API résumable) + fetch pré (S3) → projection/nettoyage → résolution RNB → mix + dédup → data/interim/dpe_{dept}.parquet`. Mesuré sur le 33 : **653 450 DPE** (289 k pré + 364 k post), signal énergie exploitable 93,5 %, et après la cascade de résolution RNB (`ademe` → `cle_ban` → `spatial`, cf. [SOURCES_DONNEES.md §3.1](SOURCES_DONNEES.md)) **61 % de DPE joignables** (contre 26 % avec le seul id_rnb natif).
 
 > ⚠️ [`telechargement/nettoyer_dpe.py`](../telechargement/nettoyer_dpe.py) est **supprimé/obsolète** : sa conversion CRS Lambert→WGS84 est inutile (on lit `_geopoint`/coords déjà WGS84), et sa décomposition étage/escalier visait l'ancien CSV. Le nettoyage vit désormais dans les projections de `preparer_dpe.py`.
 
-**Schéma final (20 colonnes)** : `numero_dpe, source_dpe, date_etablissement` · `type_batiment, surface_habitable, annee_construction, periode_construction` · `etiquette_energie, etiquette_ges, dpe_vierge, type_energie_principale` · `id_rnb, identifiant_ban, code_insee, code_postal, code_departement, nom_commune` · `latitude, longitude, geo_precision`.
+**Schéma final** : les **26 colonnes** de `COMMON` (`numero_dpe, source_dpe, date_etablissement, date_fin_validite` · `type_batiment, surface_habitable, etage, annee_construction, periode_construction` · `etiquette_energie, etiquette_ges, dpe_vierge, conso_ep_m2, emission_ges_m2, type_energie_principale` · `id_rnb, identifiant_ban, adresse_ban, score_ban` · `code_insee, code_postal, code_departement, nom_commune` · `latitude, longitude, geo_precision`) + **`rnb_lien`/`rnb_dist_m`** issus de la résolution RNB (qualification de fiabilité exposée jusqu'à l'appli).
+
+> **Niveau bâtiment** : le rattachement se fait au bâtiment (`id_rnb`) — en collectif, l'étiquette **ne désigne pas le lot exact** ; l'appli choisit le DPE le plus proche en surface et l'assume comme best-guess (caveat affiché, cf. `dpe_rows` dans `web_poc/server.py`).
 
 **Règles de nettoyage (mêmes pour les deux sources, mesurées sur le 33)** :
 
@@ -531,73 +455,26 @@ Pour le **signal énergétique** et l'**ajustement énergétique**, les champs s
 
 ---
 
-## 9. Pipeline d'ingestion
+## 9. (supprimé)
 
-```
-┌─────────────────────┐     ┌─────────────────────┐
-│  DPE pré-2021       │     │  DPE post-2021       │
-│  (dpe-france)       │     │  (dpe03existant)     │
-│  ~10,7 M lignes     │     │  ~14,9 M lignes      │
-│  API Data-Fair      │     │  API Data-Fair        │
-└────────┬────────────┘     └────────┬────────────┘
-         │                           │
-         ▼                           ▼
-┌─────────────────┐     ┌─────────────────┐
-│  Nettoyage      │     │  Projection      │
-│  • Classes A-G  │     │  • 25 champs     │
-│  • Mapping type │     │  • Extraction    │
-│  • Normalisation│     │    geopoint→lat  │
-│  • Flag fiabil. │     │                  │
-└────────┬────────┘     └────────┬────────┘
-         │                       │
-         └───────────┬───────────┘
-                     ▼
-         ┌─────────────────────┐
-         │  UNION ALL          │
-         │  + source_dpe       │
-         │  + partition dept   │
-         └──────────┬──────────┘
-                     ▼
-         ┌─────────────────────┐
-         │  dpe_unifie.parquet │
-         │  (~25 M lignes)     │
-         └─────────────────────┘
-```
-
-### Étapes de transformation
-
-1. **Pré-2021** :
-   - Nettoyer `classe_consommation_energie` → A-G uniquement, NULL sinon
-   - Mapper `tr002_type_batiment_description` → `maison`/`appartement`/`immeuble`
-   - Renommer `surface_thermique_lot` → `surface_habitable`
-   - Extraire `latitude`/`longitude` si absentes → depuis `_geopoint`
-   - Ajouter `source_dpe = 'pre_2021'`
-   - Ajouter `donnees_completes = false`
-
-2. **Post-2021** :
-   - Projeter sur les 25 champs cibles
-   - Extraire `latitude`/`longitude` depuis `_geopoint`
-   - Ajouter `source_dpe = 'post_2021'`
-   - Ajouter `donnees_completes = true`
-
-3. **Post-traitement commun** :
-   - Dédoublonner par `numero_dpe` (garder le plus récent via `date_etablissement`)
-   - Filtrer `type_batiment != 'immeuble'` (ne garder que les DPE de logement)
-   - Partitionner par `code_departement`
-   - Écrire en Parquet (compression ZSTD)
+Esquisse de pipeline d'ingestion v0, supplantée par le builder réel (§6.5-§6.6) ;
+ses règles (dédup par numero_dpe seul, exclusion des immeubles) contredisaient le code.
 
 ---
 
 ## 10. Questions ouvertes
 
+**Résolues** : remplissage `identifiant_ban` → mesuré (87 % de match RNB sur le 33, cf. §8.1) ·
+coordonnées → WGS84 confirmé (`_geopoint`, cf. §6.2/§7.1) · géocodage rétroactif pré-2021 →
+remplacé par la cascade spatiale (§6.6, SOURCES_DONNEES.md §3.1) · DPE remplacés → dédup
+garde le plus récent (builder §6.6).
+
+**Encore ouvertes** :
+
 | Question | Bloquant ? | Piste |
 |---|---|---|
-| Taux de remplissage réel de `identifiant_ban` sur le national | Non | Mesurer sur un échantillon. Sur le 33 : 87% de match avec RNB |
-| Les `coordonnee_cartographique_x/y_ban` sont-elles en Lambert 93 ou WGS84 ? | Non | Vérifier l'ordre de grandeur. WGS84 si x ~ 0-6, Lambert si x ~ 600k-1.2M |
-| Faut-il tenter un géocodage BAN rétroactif des DPE pré-2021 ? | Non | À mesurer sur le 33 : combien de `geo_adresse` remplies, taux de succès BAN, coût |
-| Comment traiter les DPE remplacés (`numero_dpe_remplace`) ? | Non | Garder seulement le plus récent d'une chaîne de remplacement |
-| Le dump SQL pré-2021 contient-il `nb_pieces` ou `typologie_logement` ? | Non | Explorer le dump. La vue tabulaire ne l'expose pas |
 | Faut-il intégrer les DPE neufs dans la même table ? | Non | Oui, avec `origine_dpe = 'neuf'`. Recoupe les VEFA |
+| Le pré-2021 expose-t-il `nb_pieces`/`typologie_logement` ? | Non | Explorer le **parquet S3 53 colonnes** (§6.2) — la vue tabulaire ne l'expose pas |
 
 ---
 
@@ -614,102 +491,22 @@ Pour le **signal énergétique** et l'**ajustement énergétique**, les champs s
 
 ---
 
-## 12. ⚠️ Réalité du terrain : pourquoi le DPE est un cas à part dans le socle
+## 12. Provenance & fallbacks d'acquisition
 
-> **Synthèse** : contrairement à DVF, BAN, Cadastre ou RNB — qu'on peut télécharger par département à la volée de façon déterministe et reproductible — le DPE nécessite un travail de récupération et de traitement **énorme** en amont, sans garantie de résultat.
+Ce qui reste vrai et utile de l'évaluation pré-percée (le reste — estimations de débit
+API pessimistes, états des lieux 2024 — est périmé : la méthode qui fait foi est §6.4/§6.5,
+~12 min/dept mesuré, mono-connexion car cap serveur global) :
 
-### 12.1 Le problème ADEME
-
-L'ADEME héberge les DPE via une infrastructure Data-Fair opérée par Koumoul. Cette infrastructure est **structurellement inadaptée à l'extraction par département** :
-
-| Problème | Détail |
-|---|---|
-| **API paginée lente** | Le seul point d'accès départemental est l'API paginée `data.ademe.fr/…/lines?qs=code_departement_ban:33`. Chaque page livre 10 000 lignes max. Pour la Gironde (378k DPE post-2021), il faut ~38 requêtes HTTP. Chaque requête prend 5 à 30 secondes. **Temps estimé pour un département : 10-30 minutes**. Multiplié par 95 départements : **15 à 45 heures**. |
-| **Rate-limiting agressif** | L'API applique un _rate-limit_ non documenté. Au-delà d'un certain volume, les requêtes sont ralenties ou rejetées (HTTP 429). Le _retry_ avec _backoff_ exponentiel allonge encore la durée. |
-| **Pas de téléchargement bulk par département** | Contrairement au pré-2021 qui proposait des fichiers `dep_XX.csv.gz` (cf. notebook §12.2), le post-2021 n'a **aucun** export par département. Les seules alternatives à l'API sont : le dump SQL national (70 Go, impraticable en local) ou le téléchargement manuel du CSV national via l'interface web (7,7 M lignes, plusieurs heures, non scriptable). |
-| **Pas de miroir public** | data.gouv.fr référence le dataset mais ne fait que pointer vers `data.ademe.fr`. Aucun CDN public n'héberge les DPE post-2021 par département. |
-| **Dump SQL aussi lent que l'API** | Même le téléchargement du dump SQL (`opendata.ademe.fr/dump_dpev2_prod_fdld.sql.gz`, 70 Go) est servi depuis la **même infrastructure ADEME/Koumoul**. Testé le 2026-06-12 : débit constaté ~800 Ko/s à 2 Mo/s, soit **10 à 24 heures** pour le fichier complet. Et ce n'est que l'étape 1 : il faut ensuite restaurer une base PostgreSQL de 70 Go, puis filtrer par département. |
-
-### 12.2 Ce qui a fonctionné en 2022-2024 (et qui ne fonctionne plus)
-
-Le notebook `~/Code/klarsen/notebooks/DiagnosticPerformanceEnergetique/dpe.ipynb` documente comment les CSV locaux ont été récupérés :
-
-**Pré-2021** — téléchargement par département via les fichiers `.csv.gz` :
-```
-https://data.ademe.fr/data-fair/api/v1/datasets/dpe-{dept}/data-files/dep_{dept}.csv.gz
-```
-→ Boucle `wget` + `gunzip` sur 95 départements. Fonctionnait en 2022, mais :
-- Les URLs sont liées à l'**ancien** portail data-fair (par département)
-- Le portail a migré vers `data.ademe.fr/datasets/dpe-france` (jeu unique national)
-- Ces fichiers par département n'ont **pas d'équivalent post-2021**
-- Même à l'époque, le téléchargement prenait **plusieurs jours** (cf. souvenir utilisateur)
-
-**Post-2021** — une seule option viable à l'époque :
-1. Télécharger le CSV national unique (`dpe-v2-logements-existants.csv`, ~7,7 M lignes) via l'interface web ADEME
-2. Le charger en local avec Polars/Pandas
-3. Le splitter manuellement par `Code_INSEE_(BAN)` → `post-2021/commune/{insee}_dpe_v2.csv`
-4. Puis par département via le code postal → `post-2021/departement/{dept}_dpe_v2.csv`
-
-Ce processus a été fait **une fois** pour 9 départements (17, 33, 67, 75, 91, 92, 93, 94, 95). Les CSV résultants pèsent entre 20 et 97 Mo par département.
-
-### 12.3 État des lieux des sources (juin 2026)
-
-#### Pré-2021 — ✅ Couvert
-
-Le pré-2021 est **intégralement disponible**, sans nécessiter l'API ADEME :
-
-| Source | Type | Couverture | Vitesse | Utilisation |
-|---|---|---|---|---|
-| CSV locaux notebook | `.csv` (`,` séparateur) | 5 départements (33, 67, 93, 94, 95) | ✅ Instantané | Source primaire |
-| S3 enrichissement | Parquet Hive | **95 départements** | ✅ `aws s3 cp` (~13 Mo par dépt) | Fallback pour les 90 autres |
-
-→ **Le pré-2021 n'est pas bloquant.** Tout département est récupérable sans passer par l'API.
-
-#### Post-2021 — 🔴 Problème non résolu en production
-
-Le post-2021 (DPE après réforme juillet 2021) est le vrai goulet d'étranglement :
-
-| Source | Type | Couverture | Vitesse | Statut |
-|---|---|---|---|---|
-| **CSV locaux notebook** | `.csv` (`;` séparateur) | **9 départements** (17, 33, 67, 75, 91, 92, 93, 94, 95) | ✅ Instantané | **Seule source viable actuelle** (avril 2024, gelé). 38 colonnes projetées, pas les 230 du schéma complet. |
-| **S3 enrichissement** | Parquet Hive | **95 départements** | ✅ `aws s3 cp` rapide | `enrichment-databases/dpe/` (fév 2025). Mêmes 38 colonnes que les CSV notebook. |
-| API ADEME Data-Fair | JSON paginé | 95 départements | 🐌 10-30 min/dépt, rate-limité | Théorique, inutilisable en pratique pour >1 département. |
-| Dump SQL national | PostgreSQL **70 Go** | National | 🐌🐌 **10-24h de téléchargement** (même infra lente) | `opendata.ademe.fr/dump_dpev2_prod_fdld.sql.gz` (MàJ hebdo). Double problème : téléchargement extrêmement lent **et** nécessite restauration PostgreSQL + filtrage. |
-| CSV national web ADEME | CSV `,` 7,7 M lignes | National | 🐌 Téléchargement manuel via navigateur | Interface web non scriptable. Processus à refaire à chaque MàJ. |
-
-> **Point clé :** contrairement au pré-2021 qui a des fichiers bulk `dep_XX.csv.gz` (ancien portail data-fair), le post-2021 n'a **aucun** export par département. Les seules options sont le dump SQL national de 70 Go (infrastructure lourde) ou l'API paginée (inutilisable).
-
-### 12.4 La stratégie temporaire actuelle (juin 2026)
-
-Face à l'impossibilité pratique d'utiliser l'API ADEME ou le dump SQL (tous deux servis par la même infrastructure lente), le script `telechargement/preparer_dpe.py` utilise :
-
-1. **Post-2021** → CSV locaux du notebook (`post-2021/departement/{dept}_dpe_v2.csv`, 9 départements) ou S3 (`enrichment-databases/dpe/`, 95 départements mais schéma réduit à 38 colonnes). Pas de mise à jour possible sans refaire le processus manuel.
-2. **Pré-2021** → CSV locaux du notebook (`pre-2021/dep_{dept}.csv`, 5 départements) ou S3 (`s3://prod-klarsen-enrichissement/…/dpe-pre-2021/`, 95 départements, 53 colonnes).
-
-3. **Nettoyage** → `telechargement/nettoyer_dpe.py` applique des règles de normalisation massives (P0 : CRS mixte Lambert-93/WGS84, 449 formats d'étage, champ `escalier` fourre-tout).
-
-**Cette approche est explicitement temporaire et non industrialisable.** Pour un pipeline de production, il faudra :
-- Soit ingérer et maintenir le dump SQL national de 70 Go (infrastructure PostgreSQL + filtrage départemental)
-- Soit négocier un accès bulk aux exports CSV par département auprès de l'ADEME
-- Soit accepter un cycle de mise à jour annuel avec re-téléchargement manuel du CSV national
-
-### 12.5 Volume de nettoyage nécessaire
-
-Même une fois les données récupérées, le travail ne fait que commencer. L'analyse du fichier `dpe_33_clean.parquet` (502k lignes, juin 2026) a révélé :
-
-| Problème | Impact | Résolution |
-|---|---|---|
-| **CRS mixte** : 44% Lambert-93, 56% WGS84 sans indicateur | Coordonnées silencieusement fausses | Conversion Lambert→WGS84 via pyproj |
-| **`etage`** : 449 formats textuels pour la même information | Inutilisable pour filtrage | Normalisation→entier (RDC=0, 1er=1…) |
-| **`escalier`** : 80% des valeurs sont des données pour d'autres colonnes | Colonne poubelle | Décomposition en 5 colonnes structurées |
-| **`code_insee`** tronqués (5 145 lignes) | Jointures cassées | Repadding des zéros initiaux |
-| **`annee_construction`** : 11k sentinelles `=1`, pic suspect 1947-48 | Stats faussées | Flag et nettoyage |
-| **`nom_commune`** : 3 010 libellés pour ~540 communes | Doublons | Normalisation casse/accents |
-| **Colonnes post-2021 quasi-vides** : `typologie_logement`, `position_immeuble` à 99,3% null | Extraction CSV incomplète | Reprendre le pipeline d'extraction |
-| 15 colonnes entièrement vides sur 57 | Données absentes des sources | À enrichir si besoin |
-
-**En résumé : le DPE est de loin la source la plus coûteuse à intégrer dans le socle.** Là où DVF se télécharge en 30 secondes par département, le DPE demande des heures de téléchargement, des gigaoctets de stockage intermédiaire, et des centaines de règles de nettoyage. C'est un enrichissement optionnel dont la valeur métier (signal énergétique) justifie l'effort, mais dont le coût d'intégration doit être bien compris avant d'étendre le périmètre à d'autres départements.
-
----
-
-*Document généré le 2026-06-11, mis à jour le 2026-06-12.*
+- **Aucune option bulk par département pour le post-2021** : pas d'équivalent des
+  `dep_XX.csv.gz` pré-2021. L'API résumable §6.4 est le plancher.
+- **Dump SQL national** : `opendata.ademe.fr/dump_dpev2_prod_fdld.sql.gz`, PostgreSQL
+  **~70 Go**, servi par la même infra ADEME/Koumoul que l'API — débit testé 2026-06-12
+  ~800 Ko/s-2 Mo/s soit **10-24 h** de téléchargement, puis restauration + filtrage.
+  À ne considérer que pour une ingestion nationale en une passe.
+- **CSV legacy du notebook** `~/Code/klarsen/notebooks/DiagnosticPerformanceEnergetique/dpe.ipynb` :
+  split manuel du CSV national (7,7 M lignes) d'avril 2024 — post-2021 : 9 depts
+  (17, 33, 67, 75, 91, 92, 93, 94, 95), pré-2021 : 5 depts. Gelés, 38 colonnes. Historique.
+- **S3 d'enrichissement** (pansement, pas un accès prod — cf. §6.2) : pré-2021
+  `dpe-pre-2021/` 95 depts (53 colonnes, source de fetch actuelle) ; post-2021
+  `enrichment-databases/dpe/` 95 depts (38 colonnes, fév 2025) en secours si l'API ADEME
+  devenait indisponible.

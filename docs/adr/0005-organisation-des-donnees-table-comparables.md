@@ -1,7 +1,7 @@
 ---
 status: accepted
 date: 2026-06-10
-superseded-by: 0006 §4-6
+superseded-by: "0006 — porte sur le §5 (résolution BDNB) uniquement ; le reste de l'ADR reste en vigueur"
 ---
 
 # Organisation des données : table comparables centrée DVF, pont parcelle→bâtiment
