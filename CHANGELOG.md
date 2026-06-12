@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.0 - 2026-06-12
+
+- **Adresse parcellaire** : nouveau lien **direct** parcelle↔adresse (adresses extraites du cadastre `codesParcelles` + BAN `cad_parcelles`, fusionnées et harmonisées à la source pour dédupliquer les doublons inter-sources). Affiché au clic d'un comparable comme **proxy de l'adresse propriétaire** (jamais son identité), avec l'adresse officielle BAN privilégiée et un « ? » qui en explique l'intérêt face à l'adresse de vente DVF. Couvre aussi les parcelles sans bâtiment RNB adressé (94,6 % des parcelles DVF sur le 33, mesuré par un spike de joignabilité).
+- **Résultats à défilement infini** : le panneau de droite remplit automatiquement l'écran puis charge davantage de comparables au défilement, au lieu d'un champ « Max » qui pouvait figer l'application en demandant des milliers de cartes d'un coup. Le tri reste calculé sur **toute** la cohorte, pas seulement les résultats affichés.
+- **Bâti cadastral — repli copropriété** : quand la parcelle de la vente est une **parcelle de référence** de copropriété / division en volumes (elle porte le lot et l'adresse mais aucune empreinte bâtie), la fiche affiche désormais le **bâtiment réel porté par la parcelle voisine**, identifié via le RNB en confiance haute, avec un « i » qui explique pourquoi. Messages d'indisponibilité du cadastre clarifiés (erreur technique transitoire vs parcelle absente du plan cadastral) ; le message « terrain nu / jardin » trompeur est corrigé.
+
 ## v1.4.0 - 2026-06-11
 
 - **Exploration plus complète** : le type de bien passe sur un menu cohérent avec « Fond de carte », avec bornes naturelles par emprise pour le prix, la surface et les pièces. Les pièces sont désactivées pour les catégories où elles n'ont pas de sens.
