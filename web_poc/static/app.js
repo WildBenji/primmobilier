@@ -214,7 +214,14 @@ const map = new maplibregl.Map({
       }
     },
     layers: [
-      { id: "base-cartodark", type: "raster", source: "cartodark" },
+      {
+        id: "base-cartodark",
+        type: "raster",
+        source: "cartodark",
+        // Dark Matter brut est presque noir : on remonte les noirs pour garder
+        // rues, fleuve et labels lisibles sous les points de données.
+        paint: { "raster-brightness-min": 0.22, "raster-contrast": 0.08, "raster-saturation": 0.15 }
+      },
       { id: "base-carto", type: "raster", source: "carto", layout: { visibility: "none" } },
       { id: "base-voyager", type: "raster", source: "voyager", layout: { visibility: "none" } },
       { id: "base-osm", type: "raster", source: "osm", layout: { visibility: "none" } },

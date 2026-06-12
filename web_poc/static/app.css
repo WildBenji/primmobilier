@@ -838,6 +838,16 @@ button#reset:hover {
   box-shadow: var(--shadow-pop);
 }
 
+/* Pont invisible sur l'écart visuel : le survol ne se rompt pas en traversant le gap. */
+.layer-menu-providers::before {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+
 .layer-menu:not(.just-picked) .layer-menu-trigger:hover .layer-menu-providers,
 .layer-menu:not(.just-picked) .layer-menu-trigger:focus-within .layer-menu-providers {
   display: block;
@@ -888,11 +898,12 @@ button#reset:hover {
   color: var(--text);
 }
 
+/* Sous-menu : s'ouvre vers la DROITE (le panneau colle au bord gauche de l'écran). */
 .layer-submenu {
   position: absolute;
   z-index: 8;
   top: -5px;
-  right: calc(100% + 4px);
+  left: calc(100% + 4px);
   display: none;
   min-width: 140px;
   padding: 5px;
@@ -900,6 +911,16 @@ button#reset:hover {
   border-radius: var(--r-md);
   background: var(--surface-solid);
   box-shadow: var(--shadow-pop);
+}
+
+/* Pont sur l'écart horizontal trigger <-> sous-menu. */
+.layer-submenu::before {
+  content: "";
+  position: absolute;
+  right: 100%;
+  top: 0;
+  bottom: 0;
+  width: 8px;
 }
 
 .layer-provider:hover > .layer-submenu,
@@ -911,6 +932,11 @@ button#reset:hover {
 .map-controls .layer-menu-providers {
   top: auto;
   bottom: calc(100% + 5px);
+}
+
+.map-controls .layer-menu-providers::before {
+  bottom: auto;
+  top: 100%;
 }
 
 .map-controls .layer-submenu {
