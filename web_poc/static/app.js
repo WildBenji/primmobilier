@@ -642,32 +642,53 @@ async function loadComparableDpe(row) {
   container.innerHTML = renderDpePanel(data);
 }
 
+// Libellés du lien DPE→bâtiment (rnb_lien) : on dit à l'utilisateur COMMENT le DPE a été
+// rattaché, du plus sûr (identifiant ADEME) au plus interprété (proximité spatiale).
+const DPE_LIENS = {
+  ademe: null, // rattachement natif ADEME : pas de caveat nécessaire
+  cle_ban: "rattaché par clé d'adresse BAN (fiable, adresse mono-bâtiment)",
+  spatial: "rattaché par proximité (bâtiment le plus proche à ≤ 15 m du géocodage) — vérifier l'adresse"
+};
+
 function renderDpePanel(data) {
   const list = data.dpe;
   const m = list[data.matched != null ? data.matched : 0];
   const energyType = m.type_energie ? m.type_energie.replace(/_/g, " ") : "—";
   const millesime = m.source === "pre_2021" ? "avant 2021" : "depuis 2021";
+  const conso = m.conso_ep_m2 != null ? `${Math.round(m.conso_ep_m2)} kWh/m²/an` : null;
+  const ges = m.emission_ges_m2 != null ? `${Math.round(m.emission_ges_m2)} kg CO₂/m²/an` : null;
+  const validite = m.fin_validite
+    ? (m.expire ? `expiré (${m.fin_validite})` : `jusqu'au ${m.fin_validite}`)
+    : null;
   const head = `
     <div class="dpe-panel-head">
       <span class="dpe-pair">Énergie${dpeBadge(m.etiquette_energie) || ' <span class="street-muted">n.c.</span>'}</span>
       <span class="dpe-pair">GES${dpeBadge(m.etiquette_ges) || ' <span class="street-muted">n.c.</span>'}</span>
+      ${m.expire ? '<span class="dpe-expire">expiré</span>' : ""}
     </div>
     <div class="detail-grid">
+      ${conso ? detailField("Consommation", conso) : ""}
+      ${ges ? detailField("Émissions GES", ges) : ""}
       ${detailField("Énergie chauffage", energyType)}
       ${m.surface != null ? detailField("Surface DPE", `${Math.round(m.surface)} m²`) : ""}
+      ${m.etage != null ? detailField("Étage", m.etage === 0 ? "RDC" : m.etage) : ""}
       ${m.date ? detailField("Établi le", m.date) : ""}
+      ${validite ? detailField("Validité", validite) : ""}
       ${m.periode ? detailField("Construction", m.periode) : ""}
       ${detailField("Millésime", millesime)}
     </div>`;
+  const lien = DPE_LIENS[m.rnb_lien]
+    ? `<p class="detail-note">Lien au bâtiment : ${DPE_LIENS[m.rnb_lien]}.</p>`
+    : "";
   if (list.length === 1) {
-    return head + `<p class="detail-note">DPE du bâtiment via RNB — ne désigne pas le lot exact.</p>`;
+    return head + lien + `<p class="detail-note">DPE du bâtiment via RNB — ne désigne pas le lot exact.</p>`;
   }
   // Bâtiment à N DPE (jusqu'à des milliers) : distribution par classe, pas une liste de badges.
   const counts = {};
   for (const d of list) counts[d.etiquette_energie || "?"] = (counts[d.etiquette_energie || "?"] || 0) + 1;
   const distrib = ["A", "B", "C", "D", "E", "F", "G", "?"].filter((k) => counts[k]).map((k) =>
     `<span class="dpe-distrib-item">${k === "?" ? '<span class="street-muted">n.c.</span>' : dpeBadge(k)}<small>×${counts[k]}</small></span>`).join("");
-  return head
+  return head + lien
     + `<p class="detail-note">${list.length} DPE sur ce bâtiment (RNB) — affiché : surface la plus proche de la vente.</p>`
     + `<div class="dpe-distrib">${distrib}</div>`;
 }
@@ -675,6 +696,13 @@ function renderDpePanel(data) {
 // Description courte affichée à l'utilisateur (le « ? » de l'en-tête). La mécanique de
 // construction (sources, fusion, harmonisation) reste dans la doc, pas ici.
 const DPE_HINT = "Diagnostic de performance énergétique du BÂTIMENT, rattaché via son identifiant RNB. Un bâtiment porte un DPE par logement : on affiche celui dont la surface est la plus proche de la vente (le lot le plus probable), mais ce n'est pas une certitude en copropriété. Étiquettes énergie + GES (A-G), type d'énergie de chauffage et date d'établissement (validité 10 ans).";
+
+const COPRO_HINT = "Copropriété immatriculée au Registre National (RNIC, ANAH), rattachée par sa référence cadastrale = la parcelle de la vente. Donne la taille réelle de la copropriété (lots), sa période de construction déclarée au règlement et son mode de gestion. Données déclarées par les syndics — fiables sur la structure, parfois datées.";
+
+// Période de construction RNIC ('AVANT_1949', 'DE_1949_A_1960'…) -> libellé lisible.
+function formatPeriodeCopro(periode) {
+  return String(periode).toLowerCase().replaceAll("_", " ").replace(" a ", " à ");
+}
 
 const ADRESSES_PARCELLE_HINT = "Adresse(s) officielle(s) rattachée(s) à la parcelle. Intérêt : l'adresse de la vente (DVF) affichée plus haut est souvent imprécise ou incomplète ; celle-ci est l'adresse réelle du bien, sert de point de contact probable du propriétaire (sans révéler son identité), et fait apparaître toutes les entrées d'une parcelle qui en compte plusieurs. En copropriété, plusieurs adresses possibles sans désigner un logement précis.";
 
@@ -1691,9 +1719,34 @@ function renderResult(data) {
   configureScopeChip(scopeChip, scopeDetails, data.target, summary.scope, estimationStats);
   document.querySelector("#range").textContent =
     `Fourchette observée: ${euro(summary.low_price)} à ${euro(summary.high_price)} pour ${summary.scope} · ${summary.history} · confiance ${summary.confidence}`;
+  renderLoyerContext(summary.loyer);
   document.querySelector("#askedPosition").textContent = summary.asked_position_pct === null
     ? ""
     : `Prix soumis: percentile ${summary.asked_position_pct} des comparables`;
+}
+
+// Contexte locatif (« Carte des loyers ») : loyer prédit de la commune + rendement brut.
+// Une prédiction de modèle, pas une observation — l'infobulle détaille méthode et intervalle.
+const LOYER_SEGMENTS = {
+  maison: "maison",
+  appartement: "appartement",
+  appartement_1_2p: "appartement 1-2 pièces",
+  appartement_3p_plus: "appartement 3 pièces et plus"
+};
+
+function renderLoyerContext(loyer) {
+  const el = document.querySelector("#loyerContext");
+  if (!loyer) {
+    el.textContent = "";
+    return;
+  }
+  const tip = `Indicateur « Carte des loyers » (SDES × ANIL, millésime ${loyer.millesime}) : loyer d'annonce PRÉDIT par un modèle pour la commune, charges comprises, segment ${LOYER_SEGMENTS[loyer.categorie] || loyer.categorie}.`
+    + (loyer.loyer_m2_bas != null ? ` Intervalle de prédiction : ${loyer.loyer_m2_bas} – ${loyer.loyer_m2_haut} €/m².` : "")
+    + ` Le rendement brut rapporte 12 loyers au prix médian estimé — avant charges, vacance, travaux et fiscalité.`;
+  const rendement = loyer.rendement_brut_pct != null
+    ? ` · rendement brut ≈ ${String(loyer.rendement_brut_pct).replace(".", ",")} %`
+    : "";
+  el.innerHTML = `Loyer de référence commune: ${String(loyer.loyer_m2).replace(".", ",")} €/m²${rendement} <span class="hint" data-tip="${escapeHtml(tip)}">?</span>`;
 }
 
 // `companion` = la box des ventes (stats) de la même section, repliée quand on déplie
@@ -2345,6 +2398,21 @@ function renderDetail(row, container = detailBody) {
     ? `<p class="detail-note">⚠ Commune modifiée${row.commune_modif_date ? ` le ${escapeHtml(row.commune_modif_date)}` : ""} — vendue sous ${escapeHtml(row.commune_modif_origine)}, rattachée aujourd'hui à ${escapeHtml(row.commune || "")} (${escapeHtml(row.code_commune || "")}).</p>`
     : "";
 
+  // Sous-section Copropriété (RNIC, lien cadastral direct par parcelle).
+  const coproFields = [
+    row.copro_lots_habitation != null ? detailField("Lots habitation", int(row.copro_lots_habitation)) : "",
+    row.copro_lots_total != null ? detailField("Lots total", int(row.copro_lots_total)) : "",
+    row.copro_lots_stationnement != null ? detailField("Lots stationnement", int(row.copro_lots_stationnement)) : "",
+    row.copro_periode_construction ? detailField("Période copro", formatPeriodeCopro(row.copro_periode_construction)) : "",
+    row.copro_type_syndic ? detailField("Syndic", row.copro_type_syndic) : "",
+    row.copro_residence_service && row.copro_residence_service.toLowerCase() === "oui"
+      ? detailField("Résidence services", "oui") : "",
+    row.copro_qpv ? detailField("Quartier prioritaire", row.copro_qpv) : "",
+  ].join("");
+  const coproNote = Number(row.copro_n_sur_parcelle) > 1
+    ? `<p class="detail-note">${int(row.copro_n_sur_parcelle)} copropriétés immatriculées sur la parcelle — affichée : la plus grande (lots habitation).</p>`
+    : "";
+
   // Sous-section Bâtiment (RNB / BDNB).
   const bdnbFields = [
     resolutionField,
@@ -2372,6 +2440,7 @@ function renderDetail(row, container = detailBody) {
     ${detailSection("Cadastre", cadastreFields)}
     ${collapsible("Bâti cadastral", `<div id="detailBatiments" class="detail-batiments"><span class="street-muted">Lecture du cadastre…</span></div>`)}
     ${detailSection("Bâtiment (RNB / BDNB)", bdnbFields)}
+    ${coproFields ? collapsible("Copropriété (RNIC)", `<div class="detail-grid">${coproFields}</div>${coproNote}`, { hint: COPRO_HINT }) : ""}
     ${collapsible("DPE (énergie)", `<div id="detailDpe" class="detail-dpe"><span class="street-muted">Lecture du DPE…</span></div>`, { hint: DPE_HINT })}
     ${collapsible("Adresses (lien parcellaire)", `<div id="detailAdresses" class="detail-adresses"><span class="street-muted">Lecture du lien parcelle↔adresse…</span></div>`, { hint: ADRESSES_PARCELLE_HINT })}
   `;
@@ -2436,6 +2505,20 @@ const FIELD_HINTS = {
   "Hauteur": "Hauteur moyenne du bâtiment estimée par la BDNB.",
   "Emprise": "Emprise au sol du bâtiment estimée par la BDNB (aire au sol, pas la surface habitable). Source distincte du cadastre, donc valeur différente.",
   "Construction": "Année de construction estimée du bâtiment (BDNB). C'est la vraie année du bâti, contrairement à la date de relevé cadastral.",
+  "Consommation": "Consommation d'énergie primaire du logement, tous usages (chauffage, eau chaude, refroidissement, éclairage, auxiliaires), telle que calculée par le DPE. C'est la valeur chiffrée derrière l'étiquette.",
+  "Émissions GES": "Émissions de gaz à effet de serre du logement calculées par le DPE — la valeur chiffrée derrière l'étiquette climat.",
+  "Étage": "Étage du logement diagnostiqué, déclaré dans le DPE (0 = rez-de-chaussée). Aide à reconnaître le lot en collectif.",
+  "Validité": "Un DPE est valable 10 ans (durées réduites pour les diagnostics 2013-2017 réformés). Un DPE expiré reste un signal, plus une preuve.",
+  "Surface DPE": "Surface habitable du logement déclarée dans le diagnostic — à comparer à la surface DVF de la vente pour juger si c'est bien le même lot.",
+  "Millésime": "Méthode DPE : depuis juillet 2021 le calcul est opposable et unifié (3CL) ; avant, méthode sur factures, moins fiable.",
+  "Énergie chauffage": "Énergie principale de chauffage déclarée dans le DPE.",
+  "Lots habitation": "Nombre de lots à usage d'habitation déclaré au registre des copropriétés — la taille réelle de la copropriété, introuvable dans DVF.",
+  "Lots total": "Nombre total de lots de la copropriété (habitation, commerces, caves, parkings…).",
+  "Lots stationnement": "Lots de stationnement déclarés (aériens, garages, sous-sol).",
+  "Période copro": "Période de construction déclarée au règlement de copropriété (RNIC).",
+  "Syndic": "Type de représentant légal de la copropriété : professionnel ou bénévole.",
+  "Résidence services": "Copropriété en résidence-services (loi de 1965, art. 41-1) : services partagés, charges spécifiques.",
+  "Quartier prioritaire": "La copropriété est située dans un quartier prioritaire de la politique de la ville (périmètres 2024).",
 };
 
 function detailField(label, value) {

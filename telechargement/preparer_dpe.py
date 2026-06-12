@@ -50,14 +50,17 @@ S3_PRE = ("s3://prod-klarsen-enrichissement/athena_tables/"
 ANNEE_MAX = date.today().year
 _CLASSES = ["A", "B", "C", "D", "E", "F", "G"]
 
-# Schéma cible commun : uniquement ce qui sert au signal/ajustement énergétique + rattachement.
+# Schéma cible commun : signal/ajustement énergétique + rattachement + caractérisation fine.
+# Les champs « riches » post-2021 (étage, conso/GES chiffrées, validité, adresse BAN affichable)
+# sont null en pré-2021 mais précieux côté appli : on les garde au lieu de les projeter à la poubelle.
 COMMON = [
-    "numero_dpe", "source_dpe", "date_etablissement",
-    "type_batiment", "surface_habitable",
+    "numero_dpe", "source_dpe", "date_etablissement", "date_fin_validite",
+    "type_batiment", "surface_habitable", "etage",
     "annee_construction", "periode_construction",
     "etiquette_energie", "etiquette_ges", "dpe_vierge",
+    "conso_ep_m2", "emission_ges_m2",
     "type_energie_principale",
-    "id_rnb", "identifiant_ban",
+    "id_rnb", "identifiant_ban", "adresse_ban", "score_ban",
     "code_insee", "code_postal", "code_departement", "nom_commune",
     "latitude", "longitude", "geo_precision",
 ]
@@ -151,19 +154,25 @@ def _project_pre(df: pl.DataFrame, dept: str) -> pl.DataFrame:
         pl.col("numero_dpe").cast(pl.Utf8),
         pl.lit("pre_2021").alias("source_dpe"),
         pl.when(d == pl.date(1899, 12, 30)).then(None).otherwise(d).alias("date_etablissement"),
+        pl.lit(None, dtype=pl.Date).alias("date_fin_validite"),
         pl.when(tb == "MAISON INDIVIDUELLE").then(pl.lit("maison"))
           .when(tb == "LOGEMENT").then(pl.lit("appartement"))
           .when(tb.str.starts_with("BATIMENT COLLECTIF")).then(pl.lit("immeuble"))
           .otherwise(None).alias("type_batiment"),
         surface.alias("surface_habitable"),
+        pl.lit(None, dtype=pl.Int32).alias("etage"),
         annee.alias("annee_construction"),
         _periode(annee).alias("periode_construction"),
         pl.when(vierge).then(None).otherwise(_classe("classe_consommation_energie")).alias("etiquette_energie"),
         pl.when(vierge).then(None).otherwise(_classe("classe_estimation_ges")).alias("etiquette_ges"),
         vierge.alias("dpe_vierge"),
+        pl.lit(None, dtype=pl.Float64).alias("conso_ep_m2"),
+        pl.lit(None, dtype=pl.Float64).alias("emission_ges_m2"),
         pl.lit(None, dtype=pl.Utf8).alias("type_energie_principale"),
         pl.lit(None, dtype=pl.Utf8).alias("id_rnb"),
         pl.lit(None, dtype=pl.Utf8).alias("identifiant_ban"),
+        pl.lit(None, dtype=pl.Utf8).alias("adresse_ban"),
+        pl.lit(None, dtype=pl.Float64).alias("score_ban"),
         pl.col("code_insee_commune_actualise").cast(pl.Utf8).alias("code_insee"),
         pl.col("code_postal").cast(pl.Utf8).alias("code_postal"),
         pl.lit(dept).alias("code_departement"),
@@ -187,16 +196,24 @@ def _project_post(df: pl.DataFrame, dept: str) -> pl.DataFrame:
         pl.lit("post_2021").alias("source_dpe"),
         pl.col("date_etablissement_dpe").str.slice(0, 10)
           .str.to_date("%Y-%m-%d", strict=False).alias("date_etablissement"),
+        pl.col("date_fin_validite_dpe").str.slice(0, 10)
+          .str.to_date("%Y-%m-%d", strict=False).alias("date_fin_validite"),
         pl.col("type_batiment").str.to_lowercase().str.strip_chars().alias("type_batiment"),
         _surface_clip(pl.col("surface_habitable_logement").cast(pl.Float64, strict=False)).alias("surface_habitable"),
+        pl.col("numero_etage_appartement").cast(pl.Float64, strict=False)
+          .cast(pl.Int32, strict=False).alias("etage"),
         annee.alias("annee_construction"),
         pl.coalesce(pl.col("periode_construction").cast(pl.Utf8), _periode(annee)).alias("periode_construction"),
         _classe("etiquette_dpe").alias("etiquette_energie"),
         _classe("etiquette_ges").alias("etiquette_ges"),
         pl.lit(False).alias("dpe_vierge"),
+        pl.col("conso_5_usages_par_m2_ep").cast(pl.Float64, strict=False).alias("conso_ep_m2"),
+        pl.col("emission_ges_5_usages_par_m2").cast(pl.Float64, strict=False).alias("emission_ges_m2"),
         _energie("type_energie_principale_chauffage").alias("type_energie_principale"),
         pl.col("id_rnb").cast(pl.Utf8).alias("id_rnb"),
         pl.col("identifiant_ban").cast(pl.Utf8).alias("identifiant_ban"),
+        pl.col("adresse_ban").cast(pl.Utf8).alias("adresse_ban"),
+        pl.col("score_ban").cast(pl.Float64, strict=False).alias("score_ban"),
         pl.col("code_insee_ban").cast(pl.Utf8).alias("code_insee"),
         pl.col("code_postal_ban").cast(pl.Utf8).alias("code_postal"),
         pl.lit(dept).alias("code_departement"),
@@ -234,14 +251,115 @@ def _mix_dedup(pre: pl.DataFrame, post: pl.DataFrame) -> tuple[pl.DataFrame, int
     return pl.concat([dedup, autres], how="vertical"), retires
 
 
-def preparer_dpe(dept: str, *, force: bool = False) -> Path:
+def _resoudre_rnb(frame: pl.DataFrame, dept: str) -> pl.DataFrame:
+    """Complète `id_rnb` pour les DPE non rattachés par l'ADEME + qualifie le lien (`rnb_lien`).
+
+    L'ADEME ne fournit un id_rnb que sur ~47 % des DPE post-2021, et jamais en pré-2021 —
+    or TOUTE la chaîne aval (comparables, /api/dpe) joint sur id_rnb : un DPE sans id_rnb
+    est invisible. Trois niveaux de rattachement, du plus sûr au plus interprété
+    (mesuré dept 33, cf. docs/SOURCES_DONNEES.md §11) :
+
+      ademe    id_rnb fourni par l'ADEME                                   (post-2021)
+      cle_ban  identifiant_ban == RNB.cle_interop_ban, clé MONO-bâtiment   (+117 k candidats,
+               70,9 % des clés RNB sont mono-bâtiment → lien sans ambiguïté)
+      spatial  plus proche bâtiment RNB ≤ 15 m, géocodage 'precise'        (+104 k pré-2021,
+               distance médiane 12,1 m ; seuil serré pour éviter le bâtiment voisin)
+
+    `rnb_lien` (ademe | cle_ban | spatial | null) et `rnb_dist_m` (spatial) sont exposés
+    jusqu'à l'appli pour accompagner chaque DPE d'un avertissement de fiabilité honnête.
+    """
+    adr_path = INTERIM / f"rnb_adr_{dept}.parquet"
+    pts_path = INTERIM / f"rnb_points_{dept}.parquet"
+    if not adr_path.exists() or not pts_path.exists():
+        print(f"  ⚠ rnb_adr/rnb_points absents pour {dept} : id_rnb ADEME seul (pas de récupération)")
+        return frame.with_columns(
+            pl.when(pl.col("id_rnb").is_not_null()).then(pl.lit("ademe")).otherwise(None).alias("rnb_lien"),
+            pl.lit(None, dtype=pl.Float64).alias("rnb_dist_m"),
+        )
+
+    import time
+
+    import duckdb
+
+    t0 = time.monotonic()
+    con = duckdb.connect()
+    con.register("dpe", frame)
+    print("  rattachement RNB : clés BAN mono-bâtiment…", flush=True)
+    con.execute(f"""
+        CREATE TEMP TABLE cle_mono AS
+        SELECT cle_interop_ban AS cle, any_value(rnb_id) AS rnb_id
+        FROM read_parquet('{adr_path}')
+        GROUP BY 1 HAVING count(DISTINCT rnb_id) = 1
+    """)
+    print(f"  rattachement RNB : spatial ≤ 15 m (grille équi-jointe)… [{time.monotonic() - t0:.0f}s]", flush=True)
+    # Spatial : uniquement les DPE encore orphelins, géocodés à l'adresse (grille ~111 m puis
+    # haversine). ⚠ La fenêtre 3×3 est faite en ÉQUI-jointure : chaque DPE est dupliqué sur ses
+    # 9 cellules voisines puis joint par hachage sur (gx, gy). Un `BETWEEN gx-1 AND gx+1` en
+    # condition de jointure dégénère en range-join quasi cartésien sur 200 k × 1,1 M points
+    # (mesuré : >30 min CPU à fond) ; l'équi-jointure fait le même travail en quelques secondes.
+    con.execute(f"""
+        CREATE TEMP TABLE spatial AS
+        WITH q AS (
+            SELECT d.numero_dpe, d.longitude AS lon, d.latitude AS lat,
+                   CAST(floor(d.longitude * 1000) AS INT) gx, CAST(floor(d.latitude * 1000) AS INT) gy
+            FROM dpe d
+            LEFT JOIN cle_mono c ON d.identifiant_ban = c.cle
+            WHERE d.id_rnb IS NULL AND c.rnb_id IS NULL
+              AND d.geo_precision = 'precise' AND d.longitude IS NOT NULL
+        ),
+        q9 AS (
+            SELECT q.*, q.gx + dx.v AS jx, q.gy + dy.v AS jy
+            FROM q
+            CROSS JOIN (VALUES (-1), (0), (1)) dx(v)
+            CROSS JOIN (VALUES (-1), (0), (1)) dy(v)
+        ),
+        p AS (
+            SELECT rnb_id, lon, lat,
+                   CAST(floor(lon * 1000) AS INT) gx, CAST(floor(lat * 1000) AS INT) gy
+            FROM read_parquet('{pts_path}')
+        ),
+        cand AS (
+            SELECT q9.numero_dpe, p.rnb_id,
+                   2 * 6371000 * asin(sqrt(power(sin(radians(p.lat - q9.lat) / 2), 2)
+                       + cos(radians(q9.lat)) * cos(radians(p.lat))
+                         * power(sin(radians(p.lon - q9.lon) / 2), 2))) AS d
+            FROM q9 JOIN p ON p.gx = q9.jx AND p.gy = q9.jy
+        )
+        SELECT numero_dpe, arg_min(rnb_id, d) AS rnb_id, round(min(d), 1) AS dist_m
+        FROM cand GROUP BY 1 HAVING min(d) <= 15
+    """)
+    resolu = con.sql("""
+        SELECT d.* EXCLUDE (id_rnb),
+               COALESCE(d.id_rnb, c.rnb_id, s.rnb_id) AS id_rnb,
+               CASE WHEN d.id_rnb IS NOT NULL THEN 'ademe'
+                    WHEN c.rnb_id IS NOT NULL THEN 'cle_ban'
+                    WHEN s.rnb_id IS NOT NULL THEN 'spatial'
+               END AS rnb_lien,
+               s.dist_m AS rnb_dist_m
+        FROM dpe d
+        LEFT JOIN cle_mono c ON d.id_rnb IS NULL AND d.identifiant_ban = c.cle
+        LEFT JOIN spatial s ON d.numero_dpe = s.numero_dpe
+    """).pl()
+    con.close()
+
+    stats = resolu.group_by("rnb_lien").len().sort("rnb_lien")
+    detail = " · ".join(f"{r['rnb_lien'] or 'non_rattache'} {r['len']:,}" for r in stats.iter_rows(named=True))
+    print(f"  rattachement RNB : {detail}  [{time.monotonic() - t0:.0f}s]", flush=True)
+    return resolu
+
+
+def preparer_dpe(dept: str, *, force: bool = False, refetch: bool = False) -> Path:
+    """`force` régénère le MIX local (projection, dédup, résolution id_rnb) depuis les
+    sources déjà téléchargées ; `refetch` re-télécharge aussi les sources (API ADEME =
+    des heures). Les deux sont découplés pour qu'un changement de logique locale ne
+    déclenche jamais un re-fetch complet par accident."""
     dest = INTERIM / f"dpe_{dept}.parquet"
     if dest.exists() and dest.stat().st_size > 0 and not force:
         print(f"✓ {dest.name} (existe déjà — --force pour régénérer)")
         return dest
 
     print(f"\n── DPE final — dept {dept} ──")
-    post_path = recuperer_post(dept, force=force)          # API (résumable)
+    post_path = recuperer_post(dept, force=refetch)        # API (résumable)
     post = _project_post(pl.read_parquet(post_path), dept)
     pre = _project_pre(_fetch_pre2021(dept), dept)         # S3 (pansement)
     print(f"  pré-2021 : {pre.height:,}  ·  post-2021 : {post.height:,}")
@@ -249,16 +367,20 @@ def preparer_dpe(dept: str, *, force: bool = False) -> Path:
     frame, retires = _mix_dedup(pre, post)
     print(f"  doublons inter-millésime (maisons) retirés : {retires:,}  →  final {frame.height:,} DPE")
 
+    frame = _resoudre_rnb(frame, dept)
+
     INTERIM.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".parquet.tmp")
-    frame.write_parquet(tmp, compression="zstd")
+    # Trié par id_rnb : le serveur requête `WHERE id_rnb = ?` → les statistiques de
+    # row-groups parquet éliminent l'essentiel du fichier sans le lire.
+    frame.sort("id_rnb", nulls_last=True).write_parquet(tmp, compression="zstd")
     tmp.rename(dest)
     print(f"  → {dest.name} ({frame.height:,} DPE, {len(frame.columns)} colonnes, {dest.stat().st_size / 1e6:.1f} Mo)")
     return dest
 
 
 def main(dept: str) -> None:
-    preparer_dpe(dept, force="--force" in sys.argv)
+    preparer_dpe(dept, force="--force" in sys.argv, refetch="--refetch" in sys.argv)
 
 
 if __name__ == "__main__":
