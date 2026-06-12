@@ -1901,11 +1901,21 @@ button#reset:hover {
   height: 100%;
 }
 
+/* Deux poignées superposées (début / fin) : seules les poignées sont cliquables. */
 .timeline-track input[type="range"] {
   position: absolute;
   inset: 0;
   height: 100%;
   margin: 0;
+  pointer-events: none;
+}
+
+.timeline-track input[type="range"]::-webkit-slider-thumb {
+  pointer-events: auto;
+}
+
+.timeline-track input[type="range"]::-moz-range-thumb {
+  pointer-events: auto;
 }
 
 .timeline-track input[type="range"]::-webkit-slider-runnable-track {

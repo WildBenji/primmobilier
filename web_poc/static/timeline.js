@@ -1,20 +1,22 @@
-// Frise temporelle du marché : histogramme des ventes par mois + fenêtre
-// glissante de 12 mois qu'on fait défiler (ou jouer) sur la carte.
+// Frise temporelle du marché : histogramme des ventes par mois + sélection
+// libre [début, fin] par deux poignées (de quelques mois à tout l'historique).
+// La lecture (play) fait glisser la sélection courante en gardant sa largeur.
 // Le filtrage se fait côté carte (setFilter sur `ts`), sans re-requête serveur.
 
 const FILTERED_LAYERS = ["comparables-points", "comparables-halo", "comparables-heat"];
-const WINDOW_MONTHS = 12; // fenêtre glissante : 12 mois échus
-const PLAY_STEP_MS = 420; // un mois par pas de lecture
+const PLAY_WIDTH_MONTHS = 12; // largeur de lecture par défaut quand tout est sélectionné
+const PLAY_STEP_MS = 420;     // un mois par pas de lecture
 
 const MONTHS_FR = ["janv.", "févr.", "mars", "avr.", "mai", "juin",
   "juil.", "août", "sept.", "oct.", "nov.", "déc."];
 
 let map = null;
-let root, playBtn, allBtn, scrub, canvas, windowLabel, ticker;
+let root, playBtn, allBtn, startInput, endInput, canvas, windowLabel, ticker;
 
-let buckets = [];      // [{ts0, ts1, count, prixM2: []}] — un par mois, ordre chronologique
-let points = [];       // points courants avec ts
-let cursor = -1;       // index du mois de fin de fenêtre ; -1 = pas de filtre (tout)
+let buckets = [];   // [{ts0, ts1, count}] — un par mois, ordre chronologique
+let points = [];    // points courants avec ts
+let startIdx = 0;   // bornes de la sélection (indices de mois, inclus)
+let endIdx = 0;
 let playTimer = null;
 
 export function initTimeline(mapInstance) {
@@ -22,36 +24,60 @@ export function initTimeline(mapInstance) {
   root = document.querySelector("#timeline");
   playBtn = document.querySelector("#timelinePlay");
   allBtn = document.querySelector("#timelineAll");
-  scrub = document.querySelector("#timelineScrub");
+  startInput = document.querySelector("#timelineStart");
+  endInput = document.querySelector("#timelineEnd");
   canvas = document.querySelector("#timelineCanvas");
   windowLabel = document.querySelector("#timelineWindow");
   ticker = document.querySelector("#timelineTicker");
 
-  scrub.addEventListener("input", () => {
+  // Deux poignées qui ne se croisent pas : celle qu'on déplace pousse la borne.
+  const onScrub = () => {
     stopPlay();
-    setCursor(Number(scrub.value));
-  });
+    let lo = Number(startInput.value);
+    let hi = Number(endInput.value);
+    if (lo > hi) {
+      if (document.activeElement === startInput) hi = lo;
+      else lo = hi;
+    }
+    startIdx = lo;
+    endIdx = hi;
+    sync();
+  };
+  startInput.addEventListener("input", onScrub);
+  endInput.addEventListener("input", onScrub);
 
   playBtn.addEventListener("click", () => {
     if (playTimer) {
       stopPlay();
       return;
     }
-    // Lecture depuis le début si on est au bout (ou sans filtre), sinon on reprend.
-    if (cursor < 0 || cursor >= buckets.length - 1) setCursor(0);
+    // Largeur de fenêtre : la sélection courante, ou 12 mois si tout est sélectionné.
+    const width = fullSpan()
+      ? Math.min(PLAY_WIDTH_MONTHS - 1, buckets.length - 1)
+      : endIdx - startIdx;
+    // Lecture depuis le début si on est au bout (ou sur tout l'historique).
+    if (fullSpan() || endIdx >= buckets.length - 1) {
+      startIdx = 0;
+      endIdx = width;
+    }
+    sync();
     root.classList.add("playing");
     playTimer = setInterval(() => {
-      if (cursor >= buckets.length - 1) {
+      if (endIdx >= buckets.length - 1) {
         stopPlay();
         return;
       }
-      setCursor(cursor + 1);
+      startIdx += 1;
+      endIdx += 1;
+      sync();
     }, PLAY_STEP_MS);
   });
 
   allBtn.addEventListener("click", () => {
     stopPlay();
-    setCursor(-1);
+    startIdx = 0;
+    endIdx = buckets.length - 1;
+    sync();
   });
 
   document.addEventListener("themechange", draw);
@@ -61,21 +87,27 @@ export function initTimeline(mapInstance) {
 // Appelé par app.js à chaque nouveau jeu de points (estimation ou exploration).
 export function timelineSetData(rawPoints) {
   stopPlay();
-  cursor = -1;
-  applyFilter(); // toujours repartir sans filtre sur de nouvelles données
 
   points = (rawPoints || [])
     .map((p) => ({ ts: Date.parse(p.date_mutation) || 0, prix_m2: Number(p.prix_m2) || 0 }))
     .filter((p) => p.ts > 0);
 
   buckets = buildMonthBuckets(points);
+  startIdx = 0;
+  endIdx = Math.max(0, buckets.length - 1);
+  applyFilter(); // toujours repartir sans filtre sur de nouvelles données
+
   if (buckets.length < 3 || points.length < 10) {
     root.hidden = true;
     return;
   }
 
-  scrub.max = String(buckets.length - 1);
-  scrub.value = scrub.max;
+  for (const input of [startInput, endInput]) {
+    input.min = "0";
+    input.max = String(buckets.length - 1);
+  }
+  startInput.value = "0";
+  endInput.value = String(endIdx);
   root.hidden = false;
   updateReadout();
   draw();
@@ -96,14 +128,11 @@ function buildMonthBuckets(pts) {
   while (d <= end) {
     const ts0 = d.getTime();
     d.setMonth(d.getMonth() + 1);
-    result.push({ ts0, ts1: d.getTime(), count: 0, prixM2: [] });
+    result.push({ ts0, ts1: d.getTime(), count: 0 });
   }
   for (const p of pts) {
     const idx = monthIndex(result, p.ts);
-    if (idx >= 0) {
-      result[idx].count += 1;
-      if (p.prix_m2 > 0) result[idx].prixM2.push(p.prix_m2);
-    }
+    if (idx >= 0) result[idx].count += 1;
   }
   return result;
 }
@@ -120,17 +149,20 @@ function monthIndex(result, ts) {
   return -1;
 }
 
-function windowRange() {
-  if (cursor < 0) return null;
-  const endBucket = buckets[cursor];
-  const startIdx = Math.max(0, cursor - (WINDOW_MONTHS - 1));
-  return { ts0: buckets[startIdx].ts0, ts1: endBucket.ts1, startIdx, endIdx: cursor };
+function fullSpan() {
+  return startIdx <= 0 && endIdx >= buckets.length - 1;
 }
 
-function setCursor(value) {
-  cursor = value;
-  if (cursor >= 0) scrub.value = String(cursor);
-  else scrub.value = scrub.max;
+// Sélection courante, ou null quand tout l'historique est couvert (pas de filtre).
+function windowRange() {
+  if (!buckets.length || fullSpan()) return null;
+  return { ts0: buckets[startIdx].ts0, ts1: buckets[endIdx].ts1 };
+}
+
+// Aligne poignées, filtre carte, libellés et histogramme sur startIdx/endIdx.
+function sync() {
+  startInput.value = String(startIdx);
+  endInput.value = String(endIdx);
   applyFilter();
   updateReadout();
   draw();
@@ -148,6 +180,7 @@ function applyFilter() {
 }
 
 function updateReadout() {
+  if (!buckets.length) return;
   const range = windowRange();
   allBtn.hidden = !range;
   const inWindow = range
@@ -155,13 +188,13 @@ function updateReadout() {
     : points;
   const median = medianOf(inWindow.map((p) => p.prix_m2).filter((v) => v > 0));
   if (range) {
-    windowLabel.textContent = `${monthLabel(buckets[range.startIdx].ts0)} – ${monthLabel(range.ts1 - 1)}`;
+    windowLabel.textContent = `${monthLabel(range.ts0)} – ${monthLabel(range.ts1 - 1)}`;
   } else {
     windowLabel.textContent = `${new Date(buckets[0].ts0).getFullYear()} – ${new Date(buckets[buckets.length - 1].ts0).getFullYear()} · tout`;
   }
   ticker.textContent = inWindow.length
     ? `${fmtInt(inWindow.length)} ventes · ${median ? `${fmtInt(median)} €/m² médian` : "€/m² n.c."}`
-    : "Aucune vente sur la fenêtre";
+    : "Aucune vente sur la période";
 }
 
 function monthLabel(ts) {
@@ -202,15 +235,15 @@ function draw() {
   const maxCount = Math.max(...buckets.map((b) => b.count), 1);
   const slot = w / buckets.length;
   const barW = Math.max(1, Math.min(slot - 1.2, 7));
-  const range = windowRange();
+  const all = fullSpan();
 
   buckets.forEach((b, i) => {
     // Échelle racine : les petits mois restent visibles à côté des pics.
     const barH = Math.max(1.5, Math.sqrt(b.count / maxCount) * (chartH - 4));
     const x = i * slot + (slot - barW) / 2;
-    const inWindow = range && i >= range.startIdx && i <= range.endIdx;
-    ctx.fillStyle = inWindow ? accent : faint;
-    ctx.globalAlpha = inWindow ? 0.95 : 0.32;
+    const selected = all || (i >= startIdx && i <= endIdx);
+    ctx.fillStyle = selected ? accent : faint;
+    ctx.globalAlpha = all ? 0.6 : selected ? 0.95 : 0.32;
     roundedBar(ctx, x, chartH - barH, barW, barH);
   });
   ctx.globalAlpha = 1;
