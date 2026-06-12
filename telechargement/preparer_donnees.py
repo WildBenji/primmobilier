@@ -25,6 +25,7 @@ from pathlib import Path
 import polars as pl
 
 from telechargement._telechargement import download
+from telechargement.preparer_adresses_parcelle import main as preparer_adresses_parcelle
 from telechargement.preparer_cadastre import main as preparer_cadastre
 from telechargement.preparer_communes import preparer_communes
 from telechargement.preparer_passage_communes import preparer_passage_communes
@@ -324,6 +325,7 @@ ARTEFACTS_DEPT = (
     "cadastre_parcelles_{d}.parquet",
     "cadastre_batiments_{d}.parquet",
     "cadastre_lieux_dits_{d}.parquet",
+    "parcelle_adresse_{d}.parquet",
 )
 ARTEFACTS_NATIONAUX = (
     "passage_communes.parquet",
@@ -353,6 +355,7 @@ def main(dept: str) -> None:
     preparer_ban(dept)
     preparer_communes(dept)
     preparer_cadastre(dept)  # sections + parcelles + batiments + lieux_dits
+    preparer_adresses_parcelle(dept)  # crosswalk direct parcelle↔adresse (cadastre + BAN)
     _verifier(dept)
     print(f"\n✓ Données {dept} prêtes pour le pipeline.")
 
