@@ -66,7 +66,7 @@ Suivi d'exploration des sources publiques candidates au **socle immobilier carto
 
 **Superflu / doublon** : `x`/`y` (Lambert) doublon de `lon`/`lat` ; `nom_afnor`, `libelle_acheminement`, `alias`, `nom_ld` redondants ; `id_fantoir` = legacy, utile seulement comme pont vers d'anciennes clés.
 
-**Clés de jointure (BAN = crosswalk déterministe)** : `id` ↔ RNB (`addresses[].cle_interop_ban`) et ↔ DPE (`identifiant_ban`) — **même namespace, confirmé** · `cad_parcelles` ↔ Cadastre/DVF (`id_parcelle`) — **confirmé** · `code_insee` ↔ communes. ⇒ BAN relie à elle seule les 3 keyspaces (adresse / parcelle), mais reste un **secours** : RNB porte déjà `addresses` (cle_interop) ET `plots` (parcelle) → on mesurera si RNB seul suffit avant d'ingérer la BAN (cf. décision API-only).
+**Clés de jointure (BAN = crosswalk déterministe)** : `id` ↔ RNB (`addresses[].cle_interop_ban`) et ↔ DPE (`identifiant_ban`) — **même namespace, confirmé** · `cad_parcelles` ↔ Cadastre/DVF (`id_parcelle`) — **confirmé** · `code_insee` ↔ communes. ⇒ BAN relie à elle seule les 3 keyspaces (adresse / parcelle), mais reste un **secours** pour le pivot bâtiment : RNB porte déjà `addresses` (cle_interop) ET `plots` (parcelle) → on mesurera si RNB seul suffit avant d'ingérer la BAN (cf. décision API-only). **Note** : `cad_parcelles` est par ailleurs consommé directement (lecture du CSV brut) pour le crosswalk **direct** parcelle↔adresse, en complément du NDJSON cadastre (cf. §3.3) — usage distinct du pivot RNB.
 
 ## 1.3 Cadastre (Etalab)
 
@@ -74,14 +74,15 @@ Suivi d'exploration des sources publiques candidates au **socle immobilier carto
 - **Statut** : ✅ **Catalogué & mesuré (33 + 47)** — parcelles + sections ingérées en GeoParquet, schéma et clés confirmés (cf. mesures §10).
 - **Définition** : découpage parcellaire du territoire au format géo simplifié (vs PCI Vecteur EDIGÉO brut). Fournit les **géométries de parcelles et sections** et la clé de rattachement `id_parcelle`.
 
-**Fichiers / accès** : hébergés sur `cadastre.data.gouv.fr/data/etalab-cadastre/latest/geojson/departements/{dept}/` (pas de ressource tabulaire data.gouv directe ; GeoParquet **non publié** → on convertit le GeoJSON nous-mêmes). Acquisition : [`telechargement/preparer_cadastre.py`](../telechargement/preparer_cadastre.py) (idempotent, GeoJSON.gz → GeoParquet WKB via DuckDB spatial, couches `sections` + `parcelles` + `batiments`). Tailles 33 : parcelles 235 Mo gz / sections 9,6 Mo gz / bâtiments 82 Mo gz (→ `cadastre_batiments_33.parquet` 177 Mo, 1,43 M empreintes).
+**Fichiers / accès** : hébergés sur `cadastre.data.gouv.fr/data/etalab-cadastre/latest/geojson/departements/{dept}/` (pas de ressource tabulaire data.gouv directe ; GeoParquet **non publié** → on convertit le GeoJSON nous-mêmes). Acquisition : [`telechargement/preparer_cadastre.py`](../telechargement/preparer_cadastre.py) (idempotent, GeoJSON.gz → GeoParquet WKB via DuckDB spatial, couches `sections` + `parcelles` + `batiments` + `lieux_dits`). Tailles 33 : parcelles 235 Mo gz / sections 9,6 Mo gz / bâtiments 82 Mo gz (→ `cadastre_batiments_33.parquet` 177 Mo, 1,43 M empreintes) / lieux-dits 30 Mo gz.
 
 **Champs réels confirmés (DuckDB spatial sur 33/47)** :
 - Couche **parcelles** : `id` (= commune + préfixe + section + numéro, ex. `33063000KE0083`), `commune`, `prefixe`, `section`, `numero`, `contenance` (surface terrain m², dispo à **99,97%**), `arpente`, `created`, `updated`, géométrie. Ajout calculé à l'ingestion : `clon`/`clat` (centroïde, pour filtre bbox rapide).
 - Couche **sections** : `id` (commune + préfixe + section, ex. `33063000KE`), `commune`, `code`, géométrie — **emprise d'analyse** (cf. CONTEXT « Section cadastrale »).
 - Couche **bâtiments** : empreintes au sol (MultiPolygon), `type` (`01` bâti en dur / `02` bâti léger : garage, abri…), `nom` (souvent nul), `commune`, `created`/`updated`, `clon`/`clat`. **Pas d'id parcelle** → rattachement par intersection spatiale (empreinte ∩ parcelle). Sert à dessiner le détail intérieur d'une parcelle (maison + annexes) là où RNB n'expose qu'un point et BDNB que des attributs.
+- Couche **lieux-dits** : **polygones nommés** (`nom`, `commune` INSEE, `created`/`updated`, `clon`/`clat`). Seule maille **nommée infra-communale** (les lieux-dits BAN n'ont pas de contour, cf. §1.5). Rattachement d'un bien à sa localité par **point-dans-polygone** (`resolve_lieu_dit`, endpoint `/api/lieudit`, préfiltre bbox `clon`/`clat` puis `ST_Contains`, ~60 ms) — affiché au détail d'une vente.
 
-**Superflu / à différer** : couches `subdivisions_fiscales`, `lieux_dits`, `prefixes_sections`, `feuilles` — peu utiles à l'estimation.
+**Superflu / à différer** : couches `subdivisions_fiscales`, `prefixes_sections`, `feuilles` — peu utiles à l'estimation.
 
 **Clés de jointure (confirmées)** : `parcelles.id` ↔ DVF (`id_parcelle`) [**97,89%** des parcelles DVF logement présentes] ↔ RNB (`plots[].id`) · `sections.id` ↔ `substr(id_parcelle, 1, 10)` [**99,84%**]. Format GeoParquet (WKB) = idéal pour DuckDB spatial (`ST_GeomFromWKB`, `ST_Contains`).
 
@@ -102,6 +103,8 @@ présentes dans DVF. Les sections et bâtiments restent complets : les bâtiment
    - CP couvrant des **communes entières** → **union** des polygones communaux (exact, sans chevauchement) ;
    - **commune découpée** en plusieurs CP (grandes villes) → **partition adaptative par plus proche adresse BAN**, fusionnée par CP et **découpée à la commune**. Astuce : une coordonnée → un seul CP (le plus fréquent) pour éviter les chevauchements.
    - Le flag **`is_split`** marque les CP issus de cette partition intra-communale (vs union de communes).
+
+> **⚠ Leçon (piège des CP transfrontaliers)** : un code postal peut **chevaucher deux départements** (ex. **33220** : Sainte-Foy-la-Grande en Gironde **+** Port-Sainte-Foy en Dordogne). Le build étant **par département**, chaque dept produit alors **une part** du contour → plusieurs lignes pour le même `codePostal`. Un consommateur qui fait `WHERE codePostal = ? LIMIT 1` récupère une **moitié arbitraire** → des biens « disparaissent » (symptôme observé : la commune renvoyait 138 ventes, le CP « unique » correspondant 0). **Correctif** : agréger par `codePostal` à l'écriture finale (`ST_Union_Agg` des géométries de tous les départements), pour qu'un CP n'ait **qu'un seul contour complet**. Vaut pour tout CP à cheval (33/24, 33/47…). Plus généralement : tout artefact construit par dept mais **clé non bornée au dept** (le code postal n'encode pas le département de ses communes) doit être **dédupliqué/agrégé** au niveau national.
 
 **Champs** : `contours_communes_{dept}` = `insee` (↔ DVF `code_commune` / citycode BAN), `nom`, géométrie WKB. `contours_codes_postaux` = `codePostal` (↔ DVF `code_postal`), `nb_points`, `is_split`, géométrie WKB.
 
@@ -244,9 +247,21 @@ sur ces parcelles puis sur les `batiment_groupe_id` restants.
 ## 3.3 Adresses extraites du cadastre
 
 - **ID data.gouv** : `5bd837f2634f41112d338d46` · Organisation : data.gouv.fr (Etalab) · Licence : `lov2` · Fréquence : **annuelle** · MàJ catalogue : 2026-06-06
-- **Statut** : ⏳ À approfondir
-- **Définition** : adresses extraites du plan + fichier des parcelles bâties de la DGFiP, **source primaire de la BAN**, rattachant adresse ↔ parcelle. Formats : CSV / GeoJSON / NDJSON départementaux.
-- **Position** : utile comme **renfort de la jointure adresse↔parcelle** quand BAN ne porte pas le lien cadastral. Doublon partiel de BAN → à n'utiliser qu'en appoint.
+- **Statut** : ✅ **Intégrée (33)** — crosswalk direct parcelle↔adresse ingéré et exposé sur la carte.
+- **Définition** : adresses extraites du plan + fichier des parcelles bâties de la DGFiP, **source primaire de la BAN**, rattachant adresse ↔ parcelle (NDJSON-full, champ `codesParcelles`, porte `destinationPrincipale`). Formats : CSV / GeoJSON / NDJSON départementaux.
+- **Position** : lien **DIRECT parcelle↔adresse, sans pivot RNB** — comble le trou du pivot bâtiment (une parcelle sans bâtiment RNB adressé n'a sinon aucune adresse). C'est un **proxy d'adresse propriétaire** (adresse enregistrée SUR la parcelle), **pas l'identité** du propriétaire (qui vit dans les Fichiers Fonciers/MAJIC, accès restreint).
+
+**Spike de joignabilité (dept 33, [`spike_parcelle_adresse.py`](../spike_parcelle_adresse.py), 2026-06-12)** — couverture **parcelle → ≥1 adresse** par lien direct :
+
+| Source | Parcelles **DVF** (maison/appart) | **Toutes** parcelles cadastre |
+| --- | --- | --- |
+| BAN `cad_parcelles` seul | 28,9 % | 12,5 % |
+| Cadastre `codesParcelles` seul | **94,6 %** | 28,7 % |
+| **Fusion** | **95,5 %** | 31,9 % |
+
+> Le NDJSON cadastre est la vraie source (94,6 % des parcelles DVF), BAN n'étant qu'un supplément (+64 k parcelles sur le full). Les ~32 % « toutes parcelles » sont normaux : la majorité d'un département est du rural non bâti, sans adresse. ⚠️ Le « 16 % » de l'[ADR 0003](adr/0003-rnb-pivot-batiment.md) portait sur BAN **seul** et sur un **autre usage** (apport marginal au crosswalk DVF→RNB) — il ne contredit pas ce résultat.
+
+- **Artefact** : `data/interim/parcelle_adresse_{dept}.parquet` (`id_parcelle, numero, voie, code_postal, ville, code_insee, lon, lat, destination, source`), produit par [`telechargement/preparer_adresses_parcelle.py`](../telechargement/preparer_adresses_parcelle.py) (fusion cadastre + BAN, scoped dept, idempotent). Exposé via l'endpoint POC `/api/parcelle-adresses` (affiché au clic d'une parcelle). **Lien direct seulement** : pas d'inférence géométrique adjacent/proximité (palier « parcelle » du pattern piscines). **Harmonisation à la source** : une même adresse vue par le cadastre et par BAN (ex. « Péchauriol Est » vs « Péchauriol-est ») est dédupliquée sur une **clé canonique** numéro+voie+commune (dé-accentuée, minuscule, non-alphanumérique → espace unique, bords élagués). Cette clé ne sert qu'à la comparaison — **jamais affichée**. Pour l'affichage on garde le **libellé officiel de la BAN** quand il existe, tout en **préservant la `destination` issue du cadastre**. En immeuble, une parcelle garde toutes ses adresses **réellement distinctes**, sans désigner un lot.
 
 ## 3.4 Registre national d'immatriculation des copropriétés
 

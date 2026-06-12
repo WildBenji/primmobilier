@@ -10,7 +10,6 @@ import math
 import mimetypes
 import re
 import tempfile
-import urllib.request
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -26,9 +25,8 @@ INTERIM = ROOT / "data" / "interim"
 HOST = "127.0.0.1"
 PORT = 8765
 MIN_COMPARABLES = 5
-DEFAULT_MAX_COMPARABLES = 200
-MAX_COMPARABLES_LIMIT = 1000
-# Plafond de sécurité des points carte (payload allégé) : en pratique = « tous les points ».
+# Plafond de sécurité (payload allégé) des points carte ET de la liste : en pratique = « tout ».
+# La liste renvoie la cohorte complète triée ; le client la fenêtre (rendu DOM progressif au scroll).
 POINTS_HARD_CAP = 20000
 PARCELLE_IDS_CAP = 2000
 PARCELLE_BBOX_CAP = 4000
@@ -38,7 +36,6 @@ MAX_RADIUS_M = 20_000
 DEFAULT_HISTORY_YEARS = 5
 MIN_HISTORY_YEARS = 0
 MAX_HISTORY_YEARS = 5
-PANORAMAX_ENDPOINT = "https://panoramax.openstreetmap.fr"
 SPATIAL_INSTALLED = False
 MONO_CACHE: dict[str, Path] = {}
 MONO_CACHE_LOCK = Lock()
@@ -306,6 +303,40 @@ def price_bounds(rows: list[dict]) -> dict | None:
     }
 
 
+def surface_step(min_surface: float, max_surface: float) -> int:
+    span = max(0, max_surface - min_surface)
+    if span <= 200:
+        return 1
+    if span <= 1000:
+        return 10
+    return 50
+
+
+def surface_bounds(rows: list[dict]) -> dict | None:
+    surfaces = [float(row["surface"]) for row in rows if row.get("surface") is not None]
+    if not surfaces:
+        return None
+    raw_min = min(surfaces)
+    raw_max = max(surfaces)
+    step = surface_step(raw_min, raw_max)
+    return {
+        "min": math.floor(raw_min / step) * step,
+        "max": math.ceil(raw_max / step) * step,
+        "step": step,
+    }
+
+
+def rooms_bounds(rows: list[dict]) -> dict | None:
+    rooms = [int(row["pieces"]) for row in rows if row.get("pieces") is not None]
+    if not rooms:
+        return None
+    return {
+        "min": min(rooms),
+        "max": max(rooms),
+        "step": 1,
+    }
+
+
 def similarity_score(row: dict, target_surface: float, target_rooms: int | None, max_distance: float) -> float:
     surface_gap = abs(row["surface"] - target_surface) / target_surface if target_surface else 1
     surface_score = max(0, 1 - surface_gap / 0.30)
@@ -314,6 +345,22 @@ def similarity_score(row: dict, target_surface: float, target_rooms: int | None,
         rooms_score = max(0, 1 - abs(row["pieces"] - target_rooms) / 3)
     distance_score = max(0, 1 - row["distance_m"] / max(max_distance, 1))
     return round((0.50 * surface_score + 0.25 * rooms_score + 0.25 * distance_score) * 100, 1)
+
+
+def sorted_for_display(rows: list[dict], sort_key: str | None, sort_dir: str) -> list[dict]:
+    key = sort_key if sort_key in {"similarity", "price", "date", "surface"} else None
+    by_distance = sorted(rows, key=lambda row: (row.get("distance_m") or 0, row.get("date_mutation") or ""))
+    if not key:
+        return by_distance
+    reverse = sort_dir == "desc"
+    value_key = {
+        "similarity": "sim",
+        "price": "prix",
+        "date": "date_mutation",
+        "surface": "surface",
+    }[key]
+    missing = float("-inf") if reverse else float("inf")
+    return sorted(by_distance, key=lambda row: row.get(value_key) if row.get(value_key) is not None else missing, reverse=reverse)
 
 
 def resolve_section(dept: str, lon: float, lat: float) -> dict | None:
@@ -338,6 +385,42 @@ def resolve_section(dept: str, lon: float, lat: float) -> dict | None:
     if not row:
         return None
     return {"id": row[0], "geojson": json.loads(row[1])}
+
+
+def resolve_lieu_dit(dept: str, lon: float, lat: float) -> dict | None:
+    """Lieu-dit cadastral contenant le point (maille nommée infra-communale). Renvoie nom + commune."""
+    path = INTERIM / f"cadastre_lieux_dits_{dept}.parquet"
+    if not path.exists():
+        return None
+    con = duckdb.connect()
+    try:
+        load_spatial(con)
+        row = con.execute(
+            """
+            SELECT nom, commune
+            FROM read_parquet(?)
+            WHERE clon BETWEEN ? - 0.05 AND ? + 0.05
+              AND clat BETWEEN ? - 0.05 AND ? + 0.05
+              AND ST_Contains(ST_GeomFromWKB(geom_wkb), ST_Point(?, ?))
+            LIMIT 1
+            """,
+            [str(path), lon, lon, lat, lat, lon, lat],
+        ).fetchone()
+    finally:
+        con.close()
+    return {"nom": row[0], "commune": row[1]} if row else None
+
+
+def lieudit_rows(params: dict[str, list[str]]) -> dict:
+    """Lieu-dit cadastral d'un point (dept + lon + lat), pour enrichir le détail d'une vente."""
+    dept = params.get("dept", [""])[0]
+    if not re.fullmatch(r"\d{2,3}|2[AB]", dept or ""):
+        return {}
+    lon = as_float(params, "lon")
+    lat = as_float(params, "lat")
+    if lon is None or lat is None:
+        return {}
+    return resolve_lieu_dit(dept, lon, lat) or {}
 
 
 POSTCODE_CONTOURS_PATH = INTERIM / "contours_codes_postaux.parquet"
@@ -532,18 +615,109 @@ BATIMENT_TYPE_LABELS = {"01": "Bâti en dur", "02": "Bâti léger"}
 BATIMENT_BBOX_MARGIN_DEG = 0.002
 
 
+def _read_parcelle_geom(con: duckdb.DuckDBPyConnection, parc_path: Path, pid: str):
+    """GeoJSON (tracé) + WKB + bbox d'une parcelle, en un appel. None si absente."""
+    return con.execute(
+        """
+        SELECT ST_AsGeoJSON(g), geom_wkb, ST_XMin(g), ST_YMin(g), ST_XMax(g), ST_YMax(g)
+        FROM (SELECT geom_wkb, ST_GeomFromWKB(geom_wkb) AS g
+              FROM read_parquet(?) WHERE id = ? LIMIT 1)
+        """,
+        [str(parc_path), pid],
+    ).fetchone()
+
+
+def _parcelle_footprints(con: duckdb.DuckDBPyConnection, bat_path: Path, parc_wkb, bbox) -> list:
+    """Empreintes cadastrales intersectant une parcelle : préfiltre bbox (clon/clat = centroïde
+    bâtiment, marge généreuse) puis ST_Intersects exact (le filtre qui fait foi)."""
+    xmin, ymin, xmax, ymax = bbox
+    m = BATIMENT_BBOX_MARGIN_DEG
+    return con.execute(
+        """
+        SELECT b.type, b.created, ST_AsGeoJSON(ST_GeomFromWKB(b.geom_wkb)),
+               ST_Area_Spheroid(ST_GeomFromWKB(b.geom_wkb))
+        FROM read_parquet(?) b
+        WHERE b.clon BETWEEN ? AND ? AND b.clat BETWEEN ? AND ?
+          AND ST_Intersects(ST_GeomFromWKB(b.geom_wkb), ST_GeomFromWKB(?))
+        ORDER BY 4 DESC
+        """,
+        [str(bat_path), xmin - m, xmax + m, ymin - m, ymax + m, parc_wkb],
+    ).fetchall()
+
+
+def _batiment_feature(kind: str, idx: int, btype, created, geo: str, surface) -> dict:
+    return {
+        "type": "Feature",
+        "properties": {
+            "kind": kind,
+            "idx": idx,
+            "type": btype,
+            "type_label": BATIMENT_TYPE_LABELS.get(btype, "Bâti"),
+            "surface_m2": round(surface) if surface is not None else None,
+            "annee": str(created)[:4] if created else None,
+        },
+        "geometry": json.loads(geo),
+    }
+
+
+def _rnb_neighbour_footprints(con, dept: str, parc_full_path: Path, bat_path: Path,
+                              dvf_parcelle: str, rnb_id: str):
+    """REPLI copropriété/volume : la parcelle DVF est une *parcelle de référence* (cf. PDL des
+    fichiers fonciers) qui porte le lot/l'adresse mais PAS l'emprise du bâtiment — celui-ci est
+    sur une parcelle voisine. On retrouve cette parcelle porteuse par le `rnb_id` (déjà résolu,
+    et — garde-fou appelant — seulement en confiance HAUTE) via `rnb_plots`, en prenant la
+    parcelle de plus fort `bdg_cover_ratio` (part géométrique du bâtiment sur la parcelle ;
+    RNB avertit qu'un bâtiment peut intersecter une mauvaise parcelle → on prend la dominante).
+    Renvoie (parcelle porteuse + ses empreintes) ou None si rien de fiable.
+    """
+    plots_path = INTERIM / f"rnb_plots_service_{dept}.parquet"
+    if not plots_path.exists():
+        plots_path = INTERIM / f"rnb_plots_{dept}.parquet"
+    if not plots_path.exists():
+        return None
+    carrier = con.execute(
+        """
+        SELECT id_parcelle, TRY_CAST(bdg_cover_ratio AS DOUBLE) AS r
+        FROM read_parquet(?) WHERE rnb_id = ? AND id_parcelle <> ?
+        ORDER BY r DESC NULLS LAST LIMIT 1
+        """,
+        [str(plots_path), rnb_id, dvf_parcelle],
+    ).fetchone()
+    if not carrier or not carrier[0]:
+        return None
+    pid = carrier[0]
+    # Parcelle porteuse lue dans le cadastre COMPLET : ce n'est pas une parcelle DVF, donc
+    # absente des artefacts `*_service` réduits au graphe.
+    geom = _read_parcelle_geom(con, parc_full_path, pid)
+    if not geom:
+        return None
+    pg_json, pg_wkb, xmin, ymin, xmax, ymax = geom
+    footprints = _parcelle_footprints(con, bat_path, pg_wkb, (xmin, ymin, xmax, ymax))
+    if not footprints:
+        return None
+    return {"pid": pid, "ratio": carrier[1], "geojson": pg_json, "footprints": footprints}
+
+
 def batiments_rows(params: dict[str, list[str]]) -> dict:
     """Empreintes des bâtiments cadastraux rattachés à une parcelle (intersection spatiale).
 
     Renvoie une FeatureCollection : le contour de la parcelle (`kind=parcelle`) + chaque
     bâtiment (`kind=batiment`, `type_label`, `surface_m2`). Permet de dessiner maison /
     garage / annexes distinctement plutôt que le seul contour parcellaire.
+
+    REPLI : si la parcelle DVF n'a aucune empreinte ET qu'un `rnb_id` fiable est fourni
+    (gate confiance HAUTE côté client), on dessine le bâtiment RNB rattaché, porté par sa
+    parcelle voisine (`kind=parcelle_porteuse` + `kind=batiment_rnb_voisin`), avec `fallback_rnb`
+    et `parcelle_porteuse` au niveau racine. Cas des copropriétés / divisions en volumes.
     """
     empty = {"type": "FeatureCollection", "features": []}
     dept = params.get("dept", [""])[0]
     parcelle = params.get("parcelle", [""])[0]
+    rnb_id = params.get("rnb_id", [""])[0]
     if not re.fullmatch(r"\d{2,3}|2[AB]", dept) or not re.fullmatch(r"[0-9A-Z]{10,16}", parcelle or ""):
         return empty
+    if rnb_id and not re.fullmatch(r"[0-9A-Z]{12}", rnb_id):  # garde-fou format identifiant RNB
+        rnb_id = ""
     parc_path = INTERIM / f"cadastre_parcelles_service_{dept}.parquet"
     if not parc_path.exists():
         parc_path = INTERIM / f"cadastre_parcelles_{dept}.parquet"
@@ -551,39 +725,17 @@ def batiments_rows(params: dict[str, list[str]]) -> dict:
     if not parc_path.exists() or not bat_path.exists():
         return empty
     con = duckdb.connect()
+    fallback = None
     try:
         load_spatial(con)
-        # Parcelle lue une seule fois : GeoJSON pour le tracé, WKB + bbox pour la jointure.
-        parc = con.execute(
-            """
-            SELECT ST_AsGeoJSON(g), geom_wkb,
-                   ST_XMin(g), ST_YMin(g), ST_XMax(g), ST_YMax(g)
-            FROM (SELECT geom_wkb, ST_GeomFromWKB(geom_wkb) AS g
-                  FROM read_parquet(?) WHERE id = ? LIMIT 1)
-            """,
-            [str(parc_path), parcelle],
-        ).fetchone()
+        parc = _read_parcelle_geom(con, parc_path, parcelle)
         if not parc:
             return empty
         parc_geojson, parc_wkb, xmin, ymin, xmax, ymax = parc
-        # Préfiltre bbox élargi (clon/clat = centroïde du bâtiment) puis intersection exacte.
-        # La marge évite de jeter un bâtiment qui déborde la parcelle (footprint plus grand
-        # que la parcelle, mitoyens…) dont le centroïde tombe hors de la bbox parcelle.
-        # Le ST_Intersects reste le filtre exact : la marge ne fait qu'élargir les candidats.
-        m = BATIMENT_BBOX_MARGIN_DEG
-        rows = con.execute(
-            """
-            SELECT b.type, b.created,
-                   ST_AsGeoJSON(ST_GeomFromWKB(b.geom_wkb)),
-                   ST_Area_Spheroid(ST_GeomFromWKB(b.geom_wkb))
-            FROM read_parquet(?) b
-            WHERE b.clon BETWEEN ? AND ?
-              AND b.clat BETWEEN ? AND ?
-              AND ST_Intersects(ST_GeomFromWKB(b.geom_wkb), ST_GeomFromWKB(?))
-            ORDER BY 4 DESC
-            """,
-            [str(bat_path), xmin - m, xmax + m, ymin - m, ymax + m, parc_wkb],
-        ).fetchall()
+        rows = _parcelle_footprints(con, bat_path, parc_wkb, (xmin, ymin, xmax, ymax))
+        if not rows and rnb_id:
+            parc_full = INTERIM / f"cadastre_parcelles_{dept}.parquet"
+            fallback = _rnb_neighbour_footprints(con, dept, parc_full, bat_path, parcelle, rnb_id)
     finally:
         con.close()
     features = [{
@@ -592,19 +744,54 @@ def batiments_rows(params: dict[str, list[str]]) -> dict:
         "geometry": json.loads(parc_geojson),
     }]
     for i, (btype, created, geo, surface) in enumerate(rows):
+        features.append(_batiment_feature("batiment", i + 1, btype, created, geo, surface))
+    result = {"type": "FeatureCollection", "features": features}
+    if not rows and fallback:
         features.append({
             "type": "Feature",
-            "properties": {
-                "kind": "batiment",
-                "idx": i + 1,
-                "type": btype,
-                "type_label": BATIMENT_TYPE_LABELS.get(btype, "Bâti"),
-                "surface_m2": round(surface) if surface is not None else None,
-                "annee": str(created)[:4] if created else None,
-            },
-            "geometry": json.loads(geo),
+            "properties": {"kind": "parcelle_porteuse", "id": fallback["pid"]},
+            "geometry": json.loads(fallback["geojson"]),
         })
-    return {"type": "FeatureCollection", "features": features}
+        for i, (btype, created, geo, surface) in enumerate(fallback["footprints"]):
+            features.append(_batiment_feature("batiment_rnb_voisin", i + 1, btype, created, geo, surface))
+        result["fallback_rnb"] = True
+        result["parcelle_porteuse"] = fallback["pid"]
+    return result
+
+
+def parcelle_adresses_rows(params: dict[str, list[str]]) -> dict:
+    """Adresses rattachées à une parcelle par lien cadastral DIRECT (codesParcelles + BAN
+    cad_parcelles), indépendamment du pivot RNB — cf. data/interim/parcelle_adresse_{dept}.
+
+    Proxy d'adresse propriétaire : l'adresse enregistrée SUR la parcelle. En immeuble une
+    parcelle peut en porter plusieurs (sans désigner un lot précis). L'open data n'encode pas
+    l'identité du propriétaire (Fichiers Fonciers/MAJIC) — d'où `fiabilite` = proxy, pas certitude.
+    """
+    empty = {"parcelle": "", "adresses": []}
+    dept = params.get("dept", [""])[0]
+    parcelle = params.get("parcelle", [""])[0]
+    if not re.fullmatch(r"\d{2,3}|2[AB]", dept) or not re.fullmatch(r"[0-9A-Z]{10,16}", parcelle or ""):
+        return empty
+    path = INTERIM / f"parcelle_adresse_{dept}.parquet"
+    if not path.exists():
+        return empty
+    con = duckdb.connect()
+    try:
+        rows = con.execute(
+            """
+            SELECT numero, voie, code_postal, ville, destination, source, lon, lat
+            FROM read_parquet(?) WHERE id_parcelle = ?
+            ORDER BY source, voie, numero
+            """,
+            [str(path), parcelle],
+        ).fetchall()
+    finally:
+        con.close()
+    adresses = [{
+        "numero": r[0], "voie": r[1], "code_postal": r[2], "ville": r[3],
+        "destination": r[4], "source": r[5], "lon": r[6], "lat": r[7],
+    } for r in rows]
+    return {"parcelle": parcelle, "adresses": adresses}
 
 
 def comparable_rows(params: dict[str, list[str]]) -> dict:
@@ -621,8 +808,8 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
     history_min_years, history_max_years = history_window_from_params(params)
     radius_m = as_int(params, "radius_m", DEFAULT_RADIUS_M) or DEFAULT_RADIUS_M
     radius_m = min(MAX_RADIUS_M, max(MIN_RADIUS_M, radius_m))
-    max_comparables = as_int(params, "max_comparables", DEFAULT_MAX_COMPARABLES) or DEFAULT_MAX_COMPARABLES
-    max_comparables = min(MAX_COMPARABLES_LIMIT, max(MIN_COMPARABLES, max_comparables))
+    sort_key = params.get("sort_key", [""])[0] or None
+    sort_dir = params.get("sort_dir", ["desc"])[0]
     if scope_mode not in {"radius", "cadastre", "postcode", "city"}:
         scope_mode = "radius"
 
@@ -653,6 +840,7 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
     bdnb_select = ", ".join(optional_comp_col(name) for name in [
         "batiment_groupe_id",
         "resolution_statut",
+        "confiance",
         "usage_principal_bdnb_open",
         "usage_niveau_1_txt",
         "nb_log",
@@ -801,7 +989,7 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
         r["uid"] = uid
         r["sim"] = similarity_score(r, surface, rooms, max_distance)
     points = cohort_sorted[:POINTS_HARD_CAP]      # carte : tous les points (allégés)
-    detailed = cohort_sorted[:max_comparables]    # liste : plafonnée, détaillée
+    detailed = sorted_for_display(cohort_sorted, sort_key, sort_dir)[:POINTS_HARD_CAP]    # liste : cohorte COMPLÈTE triée globalement (le client fenêtre l'affichage)
 
     return {
         "target": {
@@ -874,6 +1062,7 @@ def comparable_rows(params: dict[str, list[str]]) -> dict:
                 "rnb_id": r["rnb_id"],
                 "batiment_groupe_id": r["batiment_groupe_id"],
                 "resolution_statut": r["resolution_statut"],
+                "confiance": r["confiance"],
                 "usage_principal_bdnb_open": r["usage_principal_bdnb_open"],
                 "usage_niveau_1_txt": r["usage_niveau_1_txt"],
                 "nb_log": r["nb_log"],
@@ -914,10 +1103,14 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     history_min_years, history_max_years = history_window_from_params(params)
     radius_m = as_int(params, "radius_m", DEFAULT_RADIUS_M) or DEFAULT_RADIUS_M
     radius_m = min(MAX_RADIUS_M, max(MIN_RADIUS_M, radius_m))
-    max_biens = as_int(params, "max_comparables", DEFAULT_MAX_COMPARABLES) or DEFAULT_MAX_COMPARABLES
-    max_biens = min(MAX_COMPARABLES_LIMIT, max(MIN_COMPARABLES, max_biens))
-    requested = [c for c in (params.get("types", [""])[0] or "").split(",") if c in MARKET_BOUNDS]
-    wanted = set(requested) if requested else set(MARKET_CATEGORIES)
+    sort_key = params.get("sort_key", [""])[0] or None
+    sort_dir = params.get("sort_dir", ["desc"])[0]
+    selected_type = params.get("type", [""])[0] or None
+    if selected_type not in MARKET_BOUNDS:
+        requested = [c for c in (params.get("types", [""])[0] or "").split(",") if c in MARKET_BOUNDS]
+        selected_type = requested[0] if len(requested) == 1 else None
+    wanted = {selected_type} if selected_type else set(MARKET_CATEGORIES)
+    pieces_filter_enabled = selected_type in {"Maison", "Appartement"}
 
     if scope_mode not in {"radius", "cadastre", "postcode", "city"}:
         scope_mode = "radius"
@@ -959,6 +1152,7 @@ def market_rows(params: dict[str, list[str]]) -> dict:
         "rnb_id",
         "batiment_groupe_id",
         "resolution_statut",
+        "confiance",
         "usage_principal_bdnb_open",
         "usage_niveau_1_txt",
         "nb_log",
@@ -1008,6 +1202,19 @@ def market_rows(params: dict[str, list[str]]) -> dict:
         parcelle_expr="c.id_parcelle",
     )
     autres_filters = ["d.type_local IS NULL OR d.type_local IN ('Dépendance', 'Local industriel. commercial ou assimilé')"]
+    if selected_type in {"Maison", "Appartement"}:
+        logement_filters.append("c.type_local = ?")
+        logement_args.append(selected_type)
+        autres_filters.append("FALSE")
+    elif selected_type == "Terrain":
+        logement_filters.append("FALSE")
+        autres_filters.append("d.type_local IS NULL")
+    elif selected_type == "Dépendance":
+        logement_filters.append("FALSE")
+        autres_filters.append("d.type_local = 'Dépendance'")
+    elif selected_type == "Local":
+        logement_filters.append("FALSE")
+        autres_filters.append("d.type_local = 'Local industriel. commercial ou assimilé'")
     bounds_filters = []
     bounds_args: list[object] = []
     for category in MARKET_CATEGORIES:
@@ -1021,6 +1228,10 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     # Filtre prix total (€) optionnel — appliqué après calcul des bornes réelles du cohort.
     prix_min = as_float(params, "prix_min")
     prix_max = as_float(params, "prix_max")
+    surface_min = as_float(params, "surface_min")
+    surface_max = as_float(params, "surface_max")
+    pieces_min = as_int(params, "pieces_min") if pieces_filter_enabled else None
+    pieces_max = as_int(params, "pieces_max") if pieces_filter_enabled else None
     if scope_mode == "radius":
         final_filters.append("distance_m <= ?")
         final_args.append(radius_m)
@@ -1143,6 +1354,8 @@ def market_rows(params: dict[str, list[str]]) -> dict:
 
     base_cohort = filter_history_window(all_rows, history_min_years, history_max_years, reference_date)
     bounds = price_bounds(base_cohort)
+    surf_bounds = surface_bounds(base_cohort)
+    piece_bounds = rooms_bounds(base_cohort) if pieces_filter_enabled else None
     if not base_cohort:
         return {
             "error": f"Aucune vente dans l'emprise « {scope} » sur {history_window_label(history_min_years, history_max_years)} pour les types choisis.",
@@ -1151,21 +1364,29 @@ def market_rows(params: dict[str, list[str]]) -> dict:
                 "scope": scope,
                 "history": history_window_label(history_min_years, history_max_years),
                 "price_bounds": bounds,
+                "surface_bounds": surf_bounds,
+                "pieces_bounds": piece_bounds,
             },
         }
     cohort = [
         r for r in base_cohort
         if (prix_min is None or r["prix"] >= prix_min)
         and (prix_max is None or r["prix"] <= prix_max)
+        and (surface_min is None or r["surface"] >= surface_min)
+        and (surface_max is None or r["surface"] <= surface_max)
+        and (pieces_min is None or r.get("pieces") is not None and r["pieces"] >= pieces_min)
+        and (pieces_max is None or r.get("pieces") is not None and r["pieces"] <= pieces_max)
     ]
     if not cohort:
         return {
-            "error": f"Aucune vente dans l'emprise « {scope} » sur {history_window_label(history_min_years, history_max_years)} pour cette plage de prix.",
+            "error": f"Aucune vente dans l'emprise « {scope} » sur {history_window_label(history_min_years, history_max_years)} pour ces filtres.",
             "summary": {
                 "count": 0,
                 "scope": scope,
                 "history": history_window_label(history_min_years, history_max_years),
                 "price_bounds": bounds,
+                "surface_bounds": surf_bounds,
+                "pieces_bounds": piece_bounds,
             },
         }
 
@@ -1190,13 +1411,14 @@ def market_rows(params: dict[str, list[str]]) -> dict:
     for uid, r in enumerate(cohort):
         r["uid"] = uid
     points = cohort[:POINTS_HARD_CAP]      # carte : tous les points (allégés)
-    detailed = cohort[:max_biens]          # liste : plafonnée, détaillée
+    detailed = sorted_for_display(cohort, sort_key, sort_dir)[:POINTS_HARD_CAP]          # liste : cohorte COMPLÈTE triée globalement (le client fenêtre l'affichage)
 
     return {
         "target": {
             "dept": dept, "lon": lon, "lat": lat,
             "postcode": postcode, "citycode": citycode,
             "scope_mode": scope_mode, "radius_m": radius_m,
+            "type": selected_type,
             "history_min_years": history_min_years, "history_max_years": history_max_years,
             "section": section,
         },
@@ -1208,6 +1430,8 @@ def market_rows(params: dict[str, list[str]]) -> dict:
             "list": len(detailed),
             "types": types_summary,
             "price_bounds": bounds,
+            "surface_bounds": surf_bounds,
+            "pieces_bounds": piece_bounds,
         },
         "points": [
             {
@@ -1253,6 +1477,7 @@ def market_rows(params: dict[str, list[str]]) -> dict:
                 "rnb_id": r["rnb_id"],
                 "batiment_groupe_id": r["batiment_groupe_id"],
                 "resolution_statut": r["resolution_statut"],
+                "confiance": r["confiance"],
                 "usage_principal_bdnb_open": r["usage_principal_bdnb_open"],
                 "usage_niveau_1_txt": r["usage_niveau_1_txt"],
                 "nb_log": r["nb_log"],
@@ -1269,23 +1494,6 @@ def market_rows(params: dict[str, list[str]]) -> dict:
             for r in detailed
         ],
     }
-
-
-def panoramax_rows(params: dict[str, list[str]]) -> dict:
-    lon = as_float(params, "lon")
-    lat = as_float(params, "lat")
-    if lon is None or lat is None:
-        return {"features": []}
-    radius_m = 60
-    d_lat = radius_m / 111_320
-    d_lon = radius_m / (111_320 * math.cos(math.radians(lat)))
-    bbox = f"{lon - d_lon},{lat - d_lat},{lon + d_lon},{lat + d_lat}"
-    url = f"{PANORAMAX_ENDPOINT}/api/search?bbox={bbox}&limit=12"
-    try:
-        with urllib.request.urlopen(url, timeout=8) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except Exception:
-        return {"features": []}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1312,9 +1520,10 @@ class Handler(BaseHTTPRequestHandler):
             "/api/market": market_rows,
             "/api/parcelles": parcelles_rows,
             "/api/batiments": batiments_rows,
-            "/api/panoramax": panoramax_rows,
+            "/api/parcelle-adresses": parcelle_adresses_rows,
             "/api/codepostal": postcode_rows,
             "/api/commune": commune_rows,
+            "/api/lieudit": lieudit_rows,
             "/api/scope-communes": scope_communes_rows,
         }
         fn = api.get(parsed.path)

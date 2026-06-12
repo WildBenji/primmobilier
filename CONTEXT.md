@@ -104,6 +104,10 @@ _Avoid_: texte d'adresse brut, adresse non geocodee
 Identifiant cadastral fourni avec une adresse resolue BAN, utilise pour rejoindre directement le Cadastre quand il est disponible.
 _Avoid_: jointure spatiale obligatoire, recherche cadastrale separee
 
+**Adresse parcellaire**:
+Adresse rattachee a une parcelle par lien cadastral direct (codesParcelles du cadastre fusionnes aux cad_parcelles de la BAN), affichee dans le detail comme proxy de l'adresse du proprietaire. Independante du pivot batiment RNB : couvre aussi les parcelles sans batiment adresse. Ce n'est ni l'identite du proprietaire (Fichiers Fonciers/MAJIC, hors open data) ni une supposition de proximite spatiale.
+_Avoid_: identite du proprietaire, proprietaire de la parcelle, adresse du bien cible, plus proche adresse
+
 **Emprise par distance**:
 Emprise d'analyse definie par un rayon autour des coordonnees de l'adresse resolue.
 _Avoid_: code postal, commune, section cadastrale

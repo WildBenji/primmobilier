@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.5.0 - 2026-06-12
+
+- **Adresse parcellaire** : nouveau lien **direct** parcelle↔adresse (adresses extraites du cadastre `codesParcelles` + BAN `cad_parcelles`, fusionnées et harmonisées à la source pour dédupliquer les doublons inter-sources). Affiché au clic d'un comparable comme **proxy de l'adresse propriétaire** (jamais son identité), avec l'adresse officielle BAN privilégiée et un « ? » qui en explique l'intérêt face à l'adresse de vente DVF. Couvre aussi les parcelles sans bâtiment RNB adressé (94,6 % des parcelles DVF sur le 33, mesuré par un spike de joignabilité).
+- **Résultats à défilement infini** : le panneau de droite remplit automatiquement l'écran puis charge davantage de comparables au défilement, au lieu d'un champ « Max » qui pouvait figer l'application en demandant des milliers de cartes d'un coup. Le tri reste calculé sur **toute** la cohorte, pas seulement les résultats affichés.
+- **Bâti cadastral — repli copropriété** : quand la parcelle de la vente est une **parcelle de référence** de copropriété / division en volumes (elle porte le lot et l'adresse mais aucune empreinte bâtie), la fiche affiche désormais le **bâtiment réel porté par la parcelle voisine**, identifié via le RNB en confiance haute, avec un « i » qui explique pourquoi. Messages d'indisponibilité du cadastre clarifiés (erreur technique transitoire vs parcelle absente du plan cadastral) ; le message « terrain nu / jardin » trompeur est corrigé.
+
+## v1.4.0 - 2026-06-11
+
+- **Exploration plus complète** : le type de bien passe sur un menu cohérent avec « Fond de carte », avec bornes naturelles par emprise pour le prix, la surface et les pièces. Les pièces sont désactivées pour les catégories où elles n'ont pas de sens.
+- **Résultats cohérents à grande échelle** : le tri est appliqué côté serveur sur toute la cohorte avant limitation d'affichage; vider `Max` prend désormais le total disponible, avec un plafond applicatif aligné sur le plafond de sécurité des points.
+- **Panneaux plus propres** : le panneau droit disparaît entièrement quand il est replié, les contrôles MapLibre passent derrière le panneau gauche, et la sélection d'un comparable est promue temporairement en haut avec une animation plus fluide.
+- **Cadastre Dordogne reconstruit** : les données locales du département 24 ont été reconstruites avec les couches cadastre Etalab, rétablissant la résolution parcellaire à Sarlat-la-Canéda.
+- **Panoramax retiré** : suppression des appels, panneaux et rendus de vue rue pour réduire le bruit visuel et simplifier l'application.
+
+## v1.3.0 - 2026-06-11
+
+- **Future map shell** : UI réorganisée autour de deux docks stables — panneau gauche (recherche/estimation) et dock droit (résultats) — tous deux escamotables. La carte reste le canvas principal en arrière-plan.
+- **Détail inline** : le détail d'un comparable se déplie directement dans sa carte dans la liste (plus de colonne latérale). Tick « ✓ consulté » sur les fiches déjà vues.
+- **Contrôles de carte intégrés** : sélecteurs de fond de carte et grille cadastre déplacés dans le panneau gauche (plus de `position: fixed` en bas à droite).
+- **Synchronisation carte ↔ liste** : le survol d'un point sur la carte illumine le résultat correspondant dans la liste et y scroll automatiquement.
+- **Chip ventes interactif** : le compteur de ventes devient un bouton qui déplie/replie les statistiques (accoléon avec le détail d'emprise).
+- **Mobile adapté** : docks empilés en haut/bas avec onglets de dépliage, grille détail en une seule colonne.
+
+## v1.2.0 - 2026-06-11
+
+- **Acquisition départementale complète** : `preparer_donnees.py` devient le point d'entrée unique pour DVF, RNB, BDNB, BAN, contours communes, COG et cadastre Etalab (sections, parcelles, bâtiments, lieux-dits), avec vérification finale bloquante des artefacts attendus avant construction.
+- **Téléchargements robustes et partagés** : nouveau helper `telechargement/_telechargement.py` avec écriture atomique et retry exponentiel, utilisé par les modules d'acquisition communes, cadastre et passage communes.
+- **Contours codes postaux complets** : agrégation finale par `codePostal` via union géométrique, pour éviter les contours partiels quand un code postal traverse plusieurs départements traités.
+- **Détails cartographiques enrichis** : endpoint `/api/lieudit` et affichage du lieu-dit cadastral dans la fiche d'une vente ; les détails d'emprise commune/code postal se comportent en accordéon et replient temporairement les stats pour réduire la surcharge visuelle.
+- **Documentation pipeline/source** : mise à jour du flux d'acquisition, des artefacts garantis, des lieux-dits cadastraux et du piège des codes postaux trans-départementaux.
+
 ## v1.1.0 - 2026-06-11
 
 - **Emprises géographiques sur contours IGN locaux** : contours communes figés depuis geo.api (`preparer_communes.py`) et contours codes postaux hybrides (union de communes + partition intra-communale par plus proche adresse BAN) remplaçant le dataset « contours calculés » 2021 débordant. Filtrage **géométrique côté serveur** (`ST_Within` sur le polygone de l'emprise) : stats, compteur et carte alignés sur l'emprise réellement tracée ; le front dessine l'emprise depuis le serveur (`/api/commune`, `/api/codepostal`), plus de dépendance runtime à geo.api ni de rognage point-in-polygon côté client.

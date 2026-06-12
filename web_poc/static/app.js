@@ -2,11 +2,9 @@ const addressInput = document.querySelector("#address");
 const suggestions = document.querySelector("#suggestions");
 const statusEl = document.querySelector("#status");
 const resultEl = document.querySelector("#result");
-const targetStreetView = document.querySelector("#targetStreetView");
 const estimateBtn = document.querySelector("#estimate");
 const resetBtn = document.querySelector("#reset");
 const estimationPanel = document.querySelector("#estimationPanel");
-const toggleEstimation = document.querySelector("#toggleEstimation");
 const expandEstimation = document.querySelector("#expandEstimation");
 const baseLayerMenu = document.querySelector("#baseLayerMenu");
 const baseLayerLabel = document.querySelector("#baseLayerLabel");
@@ -17,11 +15,7 @@ const tableMeta = document.querySelector("#tableMeta");
 const comparableDetail = document.querySelector("#comparableDetail");
 const detailBody = document.querySelector("#detailBody");
 const closeDetail = document.querySelector("#closeDetail");
-const streetViewPanel = document.querySelector("#streetViewPanel");
-const streetViewBody = document.querySelector("#streetViewBody");
-const closeStreetView = document.querySelector("#closeStreetView");
 const tableWrap = document.querySelector(".table-wrap");
-const toggleComparables = document.querySelector("#toggleComparables");
 const expandComparables = document.querySelector("#expandComparables");
 const sortMenu = document.querySelector(".sort-menu");
 const sortToggle = document.querySelector("#sortToggle");
@@ -38,23 +32,39 @@ const zoneToggle = document.querySelector("#zoneToggle");
 const modeButtons = document.querySelectorAll(".mode-control button");
 const estimationFields = document.querySelector("#estimationFields");
 const explorationFilters = document.querySelector("#explorationFilters");
-const typeChips = document.querySelectorAll("#explorationFilters button");
+const marketTypeMenu = document.querySelector("#marketTypeMenu");
+const marketTypeLabel = document.querySelector("#marketTypeLabel");
+const marketTypeButtons = document.querySelectorAll("[data-market-type]");
 const priceControl = document.querySelector("#priceControl");
 const priceMinInput = document.querySelector("#priceMin");
 const priceMaxInput = document.querySelector("#priceMax");
 const priceLabel = document.querySelector("#priceLabel");
 const priceScaleMin = document.querySelector("#priceScaleMin");
 const priceScaleMax = document.querySelector("#priceScaleMax");
+const surfaceControl = document.querySelector("#surfaceControl");
+const surfaceMinInput = document.querySelector("#surfaceMin");
+const surfaceMaxInput = document.querySelector("#surfaceMax");
+const surfaceLabel = document.querySelector("#surfaceLabel");
+const surfaceScaleMin = document.querySelector("#surfaceScaleMin");
+const surfaceScaleMax = document.querySelector("#surfaceScaleMax");
+const roomsControl = document.querySelector("#roomsControl");
+const roomsMinInput = document.querySelector("#roomsMin");
+const roomsMaxInput = document.querySelector("#roomsMax");
+const roomsLabel = document.querySelector("#roomsLabel");
+const roomsScaleMin = document.querySelector("#roomsScaleMin");
+const roomsScaleMax = document.querySelector("#roomsScaleMax");
 const marketResult = document.querySelector("#marketResult");
 const marketStats = document.querySelector("#marketStats");
+const estimationStats = document.querySelector("#estimationStats");
 const marketCount = document.querySelector("#marketCount");
+const marketSalesChip = document.querySelector("#marketSalesChip");
 const marketScope = document.querySelector("#marketScope");
 const scopeChip = document.querySelector("#scope");
+const salesChip = document.querySelector("#salesChip");
 const scopeDetails = document.querySelector("#scopeDetails");
 const marketScopeDetails = document.querySelector("#marketScopeDetails");
 const addressLabel = document.querySelector("#addressLabel");
-const maxComparablesInput = document.querySelector("#maxComparables");
-const limitControl = document.querySelector("#limitControl");
+const MIN_COMPARABLES = 5;
 const radiusSteps = [100, 150, 200, 300, 400, 500, 1000, 1500, 2000, 3000, 4000, 5000, 10000, 20000];
 const MARKET_CATEGORIES = ["Maison", "Appartement", "Terrain", "Dépendance", "Local"];
 const CATEGORY_COLORS = {
@@ -64,12 +74,21 @@ const CATEGORY_COLORS = {
   "Dépendance": "#9a5b9a",
   Local: "#c4472f"
 };
-const PANORAMAX_ENDPOINT = "https://panoramax.openstreetmap.fr";
-const streetViewCache = new Map();
-
 let selectedAddress = null;
 let targetMarker = null;
 let currentComparables = [];
+let currentComparablesTotal = null;
+// Fenêtrage de la liste : on ne rend dans le DOM qu'une fenêtre [0, renderedCount) de la cohorte
+// (qui, elle, est entièrement en mémoire et triée globalement). Rendre des milliers de cartes
+// d'un coup fait planter le navigateur (reflow). On remplit le panneau visible puis on charge
+// davantage au scroll, via un IntersectionObserver sur une sentinelle en bas de liste.
+const SCROLL_BATCH = 20;        // cartes ajoutées à chaque chargement au scroll
+const MAX_INITIAL_CARDS = 30;   // plafond du lot initial (sinon = ce que le panneau peut contenir)
+let renderedCount = 0;
+let measuredCardHeight = 0;     // hauteur réelle d'une carte, mesurée au 1er rendu (auto-fit)
+let listSentinel = null;
+let listObserver = null;
+let selectedMarketType = "";
 let searchTimer = null;
 let radiusTimer = null;
 let historyTimer = null;
@@ -81,19 +100,30 @@ let selectedHistoryMinYears = 0;
 let selectedHistoryMaxYears = 5;
 let selectedComparableUid = null;
 let lastSelectedUid = null;
+const viewedComparableUids = new Set();
 let selectedAddressSeq = 0;
 let comparableSortKey = "similarity";
 let comparableSortDirection = "desc";
 let comparableSortTouched = false;
 let selectedMode = "estimation";
-let activeCategories = new Set(MARKET_CATEGORIES);
 let runSeq = 0;
 const DEFAULT_PRICE_BOUNDS = { min: 0, max: 1000000, step: 10000 };
+const DEFAULT_SURFACE_BOUNDS = { min: 0, max: 300, step: 1 };
+const DEFAULT_ROOMS_BOUNDS = { min: 1, max: 8, step: 1 };
 let priceBounds = { ...DEFAULT_PRICE_BOUNDS };
+let surfaceBounds = { ...DEFAULT_SURFACE_BOUNDS };
+let roomsBounds = { ...DEFAULT_ROOMS_BOUNDS };
 let selectedPriceMin = priceBounds.min;
 let selectedPriceMax = priceBounds.max;
+let selectedSurfaceMin = surfaceBounds.min;
+let selectedSurfaceMax = surfaceBounds.max;
+let selectedRoomsMin = roomsBounds.min;
+let selectedRoomsMax = roomsBounds.max;
 let priceFilterTouched = false;
-let priceTimer = null;
+let surfaceFilterTouched = false;
+let roomsFilterTouched = false;
+let marketFilterTimer = null;
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 const map = new maplibregl.Map({
   container: "map",
@@ -233,6 +263,29 @@ const map = new maplibregl.Map({
             ["match", ["get", "type"], "02", "#b8741a", "#a83523"]],
           "line-width": ["case", ["boolean", ["feature-state", "hover"], false], 3, 1.2]
         }
+      },
+      {
+        // Repli copropriété : contour de la parcelle PORTEUSE voisine (atténué, distinct du violet parcelle DVF).
+        id: "parcelle-detail-porteuse-outline",
+        type: "line",
+        source: "parcelleDetail",
+        filter: ["==", ["get", "kind"], "parcelle_porteuse"],
+        paint: { "line-color": "#1f8a8a", "line-width": 1.6, "line-dasharray": [1, 2], "line-opacity": 0.75 }
+      },
+      {
+        // Bâtiment RNB rattaché, porté par la parcelle voisine : teal atténué, ≠ rouge/orange du bâti propre.
+        id: "parcelle-detail-voisin-fill",
+        type: "fill",
+        source: "parcelleDetail",
+        filter: ["==", ["get", "kind"], "batiment_rnb_voisin"],
+        paint: { "fill-color": "#1f8a8a", "fill-opacity": 0.28 }
+      },
+      {
+        id: "parcelle-detail-voisin-line",
+        type: "line",
+        source: "parcelleDetail",
+        filter: ["==", ["get", "kind"], "batiment_rnb_voisin"],
+        paint: { "line-color": "#176b6b", "line-width": 1.2, "line-dasharray": [2, 1], "line-opacity": 0.85 }
       },
       {
         id: "comparables-heat",
@@ -415,7 +468,8 @@ function setBatiHover(id) {
 // Dessine la parcelle + ses bâtiments cadastraux du comparable sélectionné et
 // remplit la sous-section « Bâti cadastral » du détail.
 async function loadComparableBatiments(row) {
-  const container = document.querySelector("#detailBatiments");
+  const container = document.querySelector(`.comparable-detail[data-uid="${CSS.escape(String(row.uid))}"] #detailBatiments`)
+    || document.querySelector("#detailBatiments");
   const dept = currentDept();
   if (!dept || !row.id_parcelle) {
     setParcelleDetail(null);
@@ -425,6 +479,10 @@ async function loadComparableBatiments(row) {
   const url = new URL("/api/batiments", window.location.origin);
   url.searchParams.set("dept", dept);
   url.searchParams.set("parcelle", row.id_parcelle);
+  // Garde-fou repli copropriété : on ne transmet le rnb_id (→ bâti de la parcelle voisine) que
+  // si l'identification du bâtiment est en confiance HAUTE — pas les rattachements spatiaux
+  // faibles, justement ceux où RNB avertit qu'un bâtiment peut viser une mauvaise parcelle.
+  if (row.rnb_id && row.confiance === "haute") url.searchParams.set("rnb_id", row.rnb_id);
   let data = null;
   try {
     const response = await fetch(url);
@@ -433,9 +491,19 @@ async function loadComparableBatiments(row) {
     data = null;
   }
   if (selectedComparableUid !== row.uid) return; // sélection changée entre-temps
-  if (!data || !data.features.length) {
+  // Deux échecs DISTINCTS, à ne pas confondre (ni avec la section « Cadastre » au-dessus, qui
+  // n'affiche que des identifiants issus du texte DVF, sans géométrie) :
+  if (!data) {
+    // Erreur technique/transitoire de lecture (réseau, serveur) — pas un fait sur le bien.
     setParcelleDetail(null);
-    if (container) container.innerHTML = `<span class="street-muted">Cadastre indisponible pour cette parcelle.</span>`;
+    if (container) container.innerHTML = `<span class="street-muted">Lecture du plan cadastral momentanément indisponible. Re-sélectionne le bien pour réessayer.</span>`;
+    return;
+  }
+  if (!data.features.length) {
+    // Parcelle introuvable dans le plan cadastral : l'identifiant vient de la vente DVF, mais sa
+    // géométrie n'existe pas dans le cadastre Etalab (couverture incomplète sur ce secteur).
+    setParcelleDetail(null);
+    if (container) container.innerHTML = `<span class="street-muted">Parcelle absente du plan cadastral Etalab (couverture incomplète ici). Son identifiant vient de la vente DVF, mais le cadastre n'en fournit pas la géométrie.</span>`;
     return;
   }
   // Id stable par bâtiment (= idx) pour piloter le feature-state au survol de la liste.
@@ -443,13 +511,34 @@ async function loadComparableBatiments(row) {
     if (f.properties.kind === "batiment") f.id = f.properties.idx;
   }
   setParcelleDetail(data);
-  const batiments = data.features.filter((f) => f.properties.kind === "batiment");
-  if (container) container.innerHTML = renderBatimentsList(batiments);
+  if (!container) return;
+  if (data.fallback_rnb) {
+    container.innerHTML = renderRnbVoisinList(data);
+  } else {
+    container.innerHTML = renderBatimentsList(data.features.filter((f) => f.properties.kind === "batiment"));
+  }
+}
+
+// Cas copropriété / division en volumes : la parcelle DVF ne porte pas le bâti (parcelle de
+// référence), on affiche le bâtiment RNB rattaché, porté par la parcelle voisine, + un « i »
+// qui explique pourquoi (sinon « pas d'empreinte » laisserait croire à un terrain nu).
+function renderRnbVoisinList(data) {
+  const voisins = data.features.filter((f) => f.properties.kind === "batiment_rnb_voisin");
+  const pid = data.parcelle_porteuse || "voisine";
+  const total = voisins.reduce((sum, b) => sum + (b.properties.surface_m2 || 0), 0);
+  const plural = voisins.length > 1 ? "s" : "";
+  const info = `Cette parcelle ne porte aucune empreinte bâtie : c'est une parcelle de référence de copropriété ou de division en volumes — le cadastre y rattache le lot et l'adresse, mais le bâtiment est physiquement sur une parcelle voisine. Le bâti ci-dessous est celui identifié pour ce bien par le Référentiel National des Bâtiments (RNB), porté par la parcelle ${pid}. On l'affiche pour ne pas laisser croire à un terrain nu ; il ne désigne pas un logement précis.`;
+  return `
+    <div class="batiments-head">Bâti rattaché via RNB · parcelle voisine ${escapeHtml(pid)} <span class="hint" data-tip="${escapeHtml(info)}">i</span></div>
+    <div class="detail-grid">
+      <div class="detail-field"><span>${voisins.length} bâtiment${plural} (sur ${escapeHtml(pid)})</span><b>${int(total)} m²</b></div>
+    </div>
+  `;
 }
 
 function renderBatimentsList(batiments) {
   if (!batiments.length) {
-    return `<span class="street-muted">Aucun bâti cadastral sur la parcelle (terrain nu / jardin).</span>`;
+    return `<span class="street-muted">Pas d'empreinte bâtie sur cette parcelle. Possible terrain nu, mais aussi micro-parcelle de copropriété ou de volume dont le bâtiment est porté par une parcelle voisine.</span>`;
   }
   const total = batiments.reduce((sum, b) => sum + (b.properties.surface_m2 || 0), 0);
   const items = batiments.map((b) => {
@@ -463,6 +552,52 @@ function renderBatimentsList(batiments) {
   const headHint = "Somme des empreintes au sol des bâtiments de la parcelle (aire au sol) — différente de la surface habitable DVF et de l'emprise BDNB, qui viennent d'autres sources.";
   return `
     <div class="batiments-head">${batiments.length} bâtiment${plural} · emprise au sol ${int(total)} m² <span class="hint" data-tip="${escapeHtml(headHint)}">?</span></div>
+    <div class="detail-grid">${items}</div>
+  `;
+}
+
+// Remplit la sous-section « Adresses (lien parcellaire) » : adresses rattachées à la parcelle
+// par lien cadastral DIRECT (codesParcelles + BAN cad_parcelles), sans pivot RNB.
+async function loadComparableAdresses(row) {
+  const container = document.querySelector(`.comparable-detail[data-uid="${CSS.escape(String(row.uid))}"] #detailAdresses`)
+    || document.querySelector("#detailAdresses");
+  const dept = currentDept();
+  if (!dept || !row.id_parcelle) {
+    if (container) container.innerHTML = `<span class="street-muted">Parcelle non renseignée.</span>`;
+    return;
+  }
+  const url = new URL("/api/parcelle-adresses", window.location.origin);
+  url.searchParams.set("dept", dept);
+  url.searchParams.set("parcelle", row.id_parcelle);
+  let data = null;
+  try {
+    const response = await fetch(url);
+    if (response.ok) data = await response.json();
+  } catch {
+    data = null;
+  }
+  if (selectedComparableUid !== row.uid) return; // sélection changée entre-temps
+  if (container) container.innerHTML = renderAdressesList(data ? data.adresses : []);
+}
+
+// Description courte affichée à l'utilisateur (le « ? » de l'en-tête). La mécanique de
+// construction (sources, fusion, harmonisation) reste dans la doc, pas ici.
+const ADRESSES_PARCELLE_HINT = "Adresse(s) officielle(s) rattachée(s) à la parcelle. Intérêt : l'adresse de la vente (DVF) affichée plus haut est souvent imprécise ou incomplète ; celle-ci est l'adresse réelle du bien, sert de point de contact probable du propriétaire (sans révéler son identité), et fait apparaître toutes les entrées d'une parcelle qui en compte plusieurs. En copropriété, plusieurs adresses possibles sans désigner un logement précis.";
+
+function renderAdressesList(adresses) {
+  if (!adresses || !adresses.length) {
+    return `<span class="street-muted">Aucune adresse rattachée à la parcelle dans l'open data.</span>`;
+  }
+  const SRC = { cadastre: "Cadastre", ban: "BAN" };
+  const items = adresses.map((a) => {
+    const ligne1 = `${a.numero || ""} ${a.voie || ""}`.trim() || "Adresse sans voie";
+    const ligne2 = `${a.code_postal || ""} ${a.ville || ""}`.trim();
+    const tags = [SRC[a.source] || a.source, a.destination].filter(Boolean).join(" · ");
+    return `<div class="detail-field adresse-item"><span>${escapeHtml(ligne1)}${ligne2 ? `<span class="street-muted">, ${escapeHtml(ligne2)}</span>` : ""}</span><b class="adresse-tag">${escapeHtml(tags)}</b></div>`;
+  }).join("");
+  const plural = adresses.length > 1 ? "s" : "";
+  return `
+    <div class="batiments-head">${adresses.length} adresse${plural} rattachée${plural}</div>
     <div class="detail-grid">${items}</div>
   `;
 }
@@ -590,18 +725,8 @@ function makeDraggable(positionedEls, handle, sourceEl) {
   });
 }
 
-const mapControls = appEl.querySelector(".map-controls");
-makeDraggable([estimationPanel, expandEstimation], estimationPanel.querySelector(".brand"), estimationPanel);
-makeDraggable([estimationPanel, expandEstimation], expandEstimation, expandEstimation);
-makeDraggable([mapControls], mapControls, mapControls);
-makeDraggable([tableWrap], tableWrap.querySelector(".list-panel .table-head"), tableWrap);
-makeDraggable([tableWrap], expandComparables, tableWrap);
-makeDraggable([streetViewPanel], streetViewPanel.querySelector(".table-head"), streetViewPanel);
-
 addressInput.addEventListener("input", () => {
   selectedAddress = null;
-  targetStreetView.hidden = true;
-  streetViewPanel.hidden = true;
   clearTimeout(searchTimer);
   const q = addressInput.value.trim();
   if (q.length < 3) {
@@ -638,24 +763,28 @@ for (const button of modeButtons) {
   });
 }
 
-for (const chip of typeChips) {
-  chip.addEventListener("click", () => {
-    const cat = chip.dataset.cat;
-    if (cat === "all") {
-      activeCategories = new Set(MARKET_CATEGORIES);
-    } else if (activeCategories.size === MARKET_CATEGORIES.length) {
-      activeCategories = new Set([cat]);
-    } else if (activeCategories.has(cat)) {
-      activeCategories.delete(cat);
-      if (activeCategories.size === 0) activeCategories = new Set(MARKET_CATEGORIES);
-    } else {
-      activeCategories.add(cat);
+function onMarketTypeChange() {
+  resetMarketFiltersForScope();
+  syncMarketFilterAvailability();
+  if (selectedAddress) runMarket();
+}
+
+for (const button of marketTypeButtons) {
+  button.addEventListener("click", () => {
+    selectedMarketType = button.dataset.marketType || "";
+    marketTypeLabel.textContent = button.textContent;
+    for (const other of marketTypeButtons) {
+      other.classList.toggle("active", other === button);
     }
-    updateChips();
-    resetPriceFilterForScope();
-    if (selectedAddress) runMarket();
+    marketTypeMenu.classList.add("just-picked");
+    button.blur();
+    onMarketTypeChange();
   });
 }
+
+marketTypeMenu.addEventListener("mouseleave", () => {
+  marketTypeMenu.classList.remove("just-picked");
+});
 
 for (const button of scopeButtons) {
   button.addEventListener("click", () => {
@@ -667,7 +796,7 @@ for (const button of scopeButtons) {
       other.classList.toggle("active", other === button);
     }
     radiusControl.hidden = selectedScope !== "radius";
-    resetPriceFilterForScope();
+    resetMarketFiltersForScope();
     if (selectedAddress) {
       updateScopeGeometry();
       run();
@@ -688,21 +817,9 @@ radiusSlider.addEventListener("input", () => {
     const [lon, lat] = selectedAddress.geometry.coordinates;
     setRadiusGeojson(lon, lat, selectedRadius);
     map.easeTo({ center: [lon, lat], zoom: zoomForRadius(selectedRadius), duration: 250 });
-    resetPriceFilterForScope();
+    resetMarketFiltersForScope();
     radiusTimer = setTimeout(run, 300);
   }
-});
-
-maxComparablesInput.addEventListener("change", () => {
-  if (selectedAddress) run();
-});
-
-maxComparablesInput.addEventListener("keydown", (event) => {
-  if (event.key !== "Enter") return;
-  event.preventDefault();
-  // On retire le focus : le `change` déclenché par le blur relance une seule fois,
-  // ça enlève le caret et évite le double-run (glitch) au clic à côté.
-  maxComparablesInput.blur();
 });
 
 function onHistoryInput() {
@@ -719,7 +836,7 @@ function onHistoryInput() {
   historyLabel.textContent = formatHistoryRange(selectedHistoryMinYears, selectedHistoryMaxYears);
   clearTimeout(historyTimer);
   if (selectedAddress) {
-    resetPriceFilterForScope();
+    resetMarketFiltersForScope();
     historyTimer = setTimeout(run, 300);
   }
 }
@@ -741,13 +858,54 @@ function onPriceInput() {
   selectedPriceMin = lo;
   selectedPriceMax = hi;
   priceLabel.textContent = priceText();
-  clearTimeout(priceTimer);
-  if (selectedMode === "exploration" && selectedAddress) {
-    priceTimer = setTimeout(runMarket, 300);
-  }
+  scheduleMarketRun();
 }
 priceMinInput.addEventListener("input", onPriceInput);
 priceMaxInput.addEventListener("input", onPriceInput);
+
+function onSurfaceInput() {
+  surfaceFilterTouched = true;
+  let lo = Number(surfaceMinInput.value);
+  let hi = Number(surfaceMaxInput.value);
+  if (lo > hi) {
+    if (document.activeElement === surfaceMinInput) hi = lo;
+    else lo = hi;
+    surfaceMinInput.value = String(lo);
+    surfaceMaxInput.value = String(hi);
+  }
+  selectedSurfaceMin = lo;
+  selectedSurfaceMax = hi;
+  surfaceLabel.textContent = surfaceText();
+  scheduleMarketRun();
+}
+surfaceMinInput.addEventListener("input", onSurfaceInput);
+surfaceMaxInput.addEventListener("input", onSurfaceInput);
+
+function onRoomsInput() {
+  if (roomsMinInput.disabled || roomsMaxInput.disabled) return;
+  roomsFilterTouched = true;
+  let lo = Number(roomsMinInput.value);
+  let hi = Number(roomsMaxInput.value);
+  if (lo > hi) {
+    if (document.activeElement === roomsMinInput) hi = lo;
+    else lo = hi;
+    roomsMinInput.value = String(lo);
+    roomsMaxInput.value = String(hi);
+  }
+  selectedRoomsMin = lo;
+  selectedRoomsMax = hi;
+  roomsLabel.textContent = roomsText();
+  scheduleMarketRun();
+}
+roomsMinInput.addEventListener("input", onRoomsInput);
+roomsMaxInput.addEventListener("input", onRoomsInput);
+
+function scheduleMarketRun() {
+  clearTimeout(marketFilterTimer);
+  if (selectedMode === "exploration" && selectedAddress) {
+    marketFilterTimer = setTimeout(runMarket, 300);
+  }
+}
 
 function resetPriceFilterForScope() {
   priceFilterTouched = false;
@@ -756,6 +914,30 @@ function resetPriceFilterForScope() {
   priceMinInput.value = String(selectedPriceMin);
   priceMaxInput.value = String(selectedPriceMax);
   priceLabel.textContent = priceText();
+}
+
+function resetSurfaceFilterForScope() {
+  surfaceFilterTouched = false;
+  selectedSurfaceMin = surfaceBounds.min;
+  selectedSurfaceMax = surfaceBounds.max;
+  surfaceMinInput.value = String(selectedSurfaceMin);
+  surfaceMaxInput.value = String(selectedSurfaceMax);
+  surfaceLabel.textContent = surfaceText();
+}
+
+function resetRoomsFilterForScope() {
+  roomsFilterTouched = false;
+  selectedRoomsMin = roomsBounds.min;
+  selectedRoomsMax = roomsBounds.max;
+  roomsMinInput.value = String(selectedRoomsMin);
+  roomsMaxInput.value = String(selectedRoomsMax);
+  roomsLabel.textContent = roomsText();
+}
+
+function resetMarketFiltersForScope() {
+  resetPriceFilterForScope();
+  resetSurfaceFilterForScope();
+  resetRoomsFilterForScope();
 }
 
 function applyPriceBounds(bounds) {
@@ -792,11 +974,150 @@ function applyPriceBounds(bounds) {
   priceLabel.textContent = priceText();
 }
 
+function applySurfaceBounds(bounds) {
+  if (!bounds || !Number.isFinite(Number(bounds.min)) || !Number.isFinite(Number(bounds.max))) {
+    return;
+  }
+  const nextMin = Number(bounds.min);
+  const nextMax = Number(bounds.max);
+  const nextStep = Math.max(1, Number(bounds.step) || DEFAULT_SURFACE_BOUNDS.step);
+  surfaceBounds = { min: nextMin, max: nextMax, step: nextStep };
+
+  for (const input of [surfaceMinInput, surfaceMaxInput]) {
+    input.min = String(nextMin);
+    input.max = String(nextMax);
+    input.step = String(nextStep);
+    input.disabled = nextMin === nextMax;
+  }
+
+  if (!surfaceFilterTouched) {
+    selectedSurfaceMin = nextMin;
+    selectedSurfaceMax = nextMax;
+  } else {
+    selectedSurfaceMin = Math.min(Math.max(selectedSurfaceMin, nextMin), nextMax);
+    selectedSurfaceMax = Math.min(Math.max(selectedSurfaceMax, nextMin), nextMax);
+    if (selectedSurfaceMin > selectedSurfaceMax) {
+      selectedSurfaceMin = nextMin;
+      selectedSurfaceMax = nextMax;
+    }
+  }
+  surfaceMinInput.value = String(selectedSurfaceMin);
+  surfaceMaxInput.value = String(selectedSurfaceMax);
+  surfaceScaleMin.textContent = `${int(nextMin)} m²`;
+  surfaceScaleMax.textContent = `${int(nextMax)} m²`;
+  surfaceLabel.textContent = surfaceText();
+}
+
+function applyRoomsBounds(bounds) {
+  const enabled = roomsFilterApplies() && bounds
+    && Number.isFinite(Number(bounds.min))
+    && Number.isFinite(Number(bounds.max));
+  roomsControl.classList.toggle("disabled", !enabled);
+  for (const input of [roomsMinInput, roomsMaxInput]) {
+    input.disabled = !enabled;
+  }
+  if (!enabled) {
+    roomsFilterTouched = false;
+    roomsLabel.textContent = "Non applicable";
+    roomsScaleMin.textContent = "-";
+    roomsScaleMax.textContent = "-";
+    return;
+  }
+
+  const nextMin = Number(bounds.min);
+  const nextMax = Number(bounds.max);
+  const nextStep = Math.max(1, Number(bounds.step) || DEFAULT_ROOMS_BOUNDS.step);
+  roomsBounds = { min: nextMin, max: nextMax, step: nextStep };
+  for (const input of [roomsMinInput, roomsMaxInput]) {
+    input.min = String(nextMin);
+    input.max = String(nextMax);
+    input.step = String(nextStep);
+    input.disabled = false;
+  }
+
+  if (!roomsFilterTouched) {
+    selectedRoomsMin = nextMin;
+    selectedRoomsMax = nextMax;
+  } else {
+    selectedRoomsMin = Math.min(Math.max(selectedRoomsMin, nextMin), nextMax);
+    selectedRoomsMax = Math.min(Math.max(selectedRoomsMax, nextMin), nextMax);
+    if (selectedRoomsMin > selectedRoomsMax) {
+      selectedRoomsMin = nextMin;
+      selectedRoomsMax = nextMax;
+    }
+  }
+  roomsMinInput.value = String(selectedRoomsMin);
+  roomsMaxInput.value = String(selectedRoomsMax);
+  roomsScaleMin.textContent = String(int(nextMin));
+  roomsScaleMax.textContent = String(int(nextMax));
+  roomsLabel.textContent = roomsText();
+}
+
 function priceText() {
   if (selectedPriceMin <= priceBounds.min && selectedPriceMax >= priceBounds.max) return "Tous";
   const lo = formatPrice(selectedPriceMin);
   const hi = formatPrice(selectedPriceMax);
   return `${lo} – ${hi}`;
+}
+
+function surfaceText() {
+  if (selectedSurfaceMin <= surfaceBounds.min && selectedSurfaceMax >= surfaceBounds.max) return "Toutes";
+  return `${int(selectedSurfaceMin)} – ${int(selectedSurfaceMax)} m²`;
+}
+
+function roomsText() {
+  if (!roomsFilterApplies()) return "Non applicable";
+  if (selectedRoomsMin <= roomsBounds.min && selectedRoomsMax >= roomsBounds.max) return "Toutes";
+  return `${int(selectedRoomsMin)} – ${int(selectedRoomsMax)}`;
+}
+
+function roomsFilterApplies() {
+  const type = currentMarketType();
+  return type === "Maison" || type === "Appartement";
+}
+
+function currentMarketType() {
+  return selectedMarketType;
+}
+
+function setMarketType(value) {
+  selectedMarketType = value || "";
+  for (const button of marketTypeButtons) {
+    const active = (button.dataset.marketType || "") === selectedMarketType;
+    button.classList.toggle("active", active);
+    if (active) marketTypeLabel.textContent = button.textContent;
+  }
+}
+
+function syncMarketFilterAvailability() {
+  applyRoomsBounds(roomsFilterApplies() ? roomsBounds : null);
+}
+
+function setResultsAvailable(available) {
+  tableWrap.classList.toggle("has-results", Boolean(available));
+  syncDrawerTabs();
+}
+
+function setStatsPanelOpen(button, panel, open) {
+  if (!button || !panel) return;
+  panel.hidden = !open;
+  button.classList.toggle("open", open);
+  button.setAttribute("aria-expanded", String(open));
+}
+
+function setCompanionPanelOpen(panel, open) {
+  if (panel === marketStats) {
+    setStatsPanelOpen(marketSalesChip, marketStats, open);
+  } else if (panel === estimationStats) {
+    setStatsPanelOpen(salesChip, estimationStats, open);
+  } else if (panel) {
+    panel.hidden = !open;
+  }
+}
+
+function syncDrawerTabs() {
+  expandEstimation.textContent = estimationPanel.classList.contains("collapsed") ? "›" : "‹";
+  expandComparables.textContent = tableWrap.classList.contains("collapsed") ? "‹" : "›";
 }
 
 function formatPrice(value) {
@@ -807,21 +1128,11 @@ function formatPrice(value) {
   return `${Math.round(value / 1000)} k€`;
 }
 
-closeDetail.addEventListener("click", () => {
-  comparableDetail.hidden = true;
-  tableWrap.classList.remove("detail-open");
-  selectComparable(null, { fit: false });
-});
-
-toggleComparables.addEventListener("click", () => {
-  selectedComparableUid = null;
-  comparableDetail.hidden = true;
-  tableWrap.classList.remove("detail-open");
-  tableWrap.classList.add("collapsed");
-});
+closeDetail.addEventListener("click", () => selectComparable(null, { fit: false }));
 
 expandComparables.addEventListener("click", () => {
-  tableWrap.classList.remove("collapsed");
+  tableWrap.classList.toggle("collapsed");
+  syncDrawerTabs();
 });
 
 sortToggle.addEventListener("click", (event) => {
@@ -844,7 +1155,11 @@ for (const button of sortButtons) {
     sortMenu.classList.remove("open");
     sortToggle.setAttribute("aria-expanded", "false");
     updateSortControl();
-    renderComparableList();
+    if (selectedAddress) {
+      run();
+    } else {
+      renderComparableList({ reset: true });
+    }
   });
 }
 
@@ -853,17 +1168,15 @@ document.addEventListener("click", () => {
   sortToggle.setAttribute("aria-expanded", "false");
 });
 
-toggleEstimation.addEventListener("click", () => {
-  estimationPanel.classList.add("collapsed");
-});
-
 expandEstimation.addEventListener("click", () => {
-  estimationPanel.classList.remove("collapsed");
+  estimationPanel.classList.toggle("collapsed");
+  syncDrawerTabs();
 });
 
-closeStreetView.addEventListener("click", () => {
-  streetViewPanel.hidden = true;
-});
+syncDrawerTabs();
+
+salesChip.addEventListener("click", () => setStatsPanelOpen(salesChip, estimationStats, estimationStats.hidden));
+marketSalesChip.addEventListener("click", () => setStatsPanelOpen(marketSalesChip, marketStats, marketStats.hidden));
 
 map.on("click", "comparables-points", (event) => {
   const feature = event.features && event.features[0];
@@ -878,8 +1191,15 @@ map.on("mouseenter", "comparables-points", () => {
   map.getCanvas().style.cursor = "pointer";
 });
 
+map.on("mousemove", "comparables-points", (event) => {
+  const feature = event.features && event.features[0];
+  if (!feature) return;
+  setComparableHover(Number(feature.properties.uid), true, { fromMap: true });
+});
+
 map.on("mouseleave", "comparables-points", () => {
   map.getCanvas().style.cursor = "";
+  setComparableHover(hoveredComparableUid, false, { fromMap: true });
 });
 
 // Double-clic SUR un comparable : zoom rapproché (pas au max) + ouverture du détail.
@@ -950,8 +1270,7 @@ function showSuggestions(features) {
 function selectAddress(feature) {
   selectedAddress = feature;
   selectedAddressSeq += 1;
-  resetPriceFilterForScope();
-  const addressSeq = selectedAddressSeq;
+  resetMarketFiltersForScope();
   addressInput.value = feature.properties.label;
   suggestions.hidden = true;
   const [lon, lat] = feature.geometry.coordinates;
@@ -959,7 +1278,6 @@ function selectAddress(feature) {
   updateScopeGeometry();
   map.flyTo({ center: [lon, lat], zoom: selectedScope === "radius" ? zoomForRadius(selectedRadius) : 13.4 });
   setStatus(`${feature.properties.postcode || ""} ${feature.properties.city || ""}`.trim());
-  loadTargetStreetView(lon, lat, feature.properties.label, addressSeq);
   run();
 }
 
@@ -979,7 +1297,6 @@ function resetAll() {
   document.querySelector("#surface").value = "65";
   document.querySelector("#rooms").value = "3";
   document.querySelector("#askedPrice").value = "";
-  maxComparablesInput.value = "200";
   radiusSlider.value = "7";
   selectedRadius = radiusSteps[7];
   radiusLabel.textContent = formatRadius(selectedRadius);
@@ -1005,18 +1322,21 @@ function resetAll() {
   zoneToggle.checked = true;
   setZoneVisibility(true);
 
-  // Mode -> estimation, chips -> tous
+  // Mode -> estimation, exploration -> tous
   selectedMode = "estimation";
   for (const b of modeButtons) {
     b.classList.toggle("active", b.dataset.mode === "estimation");
   }
-  activeCategories = new Set(MARKET_CATEGORIES);
-  updateChips();
+  setMarketType("");
 
-  // Prix -> aucune limite
+  // Filtres de marché -> aucune limite
   priceBounds = { ...DEFAULT_PRICE_BOUNDS };
+  surfaceBounds = { ...DEFAULT_SURFACE_BOUNDS };
+  roomsBounds = { ...DEFAULT_ROOMS_BOUNDS };
   applyPriceBounds(priceBounds);
-  resetPriceFilterForScope();
+  applySurfaceBounds(surfaceBounds);
+  applyRoomsBounds(null);
+  resetMarketFiltersForScope();
 
   // Adresse / marqueur / géométries
   selectedAddress = null;
@@ -1032,11 +1352,9 @@ function resetAll() {
 
   // Vide la carte, les résultats et les comparables (via applyMode), puis les panneaux annexes
   applyMode();
-  targetStreetView.hidden = true;
-  streetViewPanel.hidden = true;
 
   map.flyTo({ center: [-0.5792, 44.8378], zoom: 12 });
-  setStatus("Sélectionne une adresse en Gironde ou Lot-et-Garonne.");
+  setStatus("");
 }
 
 function applyMode() {
@@ -1045,7 +1363,9 @@ function applyMode() {
   estimationFields.hidden = explore;
   explorationFilters.hidden = !explore;
   priceControl.hidden = !explore;
-  limitControl.hidden = false;
+  surfaceControl.hidden = !explore;
+  roomsControl.hidden = !explore;
+  syncMarketFilterAvailability();
   addressLabel.textContent = explore ? "Adresse, code postal ou commune" : "Adresse";
   estimateBtn.textContent = explore ? "Explorer" : "Estimer";
   resultEl.hidden = true;
@@ -1058,6 +1378,7 @@ function applyMode() {
   comparablesList.innerHTML = "";
   setComparableGeojson([]);
   tableMeta.textContent = "Aucun calcul";
+  setResultsAvailable(false);
   tableWrap.classList.add("collapsed");
   applyMapMode();
 }
@@ -1105,18 +1426,6 @@ function applyMapMode() {
   }
 }
 
-function updateChips() {
-  const allActive = activeCategories.size === MARKET_CATEGORIES.length;
-  for (const chip of typeChips) {
-    const cat = chip.dataset.cat;
-    if (cat === "all") {
-      chip.classList.toggle("active", allActive);
-    } else {
-      chip.classList.toggle("active", !allActive && activeCategories.has(cat));
-    }
-  }
-}
-
 async function runMarket() {
   if (!selectedAddress) {
     setStatus("Choisis une adresse, un code postal ou une commune.");
@@ -1125,7 +1434,7 @@ async function runMarket() {
   const props = selectedAddress.properties;
   const [lon, lat] = selectedAddress.geometry.coordinates;
   const dept = currentDept() || "";
-  const types = activeCategories.size === MARKET_CATEGORIES.length ? "" : [...activeCategories].join(",");
+  const marketType = currentMarketType();
   const seq = ++runSeq;
 
   const params = new URLSearchParams({
@@ -1138,8 +1447,9 @@ async function runMarket() {
     radius_m: String(selectedRadius),
     history_min_years: String(selectedHistoryMinYears),
     history_max_years: String(selectedHistoryMaxYears),
-    max_comparables: maxComparablesInput.value || "200",
-    types
+    type: marketType,
+    sort_key: comparableSortKey || "",
+    sort_dir: comparableSortDirection
   });
   // Bornes de prix : envoyées seulement si l'utilisateur a resserré le slider.
   if (priceFilterTouched && selectedPriceMin > priceBounds.min) {
@@ -1148,6 +1458,18 @@ async function runMarket() {
   if (priceFilterTouched && selectedPriceMax < priceBounds.max) {
     params.set("prix_max", String(selectedPriceMax));
   }
+  if (surfaceFilterTouched && selectedSurfaceMin > surfaceBounds.min) {
+    params.set("surface_min", String(selectedSurfaceMin));
+  }
+  if (surfaceFilterTouched && selectedSurfaceMax < surfaceBounds.max) {
+    params.set("surface_max", String(selectedSurfaceMax));
+  }
+  if (roomsFilterApplies() && roomsFilterTouched && selectedRoomsMin > roomsBounds.min) {
+    params.set("pieces_min", String(selectedRoomsMin));
+  }
+  if (roomsFilterApplies() && roomsFilterTouched && selectedRoomsMax < roomsBounds.max) {
+    params.set("pieces_max", String(selectedRoomsMax));
+  }
 
   updateScopeGeometry();
   resultEl.hidden = true;
@@ -1155,6 +1477,8 @@ async function runMarket() {
   const data = await fetchJson(`/api/market?${params}`);
   if (seq !== runSeq) return;
   applyPriceBounds(data.summary?.price_bounds);
+  applySurfaceBounds(data.summary?.surface_bounds);
+  applyRoomsBounds(data.summary?.pieces_bounds);
   if (data.error) {
     marketResult.hidden = true;
     marketScopeDetails.hidden = true;
@@ -1164,6 +1488,7 @@ async function runMarket() {
     currentComparables = [];
     comparablesList.innerHTML = "";
     tableMeta.textContent = "Aucun résultat";
+    setResultsAvailable(false);
     tableWrap.classList.add("collapsed");
     map.flyTo({ center: [lon, lat], zoom: selectedScope === "radius" ? zoomForRadius(selectedRadius) : 13.4 });
     setStatus(data.error);
@@ -1178,7 +1503,8 @@ async function runMarket() {
 function renderMarket(data) {
   marketResult.hidden = false;
   marketCount.textContent = int(data.summary.count);
-  configureScopeChip(marketScope, marketScopeDetails, data.target, data.summary.scope);
+  setStatsPanelOpen(marketSalesChip, marketStats, true);
+  configureScopeChip(marketScope, marketScopeDetails, data.target, data.summary.scope, marketStats);
   marketStats.innerHTML = "";
   for (const t of data.summary.types) {
     const row = document.createElement("div");
@@ -1217,7 +1543,8 @@ async function estimate() {
     radius_m: String(selectedRadius),
     history_min_years: String(selectedHistoryMinYears),
     history_max_years: String(selectedHistoryMaxYears),
-    max_comparables: maxComparablesInput.value || "200"
+    sort_key: comparableSortKey || "",
+    sort_dir: comparableSortDirection
   });
 
   updateScopeGeometry();
@@ -1227,13 +1554,13 @@ async function estimate() {
   if (data.error) {
     resultEl.hidden = true;
     scopeDetails.hidden = true;
-    targetStreetView.hidden = true;
     setComparableGeojson([]);
     comparableDetail.hidden = true;
     tableWrap.classList.remove("detail-open");
     currentComparables = [];
     comparablesList.innerHTML = "";
     tableMeta.textContent = "Aucun résultat";
+    setResultsAvailable(false);
     tableWrap.classList.add("collapsed");
     map.flyTo({ center: [lon, lat], zoom: selectedScope === "radius" ? zoomForRadius(selectedRadius) : 13.4 });
     setStatus(data.error);
@@ -1253,7 +1580,8 @@ function renderResult(data) {
   document.querySelector("#estimatedPrice").textContent = euro(summary.estimated_price);
   document.querySelector("#medianM2").textContent = int(summary.median_m2);
   document.querySelector("#count").textContent = summary.count;
-  configureScopeChip(scopeChip, scopeDetails, data.target, summary.scope);
+  setStatsPanelOpen(salesChip, estimationStats, true);
+  configureScopeChip(scopeChip, scopeDetails, data.target, summary.scope, estimationStats);
   document.querySelector("#range").textContent =
     `Fourchette observée: ${euro(summary.low_price)} à ${euro(summary.high_price)} pour ${summary.scope} · ${summary.history} · confiance ${summary.confidence}`;
   document.querySelector("#askedPosition").textContent = summary.asked_position_pct === null
@@ -1261,22 +1589,26 @@ function renderResult(data) {
     : `Prix soumis: percentile ${summary.asked_position_pct} des comparables`;
 }
 
-function configureScopeChip(button, panel, target, label) {
+// `companion` = la box des ventes (stats) de la même section, repliée quand on déplie
+// le détail d'emprise, et rouverte quand on le referme (accordéon anti-surcharge).
+function configureScopeChip(button, panel, target, label, companion) {
   button.textContent = label;
   panel.hidden = true;
   panel.innerHTML = "";
+  setCompanionPanelOpen(companion, true); // détail fermé par défaut -> ventes visibles
   button.classList.remove("open");
   button.setAttribute("aria-expanded", "false");
   const interactive = target && ["postcode", "city"].includes(target.scope_mode);
   button.disabled = !interactive;
   button.onclick = interactive
-    ? () => toggleScopeDetails(button, panel, target)
+    ? () => toggleScopeDetails(button, panel, target, companion)
     : null;
 }
 
-async function toggleScopeDetails(button, panel, target) {
+async function toggleScopeDetails(button, panel, target, companion) {
   if (!panel.hidden) {
     panel.hidden = true;
+    setCompanionPanelOpen(companion, true); // on referme le détail -> les ventes reviennent
     button.classList.remove("open");
     button.setAttribute("aria-expanded", "false");
     return;
@@ -1284,6 +1616,7 @@ async function toggleScopeDetails(button, panel, target) {
   button.classList.add("open");
   button.setAttribute("aria-expanded", "true");
   panel.hidden = false;
+  setCompanionPanelOpen(companion, false); // on déplie le détail -> on replie les ventes
   const loadingTimer = setTimeout(() => {
     if (!panel.hidden) panel.innerHTML = `<strong>Chargement...</strong>`;
   }, 120);
@@ -1357,58 +1690,199 @@ function selectScopeCommune(citycode, city) {
 
 function renderComparables(rows, points, total) {
   currentComparables = rows;
+  currentComparablesTotal = total ?? rows.length;
+  viewedComparableUids.clear();
   setComparableGeojson(points || rows);
   selectedComparableUid = null;
   lastSelectedUid = null;
   comparableDetail.hidden = true;
-  tableWrap.classList.remove("detail-open");
   tableWrap.classList.remove("collapsed");
+  setResultsAvailable(rows.length > 0);
   setParcelleDetail(null);
-  tableMeta.textContent = `${rows.length}/${total ?? rows.length} affichés`;
-  // Si on a demandé plus de comparables qu'il n'en existe, on ramène le champ « Max » au réel disponible.
-  if (total != null) {
-    maxComparablesInput.value = String(Math.min(Number(maxComparablesInput.value) || 200, total));
-  }
+  tableMeta.textContent = `${currentComparablesTotal} comparable${currentComparablesTotal > 1 ? "s" : ""}`;
   updateSortControl();
-  renderComparableList();
+  renderComparableList({ reset: true });
   if (selectedAddress) {
     updateScopeGeometry();
   }
 }
 
-function renderComparableList() {
-  comparablesList.innerHTML = "";
-  for (const row of sortedComparables()) {
-    const item = document.createElement("button");
-    item.type = "button";
-    item.className = "comparable";
-    item.dataset.uid = row.uid;
-    item.classList.toggle("selected", row.uid === selectedComparableUid);
-    item.innerHTML = `
-      <b>${int(row.prix_m2)} €/m²</b>
-      <b>${euro(row.prix)}</b>
-      <span>${escapeHtml(row.commune || "")} · ${int(row.distance_m)} m · ${escapeHtml(String(row.surface ?? "-"))} m² · ${escapeHtml(String(row.pieces || "-"))} p.</span>
-      <span>${escapeHtml(row.date_mutation || "")}</span>
-    `;
-    item.addEventListener("click", () => selectComparable(row.uid, { fit: true }));
-    item.addEventListener("mouseenter", () => setComparableHover(row.uid, true));
-    item.addEventListener("mouseleave", () => setComparableHover(row.uid, false));
-    comparablesList.append(item);
+function addComparableToDisplayed(row) {
+  if (!row || row.uid == null || currentComparables.some((candidate) => candidate.uid === row.uid)) {
+    return;
   }
+  currentComparables = [...currentComparables, row];
+  currentComparablesTotal = (currentComparablesTotal ?? 0) + 1;
+  tableMeta.textContent = `${currentComparablesTotal} comparable${currentComparablesTotal > 1 ? "s" : ""}`;
+}
+
+function createComparableCard(row) {
+  const viewed = viewedComparableUids.has(row.uid);
+  const card = document.createElement("article");
+  card.className = "comparable-card";
+  card.classList.toggle("selected", row.uid === selectedComparableUid);
+  card.classList.toggle("viewed", viewed);
+  card.dataset.uid = row.uid;
+
+  const item = document.createElement("button");
+  item.type = "button";
+  item.className = "comparable";
+  item.dataset.uid = row.uid;
+  item.classList.toggle("selected", row.uid === selectedComparableUid);
+  item.innerHTML = `
+    <b>${int(row.prix_m2)} €/m²</b>
+    <b>${euro(row.prix)}</b>
+    <span>${escapeHtml(row.commune || "")} · ${int(row.distance_m)} m · ${escapeHtml(String(row.surface ?? "-"))} m² · ${escapeHtml(String(row.pieces || "-"))} p.</span>
+    <span class="result-date">${escapeHtml(row.date_mutation || "")}${viewed ? `<span class="viewed-tick" title="Détail consulté" aria-label="Détail consulté">✓</span>` : ""}</span>
+  `;
+  item.addEventListener("click", () => selectComparable(row.uid, { fit: true }));
+  item.addEventListener("mouseenter", () => setComparableHover(row.uid, true));
+  item.addEventListener("mouseleave", () => setComparableHover(row.uid, false));
+  card.append(item);
+  if (row.uid === selectedComparableUid) {
+    const detail = document.createElement("div");
+    detail.className = "comparable-detail";
+    detail.dataset.uid = row.uid;
+    card.append(detail);
+    renderDetail(row, detail);
+  }
+  return card;
+}
+
+// Nombre de cartes à rendre pour remplir le panneau visible (auto-ajusté à la hauteur de l'écran,
+// plafonné à MAX_INITIAL_CARDS). measuredCardHeight est connu dès le 1er rendu ; à défaut on estime.
+function initialCardCount() {
+  const listHeight = comparablesList.clientHeight || 560;
+  const cardHeight = measuredCardHeight || 64;
+  return Math.max(MIN_COMPARABLES, Math.min(MAX_INITIAL_CARDS, Math.ceil(listHeight / cardHeight) + 1));
+}
+
+function renderComparableList(options = {}) {
+  const previousPositions = options.previousPositions || (options.animate ? comparableCardPositions() : null);
+  const rows = displayedComparables();
+  if (options.reset) renderedCount = 0;
+  if (!renderedCount) renderedCount = initialCardCount();
+  renderedCount = Math.min(renderedCount, rows.length);
+
+  comparablesList.innerHTML = "";
+  for (const row of rows.slice(0, renderedCount)) comparablesList.append(createComparableCard(row));
+
+  if (!measuredCardHeight) {
+    const firstCard = comparablesList.querySelector(".comparable-card");
+    if (firstCard) measuredCardHeight = firstCard.getBoundingClientRect().height + 6; // + marge inter-cartes
+  }
+  refreshListSentinel(rows.length);
+  animateComparableReorder(previousPositions);
+}
+
+// Sentinelle + observer : tant qu'elle est visible (panneau pas plein, ou scroll arrivé en bas),
+// on révèle SCROLL_BATCH cartes de plus. Retirée quand toute la cohorte est rendue.
+function refreshListSentinel(total) {
+  if (!listObserver) {
+    listObserver = new IntersectionObserver(
+      (entries) => { if (entries.some((e) => e.isIntersecting)) revealMoreComparables(); },
+      { root: comparablesList, rootMargin: "300px" },
+    );
+  }
+  if (!listSentinel) {
+    listSentinel = document.createElement("div");
+    listSentinel.className = "list-sentinel";
+    listSentinel.setAttribute("aria-hidden", "true");
+  }
+  listObserver.unobserve(listSentinel);
+  if (renderedCount >= total) {
+    listSentinel.remove();
+    return;
+  }
+  comparablesList.append(listSentinel);
+  listObserver.observe(listSentinel);
+}
+
+function revealMoreComparables() {
+  const rows = displayedComparables();
+  if (renderedCount >= rows.length) return;
+  const from = renderedCount;
+  renderedCount = Math.min(rows.length, renderedCount + SCROLL_BATCH);
+  const fragment = document.createDocumentFragment();
+  for (const row of rows.slice(from, renderedCount)) fragment.append(createComparableCard(row));
+  comparablesList.insertBefore(fragment, listSentinel); // append AVANT la sentinelle : scroll préservé
+  refreshListSentinel(rows.length);
+}
+
+function comparableCardPositions() {
+  const positions = new Map();
+  for (const card of comparablesList.querySelectorAll(".comparable-card[data-uid]")) {
+    positions.set(card.dataset.uid, card.getBoundingClientRect());
+  }
+  return positions;
+}
+
+function animateComparableReorder(previousPositions) {
+  if (!previousPositions || reduceMotion.matches) return;
+  const movedCards = [];
+  for (const card of comparablesList.querySelectorAll(".comparable-card[data-uid]")) {
+    const previous = previousPositions.get(card.dataset.uid);
+    if (!previous) continue;
+    const current = card.getBoundingClientRect();
+    const dx = previous.left - current.left;
+    const dy = previous.top - current.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
+    card.style.transition = "transform 0s";
+    card.style.transform = `translate(${dx}px, ${dy}px)`;
+    card.style.willChange = "transform";
+    movedCards.push(card);
+  }
+  if (!movedCards.length) return;
+  requestAnimationFrame(() => {
+    for (const card of movedCards) {
+      card.style.transition = "transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1)";
+      card.style.transform = "";
+    }
+    window.setTimeout(() => {
+      for (const card of movedCards) {
+        card.style.transition = "";
+        card.style.willChange = "";
+      }
+    }, 220);
+  });
+}
+
+function scrollComparableToMiddle(uid) {
+  requestAnimationFrame(() => {
+    const card = comparablesList.querySelector(`.comparable-card[data-uid="${CSS.escape(String(uid))}"]`);
+    if (!card) return;
+    const listRect = comparablesList.getBoundingClientRect();
+    const cardRect = card.getBoundingClientRect();
+    const top = comparablesList.scrollTop
+      + cardRect.top - listRect.top
+      - (comparablesList.clientHeight - cardRect.height) / 2;
+    comparablesList.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+  });
 }
 
 let hoveredComparableUid = null;
 // Illumine (feature-state hover) le point carte correspondant au résultat survolé dans la liste.
-function setComparableHover(uid, on) {
+function setComparableHover(uid, on, options = {}) {
+  if (uid == null) return;
   if (on) {
+    const firstMapHover = options.fromMap && hoveredComparableUid !== uid;
     if (hoveredComparableUid !== null && hoveredComparableUid !== uid) {
       map.setFeatureState({ source: "comparables", id: hoveredComparableUid }, { hover: false });
+      const previous = comparablesList.querySelector(`.comparable-card[data-uid="${CSS.escape(String(hoveredComparableUid))}"]`);
+      if (previous) previous.classList.remove("map-hover");
     }
     hoveredComparableUid = uid;
     map.setFeatureState({ source: "comparables", id: uid }, { hover: true });
+    const card = comparablesList.querySelector(`.comparable-card[data-uid="${CSS.escape(String(uid))}"]`);
+    if (card) {
+      card.classList.toggle("map-hover", Boolean(options.fromMap));
+      if (firstMapHover) scrollComparableToMiddle(uid);
+    }
   } else if (hoveredComparableUid === uid) {
     hoveredComparableUid = null;
     map.setFeatureState({ source: "comparables", id: uid }, { hover: false });
+    const card = comparablesList.querySelector(`.comparable-card[data-uid="${CSS.escape(String(uid))}"]`);
+    if (card) card.classList.remove("map-hover");
   }
 }
 
@@ -1423,6 +1897,15 @@ function sortedComparables() {
     if (left === right) return a.distance_m - b.distance_m;
     return left > right ? direction : -direction;
   });
+}
+
+function displayedComparables() {
+  const rows = sortedComparables();
+  if (selectedComparableUid === null) return rows;
+  const selectedIndex = rows.findIndex((row) => row.uid === selectedComparableUid);
+  if (selectedIndex <= 0) return rows;
+  const selected = rows[selectedIndex];
+  return [selected, ...rows.slice(0, selectedIndex), ...rows.slice(selectedIndex + 1)];
 }
 
 function comparableSortValue(row) {
@@ -1455,26 +1938,6 @@ function sortLabel(key) {
   if (key === "price") return "Prix";
   if (key === "date") return "Date";
   return "m²";
-}
-
-async function loadTargetStreetView(lon, lat, label, addressSeq) {
-  targetStreetView.hidden = false;
-  targetStreetView.innerHTML = `<span class="street-muted">Recherche d'une vue rue ouverte...</span>`;
-  const view = await findPanoramaxImage(lon, lat);
-  if (!selectedAddress || selectedAddressSeq !== addressSeq) return;
-  if (!view) {
-    targetStreetView.innerHTML = `<span class="street-muted">Aucune vue rue ouverte à proximité.</span>`;
-    return;
-  }
-  targetStreetView.innerHTML = `
-    <div class="street-action">
-      <span>Vue rue trouvée à ${int(view.distance_m)} m</span>
-      <button type="button">Vue rue</button>
-    </div>
-  `;
-  targetStreetView.querySelector("button").addEventListener("click", () => {
-    openStreetView(view, label || "Adresse cible");
-  });
 }
 
 function setTargetMarker(lon, lat) {
@@ -1703,32 +2166,40 @@ function selectComparable(uid, options = { fit: false }, fallbackRow = null) {
   for (const item of comparablesList.querySelectorAll(".comparable")) {
     item.classList.toggle("selected", Number(item.dataset.uid) === uid);
   }
+  for (const card of comparablesList.querySelectorAll(".comparable-card")) {
+    card.classList.toggle("selected", Number(card.dataset.uid) === uid);
+  }
   if (uid === null) {
     comparableDetail.hidden = true;
-    tableWrap.classList.remove("detail-open");
+    renderComparableList({ animate: true });
     setParcelleDetail(null);
-    // On rétablit la grille cadastre selon le réglage du menu (haut-droite).
+    // On rétablit la grille cadastre selon le réglage du menu.
     applyCadastre();
     return;
   }
 
-  const row = currentComparables.find((candidate) => candidate.uid === uid) || fallbackRow;
+  let row = currentComparables.find((candidate) => candidate.uid === uid) || fallbackRow;
   if (!row) return;
+  addComparableToDisplayed(row);
+  row = currentComparables.find((candidate) => candidate.uid === uid) || row;
+  viewedComparableUids.add(uid);
   tableWrap.classList.remove("collapsed");
-  renderDetail(row);
-  comparableDetail.hidden = false;
-  tableWrap.classList.add("detail-open");
-  loadComparableStreetView(row);
+  comparableDetail.hidden = true;
+  const previousPositions = comparableCardPositions();
+  comparablesList.scrollTop = 0;
+  renderComparableList({ previousPositions });
+  loadComparableLieuDit(row);
   // Focus sur la parcelle : on n'affiche que sa grille cadastre (via loadComparableBatiments)
   // et on retire les autres parcelles de l'overlay général.
   setCadastre(null);
   loadComparableBatiments(row);
+  loadComparableAdresses(row);
   if (options.fit) {
     map.flyTo({ center: [row.lon, row.lat], zoom: Math.max(map.getZoom(), 16) });
   }
 }
 
-function renderDetail(row) {
+function renderDetail(row, container = detailBody) {
   const similarityField = row.similarity != null ? detailField("Similarité", `${int(row.similarity)} %`) : "";
   const resolutionField = row.resolution_statut === "rnb_resolu" || row.resolution_statut === "bdnb_groupe_resolu"
     ? detailField("Résolution", row.resolution_statut === "rnb_resolu" ? "bâtiment identifié" : "groupe bâtiment identifié")
@@ -1770,11 +2241,12 @@ function renderDetail(row) {
     row.annee_construction ? detailField("Construction", row.annee_construction) : "",
   ].join("");
 
-  detailBody.innerHTML = `
+  container.innerHTML = `
     <div class="detail-title">
       <strong>${int(row.prix_m2)} €/m² · ${euro(row.prix)}</strong>
       <span>${escapeHtml(row.adresse || "Adresse DVF non renseignée")}</span>
       <span>${escapeHtml(row.code_postal || "")} ${escapeHtml(row.commune || "")}</span>
+      <span id="detailLieuDit" class="detail-lieudit" hidden></span>
     </div>
     ${communeModif}
     <div class="detail-grid">
@@ -1783,68 +2255,32 @@ function renderDetail(row) {
     ${detailSection("Cadastre", cadastreFields)}
     ${collapsible("Bâti cadastral", `<div id="detailBatiments" class="detail-batiments"><span class="street-muted">Lecture du cadastre…</span></div>`)}
     ${detailSection("Bâtiment (RNB / BDNB)", bdnbFields)}
-    <div id="detailStreetView" class="detail-street"><span class="street-muted">Recherche d'une vue rue ouverte...</span></div>
+    ${collapsible("Adresses (lien parcellaire)", `<div id="detailAdresses" class="detail-adresses"><span class="street-muted">Lecture du lien parcelle↔adresse…</span></div>`, { hint: ADRESSES_PARCELLE_HINT })}
   `;
 }
 
-async function loadComparableStreetView(row) {
-  const container = document.querySelector("#detailStreetView");
-  if (!container) return;
-  const view = await findPanoramaxImage(row.lon, row.lat);
-  if (selectedComparableUid !== row.uid) return;
-  if (!view) {
-    container.innerHTML = `<span class="street-muted">Aucune vue rue ouverte à proximité.</span>`;
-    return;
-  }
-  container.innerHTML = `
-    <div class="street-action">
-      <span>Vue rue trouvée à ${int(view.distance_m)} m</span>
-      <button type="button">Vue rue</button>
-    </div>
-  `;
-  container.querySelector("button").addEventListener("click", () => {
-    openStreetView(view, `${row.adresse || "Comparable"} · ${row.commune || ""}`);
-  });
-}
-
-async function findPanoramaxImage(lon, lat) {
-  const key = `${lon.toFixed(5)},${lat.toFixed(5)}`;
-  if (streetViewCache.has(key)) {
-    return streetViewCache.get(key);
-  }
-  const url = new URL("/api/panoramax", window.location.origin);
-  url.searchParams.set("lon", lon);
-  url.searchParams.set("lat", lat);
+// Rattache le bien à sa localité (lieu-dit cadastral) — seule maille nommée infra-communale.
+async function loadComparableLieuDit(row) {
+  if (row.lon == null || row.lat == null) return;
+  const dept = currentDept();
+  if (!dept) return;
+  const url = new URL("/api/lieudit", window.location.origin);
+  url.searchParams.set("dept", dept);
+  url.searchParams.set("lon", row.lon);
+  url.searchParams.set("lat", row.lat);
+  let data = null;
   try {
     const response = await fetch(url);
-    if (!response.ok) throw new Error(`Panoramax ${response.status}`);
-    const data = await response.json();
-    const best = (data.features || [])
-      .map((feature) => {
-        const [picLon, picLat] = feature.geometry.coordinates;
-        return {
-          id: feature.id,
-          collection: feature.collection,
-          lon: picLon,
-          lat: picLat,
-          distance_m: haversineMeters(lon, lat, picLon, picLat),
-          sd: feature.assets?.sd?.href,
-          hd: feature.assets?.hd?.href,
-          thumb: feature.assets?.thumb?.href,
-          datetime: feature.properties?.datetimetz || feature.properties?.datetime,
-          license: feature.properties?.license,
-          producer: feature.properties?.["geovisio:producer"],
-          url: `${PANORAMAX_ENDPOINT}/api/collections/${feature.collection}/items/${feature.id}`
-        };
-      })
-      .filter((feature) => feature.sd || feature.hd)
-      .sort((a, b) => a.distance_m - b.distance_m)[0] || null;
-    streetViewCache.set(key, best);
-    return best;
+    if (response.ok) data = await response.json();
   } catch {
-    streetViewCache.set(key, null);
-    return null;
+    data = null;
   }
+  if (selectedComparableUid !== row.uid) return; // sélection changée entre-temps
+  const el = document.querySelector(`.comparable-detail[data-uid="${CSS.escape(String(row.uid))}"] #detailLieuDit`)
+    || document.querySelector("#detailLieuDit");
+  if (!el || !data || !data.nom) return;
+  el.textContent = `Lieu-dit : ${data.nom}`;
+  el.hidden = false;
 }
 
 async function fetchJson(url) {
@@ -1860,29 +2296,6 @@ async function fetchJson(url) {
   }
 }
 
-function openStreetView(view, title) {
-  streetViewPanel.hidden = false;
-  streetViewBody.innerHTML = `
-    <img class="street-photo" src="${escapeHtml(view.sd || view.hd || view.thumb)}" alt="">
-    <strong>${escapeHtml(title)}</strong>
-    <div class="street-meta">
-      <span>${int(view.distance_m)} m</span>
-      ${view.datetime ? `<span>${escapeHtml(new Date(view.datetime).toLocaleDateString("fr-FR"))}</span>` : ""}
-      ${view.license ? `<span>${escapeHtml(view.license)}</span>` : ""}
-      ${view.producer ? `<span>${escapeHtml(view.producer)}</span>` : ""}
-    </div>
-    <a class="street-link" href="${escapeHtml(view.url)}" target="_blank" rel="noreferrer">Ouvrir la source</a>
-  `;
-}
-
-function haversineMeters(lon1, lat1, lon2, lat2) {
-  const toRad = (value) => value * Math.PI / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2
-    + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * 6371000 * Math.asin(Math.sqrt(a));
-}
 
 // Définitions rapides affichées au survol du « ? » à côté de chaque label.
 const FIELD_HINTS = {
@@ -1938,18 +2351,18 @@ document.addEventListener("mouseout", (event) => {
   if (event.target.closest?.(".hint")) hintTip.hidden = true;
 });
 
-// Repli/dépli des blocs collapsibles (délégation : le détail est ré-rendu en innerHTML).
-detailBody.addEventListener("click", (event) => {
+// Repli/dépli des blocs collapsibles (délégation : le détail inline est ré-rendu en innerHTML).
+document.addEventListener("click", (event) => {
   const summary = event.target.closest(".collapsible-summary");
   if (summary) summary.parentElement.classList.toggle("open");
 });
 
 // Survol d'une box « Bâti cadastral » -> illumine l'empreinte correspondante sur la carte.
-detailBody.addEventListener("mouseover", (event) => {
+document.addEventListener("mouseover", (event) => {
   const item = event.target.closest("[data-bati-idx]");
   if (item) setBatiHover(Number(item.dataset.batiIdx));
 });
-detailBody.addEventListener("mouseout", (event) => {
+document.addEventListener("mouseout", (event) => {
   const item = event.target.closest("[data-bati-idx]");
   if (item && !item.contains(event.relatedTarget)) setBatiHover(null);
 });
@@ -1961,11 +2374,12 @@ function detailSection(title, fieldsHtml) {
   return collapsible(title, `<div class="detail-grid">${fieldsHtml}</div>`);
 }
 
-function collapsible(title, innerHtml, { id = "" } = {}) {
+function collapsible(title, innerHtml, { id = "", hint = "" } = {}) {
   const attr = id ? ` id="${id}"` : "";
+  const help = hint ? ` <span class="hint" data-tip="${escapeHtml(hint)}">?</span>` : "";
   return `
     <div class="collapsible"${attr}>
-      <button type="button" class="collapsible-summary">${escapeHtml(title)}</button>
+      <button type="button" class="collapsible-summary">${escapeHtml(title)}${help}</button>
       <div class="collapsible-body"><div class="collapsible-inner">${innerHtml}</div></div>
     </div>
   `;

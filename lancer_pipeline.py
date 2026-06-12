@@ -1,7 +1,7 @@
 """Lance le pipeline complet pour un département : acquisition -> table comparables.
 
 Enchaîne, dans l'ordre, les étapes documentées dans docs/PIPELINE.md :
-  1. telechargement.preparer_donnees   -> data brutes + interim (DVF normalisé COG, RNB, BDNB, BAN, contours communes)
+  1. telechargement.preparer_donnees   -> acquisition COMPLÈTE + interim (DVF normalisé COG, RNB, BDNB, BAN, contours communes, cadastre) ; vérifie la complétude (arrêt net si un artefact manque)
      + telechargement.preparer_codes_postaux -> contours codes postaux hybrides (union communes + Voronoï)
   2. pipeline.recuperation_non_match    -> recup_liens (cascade A/B/C)
   3. pipeline.geocodage_residuel        -> recup_liens_final + pertes (BAN >= seuil)

@@ -17,10 +17,11 @@ Usage : uv run python -m telechargement.preparer_communes [DEPT]   (défaut 33)
 from __future__ import annotations
 
 import sys
-import urllib.request
 from pathlib import Path
 
 import duckdb
+
+from telechargement._telechargement import download
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw"
@@ -32,17 +33,6 @@ def _geoapi_url(dept: str) -> str:
         "https://geo.api.gouv.fr/communes"
         f"?codeDepartement={dept}&fields=code,nom&format=geojson&geometry=contour"
     )
-
-
-def download(url: str, dest: Path) -> Path:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists() and dest.stat().st_size > 0:
-        print(f"✓ déjà là : {dest.name}")
-        return dest
-    print(f"⤓ {url}")
-    urllib.request.urlretrieve(url, dest)
-    print(f"  → {dest.name} ({dest.stat().st_size / 1e6:.1f} Mo)")
-    return dest
 
 
 def preparer_communes(dept: str) -> None:
