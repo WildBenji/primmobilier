@@ -80,6 +80,13 @@ export function initTimeline(mapInstance) {
     sync();
   });
 
+  // Double-clic : la barre se replie en pastille (et inversement). On ignore les
+  // poignées de curseur pour ne pas réduire le widget en plein scrub.
+  root.addEventListener("dblclick", (event) => {
+    if (event.target.closest("input")) return;
+    root.classList.toggle("minimized");
+  });
+
   document.addEventListener("themechange", draw);
   new ResizeObserver(draw).observe(canvas);
 }
