@@ -66,7 +66,7 @@ Suivi d'exploration des sources publiques candidates au **socle immobilier carto
 
 **Superflu / doublon** : `x`/`y` (Lambert) doublon de `lon`/`lat` ; `nom_afnor`, `libelle_acheminement`, `alias`, `nom_ld` redondants ; `id_fantoir` = legacy, utile seulement comme pont vers d'anciennes clés.
 
-**Clés de jointure (BAN = crosswalk déterministe)** : `id` ↔ RNB (`addresses[].cle_interop_ban`) et ↔ DPE (`identifiant_ban`) — **même namespace, confirmé** · `cad_parcelles` ↔ Cadastre/DVF (`id_parcelle`) — **confirmé** · `code_insee` ↔ communes. ⇒ BAN relie à elle seule les 3 keyspaces (adresse / parcelle), mais reste un **secours** : RNB porte déjà `addresses` (cle_interop) ET `plots` (parcelle) → on mesurera si RNB seul suffit avant d'ingérer la BAN (cf. décision API-only).
+**Clés de jointure (BAN = crosswalk déterministe)** : `id` ↔ RNB (`addresses[].cle_interop_ban`) et ↔ DPE (`identifiant_ban`) — **même namespace, confirmé** · `cad_parcelles` ↔ Cadastre/DVF (`id_parcelle`) — **confirmé** · `code_insee` ↔ communes. ⇒ BAN relie à elle seule les 3 keyspaces (adresse / parcelle), mais reste un **secours** pour le pivot bâtiment : RNB porte déjà `addresses` (cle_interop) ET `plots` (parcelle) → on mesurera si RNB seul suffit avant d'ingérer la BAN (cf. décision API-only). **Note** : `cad_parcelles` est par ailleurs consommé directement (lecture du CSV brut) pour le crosswalk **direct** parcelle↔adresse, en complément du NDJSON cadastre (cf. §3.3) — usage distinct du pivot RNB.
 
 ## 1.3 Cadastre (Etalab)
 
@@ -247,9 +247,21 @@ sur ces parcelles puis sur les `batiment_groupe_id` restants.
 ## 3.3 Adresses extraites du cadastre
 
 - **ID data.gouv** : `5bd837f2634f41112d338d46` · Organisation : data.gouv.fr (Etalab) · Licence : `lov2` · Fréquence : **annuelle** · MàJ catalogue : 2026-06-06
-- **Statut** : ⏳ À approfondir
-- **Définition** : adresses extraites du plan + fichier des parcelles bâties de la DGFiP, **source primaire de la BAN**, rattachant adresse ↔ parcelle. Formats : CSV / GeoJSON / NDJSON départementaux.
-- **Position** : utile comme **renfort de la jointure adresse↔parcelle** quand BAN ne porte pas le lien cadastral. Doublon partiel de BAN → à n'utiliser qu'en appoint.
+- **Statut** : ✅ **Intégrée (33)** — crosswalk direct parcelle↔adresse ingéré et exposé sur la carte.
+- **Définition** : adresses extraites du plan + fichier des parcelles bâties de la DGFiP, **source primaire de la BAN**, rattachant adresse ↔ parcelle (NDJSON-full, champ `codesParcelles`, porte `destinationPrincipale`). Formats : CSV / GeoJSON / NDJSON départementaux.
+- **Position** : lien **DIRECT parcelle↔adresse, sans pivot RNB** — comble le trou du pivot bâtiment (une parcelle sans bâtiment RNB adressé n'a sinon aucune adresse). C'est un **proxy d'adresse propriétaire** (adresse enregistrée SUR la parcelle), **pas l'identité** du propriétaire (qui vit dans les Fichiers Fonciers/MAJIC, accès restreint).
+
+**Spike de joignabilité (dept 33, [`spike_parcelle_adresse.py`](../spike_parcelle_adresse.py), 2026-06-12)** — couverture **parcelle → ≥1 adresse** par lien direct :
+
+| Source | Parcelles **DVF** (maison/appart) | **Toutes** parcelles cadastre |
+| --- | --- | --- |
+| BAN `cad_parcelles` seul | 28,9 % | 12,5 % |
+| Cadastre `codesParcelles` seul | **94,6 %** | 28,7 % |
+| **Fusion** | **95,5 %** | 31,9 % |
+
+> Le NDJSON cadastre est la vraie source (94,6 % des parcelles DVF), BAN n'étant qu'un supplément (+64 k parcelles sur le full). Les ~32 % « toutes parcelles » sont normaux : la majorité d'un département est du rural non bâti, sans adresse. ⚠️ Le « 16 % » de l'[ADR 0003](adr/0003-rnb-pivot-batiment.md) portait sur BAN **seul** et sur un **autre usage** (apport marginal au crosswalk DVF→RNB) — il ne contredit pas ce résultat.
+
+- **Artefact** : `data/interim/parcelle_adresse_{dept}.parquet` (`id_parcelle, numero, voie, code_postal, ville, code_insee, lon, lat, destination, source`), produit par [`telechargement/preparer_adresses_parcelle.py`](../telechargement/preparer_adresses_parcelle.py) (fusion cadastre + BAN, scoped dept, idempotent). Exposé via l'endpoint POC `/api/parcelle-adresses` (affiché au clic d'une parcelle). **Lien direct seulement** : pas d'inférence géométrique adjacent/proximité (palier « parcelle » du pattern piscines). **Harmonisation à la source** : une même adresse vue par le cadastre et par BAN (ex. « Péchauriol Est » vs « Péchauriol-est ») est dédupliquée sur une **clé canonique** numéro+voie+commune (dé-accentuée, minuscule, non-alphanumérique → espace unique, bords élagués). Cette clé ne sert qu'à la comparaison — **jamais affichée**. Pour l'affichage on garde le **libellé officiel de la BAN** quand il existe, tout en **préservant la `destination` issue du cadastre**. En immeuble, une parcelle garde toutes ses adresses **réellement distinctes**, sans désigner un lot.
 
 ## 3.4 Registre national d'immatriculation des copropriétés
 

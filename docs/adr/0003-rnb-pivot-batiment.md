@@ -17,6 +17,7 @@ La parcelle cadastrale (`id_parcelle`) reste un **lien secondaire** entre DVF et
 - **DPE → RNB par clé d'adresse (`identifiant_ban` ↔ `cle_interop_ban`) : 87%.** La jointure énergétique par clé est viable sans re-géocodage (la crainte d'un keyspace FANTOIR incompatible était infondée — les deux clés sont dans le namespace BAN cle_interop courant).
 - **La parcelle est ambiguë à l'unité** : 2,26 bâtiments par parcelle en moyenne, max 769, seulement 38% de parcelles mono-bâtiment. Elle ne suffit donc pas à désigner *le* bâtiment vendu → mauvais candidat comme pivot, bon candidat comme arête de jointure.
 - **BAN écartée comme crosswalk** : `cad_parcelles` ne couvre que 16% des parcelles DVF (vs 52% pour RNB) et n'ajoute que +2,3 pts → l'[ADR 0002 / décision API-only BAN] tient.
+  - *Portée du « 16% »* : c'est l'apport marginal de BAN **seul** au crosswalk **DVF→RNB**. Il ne dit rien de la couverture parcelle↔adresse pour un **affichage direct**, dont la source primaire est le NDJSON cadastre (`codesParcelles`) : mesurée à **94,6% des parcelles DVF** sur le 33 (cf. [SOURCES_DONNEES §3.3](../SOURCES_DONNEES.md)). Le pivot bâtiment de cet ADR reste inchangé ; le lien direct est un usage distinct (proxy d'adresse propriétaire), pas un pivot.
 
 ## Conséquences
 
