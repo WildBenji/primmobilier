@@ -32,6 +32,7 @@ const historyMaxInput = document.querySelector("#historyMax");
 const historyLabel = document.querySelector("#historyLabel");
 const scopeButtons = document.querySelectorAll(".scope-control button");
 const zoneToggle = document.querySelector("#zoneToggle");
+const zoneColorSlider = document.querySelector("#zoneColor");
 const modeButtons = document.querySelectorAll(".mode-control button");
 const estimationFields = document.querySelector("#estimationFields");
 const explorationFilters = document.querySelector("#explorationFilters");
@@ -98,6 +99,7 @@ let radiusTimer = null;
 let historyTimer = null;
 let selectedScope = "radius";
 let showZone = true;
+let zoneHue = null; // teinte choisie pour la zone, null = couleurs du thème
 let scopeDrawSeq = 0;
 let selectedRadius = 1500;
 let selectedHistoryMinYears = 0;
@@ -408,12 +410,23 @@ initTheme(map);
 initTimeline(map);
 
 const BASE_LAYERS = ["cartodark", "carto", "voyager", "osm", "ignplan", "ign", "stadiasat"];
+// Ton clair/sombre de chaque fond : pilote les couleurs de la zone — un teal pâle est
+// illisible sur Positron ou IGN Plan, et les photos satellite lisent mieux la variante
+// lumineuse. La zone suit donc le fond affiché, pas le thème UI (cf. applyZoneColor).
+const BASE_TONE = {
+  cartodark: "dark", carto: "light", voyager: "light", osm: "light",
+  ignplan: "light", ign: "dark", stadiasat: "dark"
+};
+let currentBase = "cartodark";
+map.once("load", applyZoneColor); // remplace les couleurs bleues du style initial
 for (const button of baseLayerMenu.querySelectorAll("[data-layer]")) {
   button.addEventListener("click", () => {
     const value = button.dataset.layer;
     for (const id of BASE_LAYERS) {
       map.setLayoutProperty(`base-${id}`, "visibility", id === value ? "visible" : "none");
     }
+    currentBase = value;
+    applyZoneColor();
     baseLayerLabel.textContent = button.textContent;
     for (const other of baseLayerMenu.querySelectorAll("[data-layer]")) {
       other.classList.toggle("active", other === button);
@@ -936,6 +949,11 @@ for (const button of scopeButtons) {
 zoneToggle.addEventListener("change", () => {
   showZone = zoneToggle.checked;
   setZoneVisibility(showZone);
+});
+
+zoneColorSlider.addEventListener("input", () => {
+  zoneHue = Number(zoneColorSlider.value);
+  applyZoneColor();
 });
 
 radiusSlider.addEventListener("input", () => {
@@ -2105,11 +2123,19 @@ function displayedComparables() {
   return [selected, ...rows.slice(0, selectedIndex), ...rows.slice(selectedIndex + 1)];
 }
 
+// Rang DPE : A le plus haut pour que le tri descendant (défaut) mette A en tête.
+// Même orientation côté serveur (DPE_SORT_RANK dans server.py).
+const DPE_SORT_RANK = { A: 7, B: 6, C: 5, D: 4, E: 3, F: 2, G: 1 };
+
 function comparableSortValue(row) {
   if (comparableSortKey === "similarity") return Number(row.similarity) || 0;
   if (comparableSortKey === "price") return Number(row.prix) || 0;
   if (comparableSortKey === "date") return Date.parse(row.date_mutation) || 0;
   if (comparableSortKey === "surface") return Number(row.surface) || 0;
+  if (comparableSortKey === "dpe") {
+    // Étiquette absente : toujours en fin de liste, quel que soit le sens.
+    return DPE_SORT_RANK[row.etiquette_dpe] || (comparableSortDirection === "desc" ? 0 : 8);
+  }
   return Number(row.distance_m) || 0;
 }
 
@@ -2119,7 +2145,8 @@ function updateSortControl() {
     similarity: `Similarité ${arrow}`,
     price: `Prix ${arrow}`,
     date: `Date ${arrow}`,
-    surface: `m² ${arrow}`
+    surface: `m² ${arrow}`,
+    dpe: `DPE ${arrow}`
   };
   sortToggle.textContent = comparableSortKey ? labels[comparableSortKey] : "Trier";
   for (const button of sortButtons) {
@@ -2134,6 +2161,7 @@ function sortLabel(key) {
   if (key === "similarity") return "Similarité";
   if (key === "price") return "Prix";
   if (key === "date") return "Date";
+  if (key === "dpe") return "DPE";
   return "m²";
 }
 
@@ -2259,6 +2287,32 @@ function setZoneVisibility(visible) {
   for (const id of ["target-radius-fill", "target-radius-line"]) {
     if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", value);
   }
+}
+
+// Peint la zone selon le TON du fond affiché (BASE_TONE) — couleurs teal par défaut,
+// ou teinte choisie au curseur. Le thème UI ne pilote pas ces couches : un fond clair
+// sous thème sombre rendait le cercle invisible (teal pâle sur carte claire).
+function applyZoneColor() {
+  const dark = (BASE_TONE[currentBase] || "dark") === "dark";
+  let line, fill, outline;
+  if (zoneHue === null) {
+    line = dark ? "#5eead4" : "#0d9488";
+    fill = dark ? "rgba(45, 212, 191, 0.07)" : "rgba(13, 148, 136, 0.08)";
+    outline = dark ? "rgba(45, 212, 191, 0.3)" : "rgba(13, 148, 136, 0.35)";
+  } else {
+    const base = dark ? `${zoneHue}, 72%, 62%` : `${zoneHue}, 75%, 36%`;
+    line = `hsl(${base})`;
+    fill = `hsla(${base}, ${dark ? 0.07 : 0.08})`;
+    outline = `hsla(${base}, ${dark ? 0.3 : 0.35})`;
+  }
+  if (map.getLayer("target-radius-line")) {
+    map.setPaintProperty("target-radius-line", "line-color", line);
+  }
+  if (map.getLayer("target-radius-fill")) {
+    map.setPaintProperty("target-radius-fill", "fill-color", fill);
+    map.setPaintProperty("target-radius-fill", "fill-outline-color", outline);
+  }
+  zoneColorSlider.style.setProperty("--zone-color", line);
 }
 
 function clearScopeGeojson() {

@@ -386,8 +386,13 @@ def similarity_score(row: dict, target_surface: float, target_rooms: int | None,
     return round((0.50 * surface_score + 0.25 * rooms_score + 0.25 * distance_score) * 100, 1)
 
 
+# Rang DPE : A est le plus haut pour que le tri descendant (défaut au premier clic)
+# affiche les meilleures étiquettes d'abord. Même orientation côté client (app.js).
+DPE_SORT_RANK = {"A": 7, "B": 6, "C": 5, "D": 4, "E": 3, "F": 2, "G": 1}
+
+
 def sorted_for_display(rows: list[dict], sort_key: str | None, sort_dir: str) -> list[dict]:
-    key = sort_key if sort_key in {"similarity", "price", "date", "surface"} else None
+    key = sort_key if sort_key in {"similarity", "price", "date", "surface", "dpe"} else None
     by_distance = sorted(rows, key=lambda row: (row.get("distance_m") or 0, row.get("date_mutation") or ""))
     if not key:
         return by_distance
@@ -397,9 +402,17 @@ def sorted_for_display(rows: list[dict], sort_key: str | None, sort_dir: str) ->
         "price": "prix",
         "date": "date_mutation",
         "surface": "surface",
+        "dpe": "etiquette_dpe",
     }[key]
     missing = float("-inf") if reverse else float("inf")
-    return sorted(by_distance, key=lambda row: row.get(value_key) if row.get(value_key) is not None else missing, reverse=reverse)
+
+    def value(row):
+        v = row.get(value_key)
+        if key == "dpe":
+            v = DPE_SORT_RANK.get(v)  # étiquette absente/inconnue -> sentinelle (en fin de liste)
+        return v if v is not None else missing
+
+    return sorted(by_distance, key=value, reverse=reverse)
 
 
 def resolve_section(dept: str, lon: float, lat: float) -> dict | None:
@@ -652,6 +665,11 @@ BATIMENT_TYPE_LABELS = {"01": "Bâti en dur", "02": "Bâti léger"}
 # Marge du préfiltre bbox des bâtiments (~0,002° ≈ 160-220 m) : couvre tout footprint
 # qui intersecte la parcelle même si son centroïde tombe hors de la bbox parcelle.
 BATIMENT_BBOX_MARGIN_DEG = 0.002
+# Part minimale de l'empreinte du bâtiment qui doit tomber DANS la parcelle. Les couches
+# parcelles et bâtiments du cadastre étant digitalisées séparément, un bâtiment voisin peut
+# toucher la limite ou la chevaucher de quelques cm : ST_Intersects seul le capterait en
+# entier. 10 % garde les vrais mitoyens (à cheval sur la limite) et écarte ces contacts.
+BATIMENT_MIN_OVERLAP = 0.10
 
 
 def _read_parcelle_geom(con: duckdb.DuckDBPyConnection, parc_path: Path, pid: str):
@@ -667,20 +685,27 @@ def _read_parcelle_geom(con: duckdb.DuckDBPyConnection, parc_path: Path, pid: st
 
 
 def _parcelle_footprints(con: duckdb.DuckDBPyConnection, bat_path: Path, parc_wkb, bbox) -> list:
-    """Empreintes cadastrales intersectant une parcelle : préfiltre bbox (clon/clat = centroïde
-    bâtiment, marge généreuse) puis ST_Intersects exact (le filtre qui fait foi)."""
+    """Empreintes cadastrales d'une parcelle : préfiltre bbox (clon/clat = centroïde bâtiment,
+    marge généreuse) puis recouvrement significatif — au moins BATIMENT_MIN_OVERLAP de
+    l'empreinte dans la parcelle (le ratio d'aires planes en degrés² est valide localement,
+    la distorsion lat/lon s'annulant entre numérateur et dénominateur)."""
     xmin, ymin, xmax, ymax = bbox
     m = BATIMENT_BBOX_MARGIN_DEG
     return con.execute(
         """
-        SELECT b.type, b.created, ST_AsGeoJSON(ST_GeomFromWKB(b.geom_wkb)),
-               ST_Area_Spheroid(ST_GeomFromWKB(b.geom_wkb))
-        FROM read_parquet(?) b
-        WHERE b.clon BETWEEN ? AND ? AND b.clat BETWEEN ? AND ?
-          AND ST_Intersects(ST_GeomFromWKB(b.geom_wkb), ST_GeomFromWKB(?))
+        WITH bat AS (
+            SELECT b.type, b.created, ST_GeomFromWKB(b.geom_wkb) AS g
+            FROM read_parquet(?) b
+            WHERE b.clon BETWEEN ? AND ? AND b.clat BETWEEN ? AND ?
+        )
+        SELECT type, created, ST_AsGeoJSON(g), ST_Area_Spheroid(g)
+        FROM bat
+        WHERE ST_Intersects(g, ST_GeomFromWKB(?))
+          AND ST_Area(ST_Intersection(g, ST_GeomFromWKB(?))) >= ? * ST_Area(g)
         ORDER BY 4 DESC
         """,
-        [str(bat_path), xmin - m, xmax + m, ymin - m, ymax + m, parc_wkb],
+        [str(bat_path), xmin - m, xmax + m, ymin - m, ymax + m,
+         parc_wkb, parc_wkb, BATIMENT_MIN_OVERLAP],
     ).fetchall()
 
 

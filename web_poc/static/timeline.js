@@ -1,5 +1,6 @@
 // Frise temporelle du marché : histogramme des ventes par mois + sélection
 // libre [début, fin] par deux poignées (de quelques mois à tout l'historique).
+// La sélection se déplace aussi d'un bloc en l'attrapant entre les poignées.
 // La lecture (play) fait glisser la sélection courante en gardant sa largeur.
 // Le filtrage se fait côté carte (setFilter sur `ts`), sans re-requête serveur.
 
@@ -45,6 +46,44 @@ export function initTimeline(mapInstance) {
   };
   startInput.addEventListener("input", onScrub);
   endInput.addEventListener("input", onScrub);
+
+  // Glisser-déplacer la sélection : on attrape la fenêtre sur le canvas (les
+  // poignées, au-dessus, gardent la priorité) et on la translate à largeur
+  // constante. Aucun effet quand tout l'historique est sélectionné.
+  let drag = null; // { anchor, start0, width } pendant un déplacement
+  const idxAt = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const ratio = (event.clientX - rect.left) / rect.width;
+    return Math.max(0, Math.min(buckets.length - 1, Math.floor(ratio * buckets.length)));
+  };
+  const inWindow = (idx) => !fullSpan() && idx >= startIdx && idx <= endIdx;
+  canvas.addEventListener("pointerdown", (event) => {
+    if (!buckets.length || !inWindow(idxAt(event))) return;
+    stopPlay();
+    drag = { anchor: idxAt(event), start0: startIdx, width: endIdx - startIdx };
+    canvas.setPointerCapture(event.pointerId);
+    canvas.style.cursor = "grabbing";
+    event.preventDefault();
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    if (!buckets.length) return;
+    if (!drag) {
+      canvas.style.cursor = inWindow(idxAt(event)) ? "grab" : "";
+      return;
+    }
+    const delta = idxAt(event) - drag.anchor;
+    const start = Math.max(0, Math.min(buckets.length - 1 - drag.width, drag.start0 + delta));
+    if (start === startIdx) return;
+    startIdx = start;
+    endIdx = start + drag.width;
+    sync();
+  });
+  const endDrag = () => {
+    drag = null;
+    canvas.style.cursor = "";
+  };
+  canvas.addEventListener("pointerup", endDrag);
+  canvas.addEventListener("pointercancel", endDrag);
 
   playBtn.addEventListener("click", () => {
     if (playTimer) {

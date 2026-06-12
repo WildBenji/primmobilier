@@ -93,11 +93,14 @@
           <button type="button" data-scope="city">Commune</button>
         </div>
 
-        <label class="zone-toggle">
-          <input type="checkbox" id="zoneToggle" checked>
-          <span class="switch" aria-hidden="true"></span>
-          <span>Afficher la zone sur la carte</span>
-        </label>
+        <div class="zone-row">
+          <label class="zone-toggle">
+            <input type="checkbox" id="zoneToggle" checked>
+            <span class="switch" aria-hidden="true"></span>
+            <span>Afficher la zone sur la carte</span>
+          </label>
+          <input id="zoneColor" class="zone-color" type="range" min="0" max="360" step="2" value="170" aria-label="Couleur de la zone" title="Couleur de la zone">
+        </div>
 
         <div id="radiusControl" class="radius-control slider-radius">
           <div class="radius-head">
@@ -300,6 +303,7 @@
                   <button type="button" data-sort="price">Prix</button>
                   <button type="button" data-sort="date">Date</button>
                   <button type="button" data-sort="surface">m²</button>
+                  <button type="button" data-sort="dpe">DPE</button>
                 </div>
               </div>
               <span id="tableMeta">Aucun calcul</span>

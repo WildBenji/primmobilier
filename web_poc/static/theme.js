@@ -4,23 +4,14 @@
 
 const STORAGE_KEY = "primmobilier-theme";
 
-// Couleurs d'overlay accordées au fond : teal lumineux sur Dark Matter,
-// teal profond / violet d'origine sur Positron.
+// Couleurs d'overlay accordées au fond : violet clair sur Dark Matter, violet
+// d'origine sur Positron. La zone (target-radius-*) n'est PAS pilotée ici : elle
+// suit le FOND DE CARTE affiché, pas le thème — cf. applyZoneColor dans app.js.
 const MAP_PAINT = {
   dark: {
-    "target-radius-line": { "line-color": "#5eead4" },
-    "target-radius-fill": {
-      "fill-color": "rgba(45, 212, 191, 0.07)",
-      "fill-outline-color": "rgba(45, 212, 191, 0.3)"
-    },
     "cadastre-lines": { "line-color": "#a78bfa" }
   },
   light: {
-    "target-radius-line": { "line-color": "#0d9488" },
-    "target-radius-fill": {
-      "fill-color": "rgba(13, 148, 136, 0.08)",
-      "fill-outline-color": "rgba(13, 148, 136, 0.35)"
-    },
     "cadastre-lines": { "line-color": "#7048e8" }
   }
 };
