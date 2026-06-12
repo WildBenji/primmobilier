@@ -1,3 +1,6 @@
+import { initTheme } from "./theme.js";
+import { initTimeline, timelineSetData } from "./timeline.js";
+
 const addressInput = document.querySelector("#address");
 const suggestions = document.querySelector("#suggestions");
 const statusEl = document.querySelector("#status");
@@ -142,6 +145,16 @@ const map = new maplibregl.Map({
         tileSize: 256,
         attribution: "© OpenStreetMap contributors © CARTO"
       },
+      cartodark: {
+        type: "raster",
+        tiles: [
+          "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+          "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+          "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
+        ],
+        tileSize: 256,
+        attribution: "© OpenStreetMap contributors © CARTO"
+      },
       voyager: {
         type: "raster",
         tiles: [
@@ -201,10 +214,11 @@ const map = new maplibregl.Map({
       }
     },
     layers: [
+      { id: "base-cartodark", type: "raster", source: "cartodark" },
       { id: "base-carto", type: "raster", source: "carto", layout: { visibility: "none" } },
       { id: "base-voyager", type: "raster", source: "voyager", layout: { visibility: "none" } },
       { id: "base-osm", type: "raster", source: "osm", layout: { visibility: "none" } },
-      { id: "base-ignplan", type: "raster", source: "ignplan" },
+      { id: "base-ignplan", type: "raster", source: "ignplan", layout: { visibility: "none" } },
       { id: "base-ign", type: "raster", source: "ign", layout: { visibility: "none" } },
       { id: "base-stadiasat", type: "raster", source: "stadiasat", layout: { visibility: "none" } },
       {
@@ -382,7 +396,10 @@ map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom
 map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
 map.doubleClickZoom.disable();
 
-const BASE_LAYERS = ["carto", "voyager", "osm", "ignplan", "ign", "stadiasat"];
+initTheme(map);
+initTimeline(map);
+
+const BASE_LAYERS = ["cartodark", "carto", "voyager", "osm", "ignplan", "ign", "stadiasat"];
 for (const button of baseLayerMenu.querySelectorAll("[data-layer]")) {
   button.addEventListener("click", () => {
     const value = button.dataset.layer;
@@ -2232,12 +2249,14 @@ function setComparableGeojson(points) {
         code_postal: p.code_postal,
         distance_m: p.distance_m,
         date_mutation: p.date_mutation,
+        ts: Date.parse(p.date_mutation) || 0,
         type_local: p.type_local || "",
         similarity: p.similarity ?? 0,
         categorie: p.type_local || ""
       }
     }))
   });
+  timelineSetData(points);
 }
 
 function selectComparable(uid, options = { fit: false }, fallbackRow = null) {
