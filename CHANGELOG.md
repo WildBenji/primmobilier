@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.9.0 - 2026-06-13
+
+Phase 1 (recherche design) du **Site 2028** : explorations visuelles tranchées « sur pièces » sous forme de maquettes HTML statiques jetables (`web_poc/maquettes/`, hors POC livré), sur les tokens actés (clair par défaut D13, teal deux tons D16, Inter + Space Grotesk D17). Direction verrouillée sur les trois écrans clés.
+
+- **Accueil** : hero centré sous « lampadaire » — trois faisceaux (un central, deux partant des coins hauts, effet scène) qui s'intensifient quand la souris approche de la barre de recherche ; en sombre ils s'allument en néon, en clair ils assombrissent pour créer du relief. Parcours démo-first : grande barre d'adresse en vedette, puis deux actions à poids égal Estimer / Explorer (l'outil sert aussi à explorer le marché et générer des rapports, pas qu'à estimer). Carte en bandeau bas. Clair par défaut, signature néon au toggle.
+- **Atlas refondu** : shell de navigation commun auto-masquant (se range pour libérer la carte, revient quand la souris remonte), panneaux flottants en verre (D18) qui se décalent en douceur sous le shell sans déborder, languettes de rétraction, bouton Exporter et compteur de crédits. Overlay carte en D3 (zone qui rayonne, comparables à halo, cible pulsante) et frise en histogramme du volume par trimestre.
+- **Observatoire** : une seule interface de paramètres, deux vues de résultats (carte = Atlas, graphiques = Observatoire). Quatre graphes en **D3.js** (zéro-build via CDN, conforme ADR 0008) à la signature aérienne : médiane €/m² (aire + ruban P25–P75, ligne à dégradé le long du tracé, flux animé désactivable, bloom en sombre, crosshair), comparaison multi-marchés (focus/estompe, « + Zone »), ventes individuelles en beeswarm coloré par DPE, prix vs taux d'emprunt (double axe). KPI propres à l'Observatoire (sans redondance avec le panneau, sans métrique fabriquée). Synthèse IA en bas, à la demande.
+- **Bandeau de navigation concave** (type macOS) commun à l'Atlas et à l'Observatoire : plein sur les côtés où vit le contenu, creusé au milieu pour libérer un maximum de vue même déroulé ; `clip-path` responsive, réactivité souris inchangée, liseré teal en sombre.
+- **Documentation** : `docs/REFERENCES_VISUEL.md` (référence visuelle canonique, Nadieh Bremer en tête, galeries de concours, catalogue de techniques D3) et journal de décisions design dans `docs/JOURNAL_SITE_2028.md`. Décision « lib de graphiques » fermée sur D3.js.
+
 ## v1.8.0 - 2026-06-12
 
 - **Frise temporelle déplaçable** : une fois la période sélectionnée, on attrape la fenêtre entre les deux poignées et on la translate d'un bloc à largeur constante (glisser sur le canvas, bornes respectées). Curseur `grab`/`grabbing`, support tactile.
