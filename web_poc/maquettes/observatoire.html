@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="fr" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Primmobilier — Observatoire</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" />
+    <link rel="stylesheet" href="../static/app.css" />
+    <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+    <style>
+      :root { --mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace; }
+      /* Bandeau à dessous concave (type macOS), identique à l'Atlas : plein sur
+         les côtés (contenu), creusé au milieu (vide) pour libérer la vue.
+         clip-path en objectBoundingBox => responsive sans JS ; offsetHeight reste
+         56px donc la réactivité souris est identique. */
+      .shell { position: fixed; top: 0; left: 0; right: 0; z-index: 20; display: flex; align-items: center; gap: 22px; height: 56px; padding: 0 26px; background: color-mix(in srgb, var(--surface) 90%, transparent); -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass); clip-path: url(#shellClip); filter: drop-shadow(0 1.2px 0 var(--hairline-strong)) drop-shadow(0 7px 16px rgba(10, 16, 24, 0.24)); transform: translateY(-100%); transition: transform 0.28s var(--ease); }
+      .shell.show, .shell:focus-within { transform: translateY(0); }
+      :root[data-theme="dark"] .shell { background: color-mix(in srgb, var(--surface) 82%, transparent); filter: drop-shadow(0 1px 1px var(--accent-glow)) drop-shadow(0 9px 24px rgba(0, 0, 0, 0.55)); }
+      .shell-peek { position: fixed; top: 0; left: 50%; transform: translateX(-50%); width: 56px; height: 5px; border-radius: 0 0 7px 7px; background: var(--hairline-strong); z-index: 18; opacity: 0.7; transition: opacity 0.2s; }
+      .shell.show ~ .shell-peek { opacity: 0; }
+      .shell-brand { display: flex; align-items: center; gap: 9px; font-family: var(--font-display); font-size: 16px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text); }
+      .shell-nav { display: flex; gap: 6px; }
+      .shell-nav a { padding: 7px 12px; border-radius: var(--r-sm); font-size: 13px; color: var(--text-muted); text-decoration: none; transition: color .2s, background .2s; }
+      .shell-nav a:hover { color: var(--text); background: var(--surface-2); }
+      .shell-nav a.active { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+      .shell-spacer { flex: 1; }
+      .shell-actions { display: flex; align-items: center; gap: 12px; }
+      .credits { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border: 1px solid var(--hairline); border-radius: 99px; background: var(--surface-2); font-size: 12px; color: var(--text-muted); }
+      .credits b { color: var(--accent); font-variant-numeric: tabular-nums; }
+      :root[data-theme="dark"] .credits b { text-shadow: 0 0 10px var(--accent-glow); }
+      .shell-actions .ghost { padding: 7px 13px; border: 1px solid var(--hairline-strong); border-radius: var(--r-sm); background: transparent; color: var(--text); font-size: 13px; cursor: pointer; }
+      .shell-actions .ghost:hover { border-color: var(--accent-line); color: var(--accent); }
+
+      .app { height: 100%; }
+      :root .panel { animation: none; }
+      :root { --shell-h: 0px; }
+      .panel { top: calc(14px + var(--shell-h)); max-height: calc(100vh - 28px - var(--shell-h)); transition: top 0.28s var(--ease), max-height 0.28s var(--ease); }
+      .table-wrap { top: calc(14px + var(--shell-h)); transition: top 0.28s var(--ease); }
+
+      .result-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 2px; }
+      .btn-export, .btn-soft { min-height: 36px; border-radius: var(--r-sm); cursor: pointer; font: inherit; font-size: 12.5px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 7px; text-decoration: none; }
+      .btn-export { border: 0; color: var(--accent-ink); background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 3px 16px var(--accent-glow); }
+      .btn-export:hover { filter: brightness(1.07); }
+      .btn-soft { border: 1px solid var(--hairline-strong); background: var(--surface-2); color: var(--text); }
+      .btn-soft:hover { border-color: var(--accent-line); color: var(--accent); }
+
+      .obs { position: absolute; top: calc(14px + var(--shell-h)); left: calc(min(404px, 100vw - 28px) + 26px); right: 22px; bottom: 14px; overflow-y: auto; padding: 2px 8px 8px 0; transition: top 0.28s var(--ease), left 0.28s var(--ease); }
+      .panel.collapsed ~ .obs { left: 44px; }
+      .obs-grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; grid-auto-rows: 78px; }
+
+      .ob-card { position: relative; display: flex; flex-direction: column; overflow: hidden; background: var(--surface-solid); border: 1px solid var(--hairline); border-radius: 16px; padding: 12px 14px; box-shadow: 0 1px 2px rgba(20,30,40,0.05), 0 10px 30px rgba(20,30,40,0.06); transition: transform 0.2s var(--ease), box-shadow 0.2s, border-color 0.2s; animation: tile-in 0.45s var(--ease) both; }
+      .ob-card:hover { border-color: var(--hairline-strong); box-shadow: 0 2px 4px rgba(20,30,40,0.06), 0 16px 40px rgba(20,30,40,0.10); }
+      :root[data-theme="dark"] .ob-card { box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 16px 44px rgba(0,0,0,0.5); }
+      :root[data-theme="dark"] .ob-card:hover { border-color: var(--accent-line); box-shadow: 0 0 0 1px var(--accent-line), 0 0 36px rgba(45,212,191,0.08), 0 16px 44px rgba(0,0,0,0.5); }
+      @keyframes tile-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+      .c-kpi { grid-column: span 3; grid-row: span 1; }
+      .c-main { grid-column: span 12; grid-row: span 5; }
+      .c-wide { grid-column: span 12; grid-row: span 4; }
+      .c-half { grid-column: span 6; grid-row: span 4; }
+      .c-synth { grid-column: span 12; }
+
+      .kpi .k-label { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); }
+      .kpi .k-body { display: flex; align-items: baseline; gap: 8px; margin-top: auto; }
+      .kpi .k-val { font-family: var(--font-display); font-size: clamp(19px, 1.9vw, 26px); font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+      .kpi .k-delta { font-family: var(--mono); font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 5px; }
+      .dl.up { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+      .dl.down { color: var(--danger); background: color-mix(in srgb, var(--danger) 16%, transparent); }
+
+      .ob-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+      .ob-title { font-family: var(--font-display); font-size: 13px; font-weight: 600; }
+      .ob-sub { font-size: 11px; color: var(--text-faint); font-family: var(--mono); }
+      .ob-tools { display: flex; align-items: center; gap: 6px; }
+      .ob-tools button { font: inherit; font-size: 11px; font-family: var(--mono); padding: 4px 8px; border: 1px solid var(--hairline); border-radius: 7px; background: var(--surface-2); color: var(--text-muted); cursor: pointer; transition: color .15s, border-color .15s; }
+      .ob-tools button:hover { color: var(--accent); border-color: var(--accent-line); }
+      .ob-tog { flex: 0 0 auto; font: inherit; font-size: 11px; font-family: var(--mono); padding: 4px 11px; border: 1px solid var(--hairline); border-radius: 99px; background: var(--surface-2); color: var(--text-muted); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: color .15s, border-color .15s, background .15s; }
+      .ob-tog::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); transition: background .15s, box-shadow .15s; }
+      .ob-tog:hover { color: var(--text); }
+      .ob-tog.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-line); }
+      .ob-tog.on::before { background: var(--accent); box-shadow: 0 0 8px var(--accent-glow); }
+      .legend.dpe { margin-top: 6px; }
+      .legend { display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); font-family: var(--mono); flex-wrap: wrap; }
+      .legend span { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+      .legend i { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
+      .legend.dpe i { width: 9px; height: 9px; border-radius: 2px; }
+      .ec { position: relative; width: 100%; flex: 1; min-height: 0; }
+      .d3tip { position: absolute; pointer-events: none; opacity: 0; transition: opacity .12s; background: var(--surface-solid); border: 1px solid var(--hairline-strong); border-radius: 8px; box-shadow: var(--shadow-pop); padding: 8px 10px; min-width: 150px; transform: translate(-50%, calc(-100% - 12px)); z-index: 4; }
+      .d3tip .q { color: var(--text-faint); font-size: 10px; margin-bottom: 5px; font-family: var(--mono); }
+      .d3tip .row { display: flex; justify-content: space-between; gap: 16px; font-size: 11px; font-family: var(--mono); line-height: 1.7; }
+      .d3tip .row span { color: var(--text-muted); } .d3tip .row b { color: var(--text); font-variant-numeric: tabular-nums; }
+
+      .synth-empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; padding: 20px 16px; }
+      .synth-empty .ico { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 11px; background: var(--accent-soft); color: var(--accent); }
+      .synth-empty p { margin: 0; font-size: 12.5px; color: var(--text-muted); max-width: 46ch; }
+      .synth-gen { min-height: 38px; padding: 0 16px; border: 0; border-radius: var(--r-md); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; color: var(--accent-ink); background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 3px 16px var(--accent-glow); display: inline-flex; align-items: center; gap: 8px; }
+      .synth-gen[disabled] { opacity: .7; cursor: progress; }
+      .synth-cost { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); }
+      .synth-out { display: none; } .synth-out.on { display: block; animation: tile-in .4s var(--ease) both; }
+      .synth-out .ob-head { margin-bottom: 8px; }
+      .synth-out p { margin: 0; font-size: 13px; line-height: 1.62; color: var(--text-muted); } .synth-out p + p { margin-top: 9px; } .synth-out b { color: var(--text); font-weight: 600; }
+      .llm-badge { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+      .spin { width: 13px; height: 13px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } }
+
+      @media (max-width: 1240px) { .obs-grid { grid-template-columns: repeat(6, 1fr); } .c-kpi { grid-column: span 3; } .c-half { grid-column: span 6; } }
+    </style>
+  </head>
+  <body>
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><clipPath id="shellClip" clipPathUnits="objectBoundingBox"><path d="M0,0 L1,0 L1,1 C0.68,1 0.6,0.14 0.5,0.14 C0.4,0.14 0.32,1 0,1 Z" /></clipPath></defs></svg>
+    <nav class="shell">
+      <a class="shell-brand" href="accueil.html"><span class="brand-dot" aria-hidden="true"></span>Primmobilier</a>
+      <div class="shell-nav"><a href="atlas.html">Atlas du marché</a><a class="active" href="#">Observatoire</a><a href="#">Tarifs</a></div>
+      <div class="shell-spacer"></div>
+      <div class="shell-actions">
+        <span class="credits"><b>5</b> crédits</span>
+        <button class="theme-toggle" id="themeToggle" type="button" aria-label="Basculer le thème">
+          <svg class="icon-sun" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5.2 5.2l1.7 1.7M17.1 17.1l1.7 1.7M18.8 5.2l-1.7 1.7M6.9 17.1l-1.7 1.7"/></svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/></svg>
+        </button>
+        <button class="ghost" type="button">Se connecter</button>
+      </div>
+    </nav>
+    <div class="shell-peek" aria-hidden="true"></div>
+
+    <main class="app">
+      <section class="panel" aria-label="Analyse">
+        <div class="mode-control" aria-label="Mode"><button type="button" class="active">Estimation</button><button type="button">Exploration</button></div>
+        <div class="search-wrap"><label class="field search-field"><span>Adresse, zone ou ville</span><input value="12 cours de l'Intendance, Bordeaux" /></label></div>
+        <div class="grid">
+          <label class="field"><span>Type</span><select><option>Maison</option><option>Appartement</option></select></label>
+          <label class="field"><span>Surface</span><input type="number" value="92" /></label>
+          <label class="field"><span>Pièces</span><input type="number" value="4" /></label>
+          <label class="field"><span>Prix soumis</span><input type="number" placeholder="optionnel" /></label>
+        </div>
+        <div class="section-label">Emprise</div>
+        <div class="scope-control" aria-label="Emprise"><button type="button" class="active">Rayon</button><button type="button">Section</button><button type="button">Code postal</button><button type="button">Commune</button></div>
+        <div class="radius-control slider-radius"><div class="radius-head"><span>Rayon</span><strong>600 m</strong></div><input type="range" min="0" max="13" step="1" value="4" /><div class="radius-scale" aria-hidden="true"><span>100 m</span><span>20 km</span></div></div>
+        <div class="history-control slider-history"><div class="radius-head"><span>Historique</span><strong>0 – 5 ans</strong></div><div class="dual-range"><input type="range" min="0" max="5" step="1" value="0" /><input type="range" min="0" max="5" step="1" value="5" /></div><div class="radius-scale" aria-hidden="true"><span>0</span><span>5 ans</span></div></div>
+        <div class="toolbar"><button id="estimate" type="button">Estimer</button><button id="reset" type="button">Reset</button></div>
+        <section class="result">
+          <div><span class="label">Prix médian estimé</span><strong id="estimatedPrice">287 400 €</strong></div>
+          <div class="metrics"><span><b>3 980</b> €/m²</span><span><button class="scope-chip sales-chip" type="button"><b>72</b> ventes</button></span><span><button class="scope-chip" type="button">Rayon 600 m</button></span></div>
+          <div class="result-stats"><div class="range">Fourchette 264 000 € – 312 000 € (P25–P75)</div><div class="range">Loyer médian ~13,5 €/m² · rendement brut ~3,9 %</div></div>
+          <div class="result-actions"><button class="btn-export" type="button"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>Exporter</button><a class="btn-soft" href="atlas.html">Voir sur la carte</a></div>
+        </section>
+      </section>
+      <button id="expandEstimation" class="expand-estimation" type="button" aria-label="Replier / ouvrir les paramètres">›</button>
+
+      <div class="obs">
+        <div class="obs-grid">
+          <article class="ob-card c-kpi kpi"><span class="k-label">Évolution · 5 ans</span><div class="k-body"><span class="k-val" data-count="14" data-suf=" %" data-pre="+">+14 %</span><span class="dl up k-delta">↗</span></div></article>
+          <article class="ob-card c-kpi kpi"><span class="k-label">Dispersion P25–P75</span><div class="k-body"><span class="k-val" data-count="6.2" data-dec="1" data-suf=" %" data-pre="±">±6,2 %</span></div></article>
+          <article class="ob-card c-kpi kpi"><span class="k-label">Vs médiane commune</span><div class="k-body"><span class="k-val" data-count="8" data-suf=" %" data-pre="+">+8 %</span><span class="dl up k-delta">prime</span></div></article>
+          <article class="ob-card c-kpi kpi"><span class="k-label">Passoires · DPE F–G</span><div class="k-body"><span class="k-val" data-count="17" data-suf=" %">17 %</span><span class="dl down k-delta">à rénover</span></div></article>
+
+          <article class="ob-card c-main">
+            <div class="ob-head"><span><span class="ob-title">Médiane €/m²</span> <span class="ob-sub">Maisons · rayon 600 m · médiane, ruban P25–P75, volume</span></span><button id="flowToggle" class="ob-tog on" type="button" title="Animation du flux le long de la courbe">Flux</button></div>
+            <div class="ec" id="chMain"></div>
+          </article>
+
+          <article class="ob-card c-wide">
+            <div class="ob-head"><span><span class="ob-title">Comparer des marchés</span></span><div class="ob-tools"><div class="legend" id="cmpLegend"></div><button id="cmpAdd" type="button">+ Zone</button></div></div>
+            <div class="ec" id="chCompare"></div>
+          </article>
+
+          <article class="ob-card c-half">
+            <div class="ob-head"><span><span class="ob-title">Ventes individuelles</span> <span class="ob-sub">€/m² × DPE · 72 ventes</span></span></div>
+            <div class="ec" id="chBees"></div>
+            <div class="legend dpe" id="dpeLegend"></div>
+          </article>
+
+          <article class="ob-card c-half">
+            <div class="ob-head"><span class="ob-title">Prix vs taux d'emprunt</span><div class="legend"><span><i style="background:var(--accent)"></i>Prix</span><span><i style="background:var(--gold)"></i>Taux</span></div></div>
+            <div class="ec" id="chCorr"></div>
+          </article>
+
+          <article class="ob-card c-synth" id="synthCard">
+            <div class="synth-empty" id="synthEmpty">
+              <div class="ico"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6L12 3zM19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14z"/></svg></div>
+              <p>Générez une lecture rédigée de ce marché par l'IA, à partir de votre Analyse courante.</p>
+              <button class="synth-gen" id="synthGen" type="button">Générer la synthèse</button>
+              <span class="synth-cost">Consomme 1 unité de synthèse</span>
+            </div>
+            <div class="synth-out" id="synthOut">
+              <div class="ob-head"><span class="ob-title">Synthèse du marché</span><span class="llm-badge">Rédigé par IA</span></div>
+              <p>Autour du <b>12 cours de l'Intendance</b>, la médiane des maisons s'établit à <b>3 980 €/m²</b>, en hausse de <b>+14 %</b> sur 5 ans, avec une prime d'environ <b>+8 %</b> sur la médiane communale.</p>
+              <p>La progression a marqué le pas depuis mi-2022 avec la remontée des taux. Côté énergie, <b>17 %</b> des biens sont des passoires (DPE F–G). Pour un bien de 92 m² à 4 pièces, l'estimation médiane ressort à <b>287 400 €</b>.</p>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <aside class="table-wrap collapsed has-results" aria-label="Résultats">
+        <div class="list-panel">
+          <div class="table-head"><strong>Comparables</strong><div class="head-actions"><span>72</span></div></div>
+          <div class="comparables-list">
+            <div class="comparable-card"><button class="comparable" type="button"><b>295 000 €</b><b>3 933 €/m²</b><span>Maison 75 m² · 4 pièces · <span class="dpe-badge dpe-c">C</span></span><span class="result-date">mars 2024</span></button></div>
+            <div class="comparable-card"><button class="comparable" type="button"><b>312 000 €</b><b>3 950 €/m²</b><span>Maison 79 m² · 5 pièces · <span class="dpe-badge dpe-d">D</span></span><span class="result-date">nov. 2023</span></button></div>
+          </div>
+        </div>
+        <button class="expand-comparables" type="button" aria-label="Replier / ouvrir les comparables">‹</button>
+      </aside>
+    </main>
+
+    <script>
+      var root = document.documentElement;
+      (function () {
+        if (new URLSearchParams(location.search).get("theme") === "dark") root.setAttribute("data-theme", "dark");
+        document.getElementById("themeToggle").addEventListener("click", function () { root.setAttribute("data-theme", root.getAttribute("data-theme") === "dark" ? "light" : "dark"); renderAll(); });
+        var shell = document.querySelector(".shell");
+        function setShell(o) { shell.classList.toggle("show", o); root.style.setProperty("--shell-h", o ? "56px" : "0px"); }
+        document.addEventListener("pointermove", function (e) { if (e.clientY <= 6) setShell(true); else if (e.clientY > shell.offsetHeight + 10 && !shell.matches(":hover")) setShell(false); });
+        setShell(true); setTimeout(function () { setShell(false); }, 1900);
+        var panel = document.querySelector(".panel"), tw = document.querySelector(".table-wrap");
+        document.querySelector(".expand-estimation").addEventListener("click", function () { panel.classList.toggle("collapsed"); setTimeout(renderAll, 340); });
+        document.querySelector(".expand-comparables").addEventListener("click", function () { tw.classList.toggle("collapsed"); });
+      })();
+
+      // ── Données ──
+      var QUARTERS = [], OBS = [], MARKETS = { Bordeaux: [], Paris: [], Lyon: [] }, TAUX = [], SALES = [];
+      var DPE = { A: "#009036", B: "#52b153", C: "#a5cc74", D: "#f4e70f", E: "#f0b40f", F: "#eb8235", G: "#d7221f" };
+      (function () {
+        var base = 3380;
+        for (var i = 0; i < 24; i++) {
+          var t = i / 23, med = Math.round(base + 600 * t + 42 * Math.sin(i * 0.9) + 18 * Math.cos(i * 0.45)), spr = Math.round(215 + 34 * Math.sin(i * 0.5));
+          var year = 2019 + Math.floor(i / 4), q = (i % 4) + 1, vol = Math.max(2, Math.round(9 + 5 * Math.sin(i * 0.7) + 3 * Math.cos(i * 0.33) + (i < 19 ? i * 0.22 : (24 - i) * 0.9)));
+          QUARTERS.push("T" + q + " " + year);
+          OBS.push({ q: "T" + q + " " + year, year: String(year), median: med, p25: med - spr, p75: med + spr, vol: vol });
+          MARKETS.Bordeaux.push(med);
+          MARKETS.Paris.push(Math.round(9200 + 1400 * t + 120 * Math.sin(i * 0.8) - (i > 14 ? (i - 14) * 60 : 0)));
+          MARKETS.Lyon.push(Math.round(4600 + 700 * t + 60 * Math.sin(i * 0.7)));
+          TAUX.push(+(1.15 + (i < 12 ? 0 : (i - 12) * 0.26) + 0.05 * Math.sin(i)).toFixed(2));
+        }
+        var letters = ["D", "C", "E", "D", "C", "B", "D", "E", "C", "F", "D", "C", "B", "E", "D", "C", "G", "D", "E", "C", "B", "D", "C", "A", "E", "D", "F", "C", "D", "B"];
+        for (var k = 0; k < 72; k++) {
+          var px = Math.round(3980 + 360 * Math.sin(k * 1.7) + 250 * Math.cos(k * 0.9) + 120 * Math.sin(k * 0.33));
+          SALES.push({ pxm2: px, dpe: letters[k % letters.length], surface: 60 + (k % 32) });
+        }
+      })();
+
+      function colors() { var s = getComputedStyle(root), g = function (n) { return s.getPropertyValue(n).trim(); }; return { accent: g("--accent"), accent2: g("--accent-2"), gold: g("--gold"), danger: g("--danger"), text: g("--text"), muted: g("--text-muted"), faint: g("--text-faint"), line: g("--hairline"), hs: g("--hairline-strong"), surface: g("--surface-solid") }; }
+      function isDark() { return root.getAttribute("data-theme") === "dark"; }
+      function fr(v) { return Math.round(v).toLocaleString("fr-FR"); }
+      function defsFor(svg, uid, c) {
+        var d = svg.append("defs");
+        var lg = d.append("linearGradient").attr("id", "lg" + uid).attr("gradientUnits", "userSpaceOnUse").attr("x1", 0).attr("y1", 0).attr("x2", 1).attr("y2", 0);
+        lg.append("stop").attr("offset", "0%").attr("stop-color", c.accent); lg.append("stop").attr("offset", "100%").attr("stop-color", c.accent2);
+        var ag = d.append("linearGradient").attr("id", "ag" + uid).attr("x1", 0).attr("y1", 0).attr("x2", 0).attr("y2", 1);
+        ag.append("stop").attr("offset", "0%").attr("stop-color", c.accent).attr("stop-opacity", isDark() ? 0.42 : 0.28);
+        ag.append("stop").attr("offset", "100%").attr("stop-color", c.accent).attr("stop-opacity", 0);
+        var f = d.append("filter").attr("id", "bl" + uid).attr("x", "-60%").attr("y", "-60%").attr("width", "220%").attr("height", "220%");
+        f.append("feGaussianBlur").attr("stdDeviation", isDark() ? 3.5 : 0.0001).attr("result", "b");
+        var m = f.append("feMerge"); m.append("feMergeNode").attr("in", "b"); m.append("feMergeNode").attr("in", "SourceGraphic");
+        return d;
+      }
+      function tipEl(el) { var t = el.querySelector(".d3tip"); if (!t) { t = document.createElement("div"); t.className = "d3tip"; el.appendChild(t); } return t; }
+
+      // ── Graphe 1 : médiane €/m² (aire + ruban + ligne dégradé/bloom + volume + crosshair) ──
+      function drawMain(el) {
+        var c = colors(); el.innerHTML = ""; var W = el.clientWidth, H = el.clientHeight; if (!W || !H) return;
+        var mT = 16, mR = 54, mB = 38, mL = 10, volH = 36, gap = 12, iw = W - mL - mR, ih = H - mT - mB, pH = ih - volH - gap, n = OBS.length;
+        var x = d3.scaleLinear().domain([0, n - 1]).range([mL, mL + iw]);
+        var lo = d3.min(OBS, function (d) { return d.p25; }), hi = d3.max(OBS, function (d) { return d.p75; }), pad = (hi - lo) * 0.28;
+        var y = d3.scaleLinear().domain([lo - pad, hi + pad]).range([mT + pH, mT]);
+        var yV = d3.scaleLinear().domain([0, d3.max(OBS, function (d) { return d.vol; })]).range([mT + pH + gap + volH, mT + pH + gap]);
+        var svg = d3.select(el).append("svg").attr("width", W).attr("height", H).style("display", "block");
+        var defs = defsFor(svg, "M", c); defs.select("#lgM").attr("x1", mL).attr("x2", mL + iw);
+        // v2 — dégradé ANIMÉ en flux (Nadieh Bremer : spreadMethod reflect + x1/x2 animés)
+        var fg = defs.append("linearGradient").attr("id", "flowM").attr("gradientUnits", "userSpaceOnUse").attr("spreadMethod", "reflect").attr("x1", mL).attr("y1", 0).attr("x2", mL + iw).attr("y2", 0);
+        [[0, c.accent], [0.28, c.accent2], [0.5, "#eafffb"], [0.72, c.accent2], [1, c.accent]].forEach(function (s) { fg.append("stop").attr("offset", (s[0] * 100) + "%").attr("stop-color", s[1]); });
+        fg.append("animate").attr("attributeName", "x1").attr("values", mL + ";" + (mL + iw)).attr("dur", "6s").attr("repeatCount", "indefinite");
+        fg.append("animate").attr("attributeName", "x2").attr("values", (mL + iw) + ";" + (mL + 2 * iw)).attr("dur", "6s").attr("repeatCount", "indefinite");
+        // grain feTurbulence (très subtil, sombre seulement) + halo large
+        var gr = defs.append("filter").attr("id", "grainM").attr("x", "0").attr("y", "0").attr("width", "100%").attr("height", "100%");
+        gr.append("feTurbulence").attr("type", "fractalNoise").attr("baseFrequency", "0.9").attr("numOctaves", "2").attr("stitchTiles", "stitch").attr("result", "n");
+        gr.append("feColorMatrix").attr("in", "n").attr("type", "matrix").attr("values", "0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.6 0");
+        var wide = defs.append("filter").attr("id", "haloM").attr("x", "-60%").attr("y", "-60%").attr("width", "220%").attr("height", "220%");
+        wide.append("feGaussianBlur").attr("stdDeviation", isDark() ? 7 : 0.0001);
+        y.ticks(4).forEach(function (v) { svg.append("line").attr("x1", mL).attr("x2", mL + iw).attr("y1", y(v)).attr("y2", y(v)).attr("stroke", c.line); svg.append("text").attr("x", W - mR + 6).attr("y", y(v) + 3).attr("fill", c.faint).attr("font-size", 9).style("font-family", "var(--mono)").text(fr(v)); });
+        svg.append("path").datum(OBS).attr("fill", c.accent).attr("opacity", isDark() ? 0.12 : 0.08).attr("d", d3.area().x(function (d, i) { return x(i); }).y0(function (d) { return y(d.p25); }).y1(function (d) { return y(d.p75); }).curve(d3.curveMonotoneX));
+        var areaGen = d3.area().x(function (d, i) { return x(i); }).y0(mT + pH).y1(function (d) { return y(d.median); }).curve(d3.curveMonotoneX);
+        svg.append("path").datum(OBS).attr("fill", "url(#agM)").attr("d", areaGen);
+        var clip = defs.append("clipPath").attr("id", "clipM"); clip.append("path").datum(OBS).attr("d", areaGen);
+        if (isDark()) svg.append("rect").attr("x", mL).attr("y", mT).attr("width", iw).attr("height", pH).attr("filter", "url(#grainM)").attr("clip-path", "url(#clipM)").attr("opacity", 0.06).style("mix-blend-mode", "overlay");
+        var lineGen = d3.line().x(function (d, i) { return x(i); }).y(function (d) { return y(d.median); }).curve(d3.curveMonotoneX);
+        if (isDark()) svg.append("path").datum(OBS).attr("fill", "none").attr("stroke", c.accent).attr("stroke-width", 4).attr("opacity", 0.4).attr("filter", "url(#haloM)").attr("d", lineGen);
+        var p = svg.append("path").datum(OBS).attr("fill", "none").attr("stroke", flowOn ? "url(#flowM)" : "url(#lgM)").attr("stroke-width", 2.4).attr("stroke-linecap", "round").attr("filter", "url(#blM)").attr("d", lineGen);
+        var L = p.node().getTotalLength(); p.attr("stroke-dasharray", L + " " + L).attr("stroke-dashoffset", L).transition().duration(1000).ease(d3.easeCubicOut).attr("stroke-dashoffset", 0);
+        OBS.forEach(function (d, i) { svg.append("rect").attr("x", x(i) - 3).attr("width", 6).attr("y", yV(d.vol)).attr("height", (mT + pH + gap + volH) - yV(d.vol)).attr("rx", 1).attr("fill", c.accent).attr("opacity", 0.2); });
+        var seen = {}; OBS.forEach(function (d, i) { if (!seen[d.year]) { seen[d.year] = 1; svg.append("text").attr("x", x(i)).attr("y", H - 6).attr("text-anchor", "middle").attr("fill", c.faint).attr("font-size", 9).style("font-family", "var(--mono)").text(d.year); } });
+        var last = OBS[n - 1], ex = x(n - 1), ey = y(last.median);
+        var ring = svg.append("circle").attr("cx", ex).attr("cy", ey).attr("r", 4).attr("fill", "none").attr("stroke", c.accent).attr("opacity", 0.7);
+        ring.append("animate").attr("attributeName", "r").attr("values", "4;13").attr("dur", "2.2s").attr("repeatCount", "indefinite");
+        ring.append("animate").attr("attributeName", "opacity").attr("values", "0.7;0").attr("dur", "2.2s").attr("repeatCount", "indefinite");
+        svg.append("circle").attr("cx", ex).attr("cy", ey).attr("r", 3.6).attr("fill", c.accent).attr("filter", "url(#blM)");
+        var fv = svg.append("line").attr("y1", mT).attr("y2", mT + pH).attr("stroke", c.hs).attr("stroke-dasharray", "3 3").style("opacity", 0);
+        var fd = svg.append("circle").attr("r", 5).attr("fill", c.accent).attr("stroke", c.surface).attr("stroke-width", 1.6).style("opacity", 0);
+        var tip = tipEl(el);
+        svg.append("rect").attr("x", mL).attr("y", mT).attr("width", iw).attr("height", ih).attr("fill", "transparent").style("cursor", "crosshair")
+          .on("mousemove", function (ev) { var px = d3.pointer(ev, this)[0], i = Math.max(0, Math.min(n - 1, Math.round(x.invert(px)))), d = OBS[i]; fv.attr("x1", x(i)).attr("x2", x(i)).style("opacity", 1); fd.attr("cx", x(i)).attr("cy", y(d.median)).style("opacity", 1); tip.style.opacity = 1; tip.style.left = Math.max(82, Math.min(W - 82, x(i))) + "px"; tip.style.top = y(d.median) + "px"; tip.innerHTML = '<div class="q">' + d.q + '</div><div class="row"><span>Médiane</span><b>' + fr(d.median) + ' €/m²</b></div><div class="row"><span>P25–P75</span><b>' + fr(d.p25) + "–" + fr(d.p75) + '</b></div><div class="row"><span>Ventes</span><b>' + d.vol + "</b></div>"; })
+          .on("mouseleave", function () { fv.style("opacity", 0); fd.style("opacity", 0); tip.style.opacity = 0; });
+      }
+
+      // ── Graphe 2 : comparer des marchés (lignes dégradé + focus/dim + légende) ──
+      var cmpSeries = ["Bordeaux", "Paris"];
+      var flowOn = true;
+      function drawCompare(el) {
+        var c = colors(); el.innerHTML = ""; var W = el.clientWidth, H = el.clientHeight; if (!W || !H) return;
+        var mT = 12, mR = 46, mB = 24, mL = 8, iw = W - mL - mR, ih = H - mT - mB, n = QUARTERS.length;
+        var x = d3.scaleLinear().domain([0, n - 1]).range([mL, mL + iw]);
+        var all = []; cmpSeries.forEach(function (s) { all = all.concat(MARKETS[s]); });
+        var y = d3.scaleLinear().domain([d3.min(all) * 0.96, d3.max(all) * 1.04]).range([mT + ih, mT]);
+        var pal = { Bordeaux: c.accent, Paris: c.gold, Lyon: c.accent2 };
+        var svg = d3.select(el).append("svg").attr("width", W).attr("height", H).style("display", "block");
+        var defs2 = svg.append("defs"); var f = defs2.append("filter").attr("id", "blC").attr("x", "-60%").attr("y", "-60%").attr("width", "220%").attr("height", "220%");
+        f.append("feGaussianBlur").attr("stdDeviation", isDark() ? 2.6 : 0.0001).attr("result", "b"); var m = f.append("feMerge"); m.append("feMergeNode").attr("in", "b"); m.append("feMergeNode").attr("in", "SourceGraphic");
+        y.ticks(4).forEach(function (v) { svg.append("line").attr("x1", mL).attr("x2", mL + iw).attr("y1", y(v)).attr("y2", y(v)).attr("stroke", c.line); svg.append("text").attr("x", W - mR + 6).attr("y", y(v) + 3).attr("fill", c.faint).attr("font-size", 9).style("font-family", "var(--mono)").text((v / 1000).toFixed(1) + "k"); });
+        var seen = {}; QUARTERS.forEach(function (qq, i) { var yr = qq.slice(3); if (!seen[yr] && qq.indexOf("T1") === 0) { seen[yr] = 1; svg.append("text").attr("x", x(i)).attr("y", H - 6).attr("text-anchor", "middle").attr("fill", c.faint).attr("font-size", 9).style("font-family", "var(--mono)").text(yr); } });
+        var line = d3.line().x(function (d, i) { return x(i); }).y(function (d) { return y(d); }).curve(d3.curveMonotoneX);
+        var paths = {};
+        cmpSeries.forEach(function (s) {
+          var pa = svg.append("path").datum(MARKETS[s]).attr("fill", "none").attr("stroke", pal[s]).attr("stroke-width", 2.2).attr("stroke-linecap", "round").attr("filter", "url(#blC)").attr("d", line).attr("data-s", s);
+          var L = pa.node().getTotalLength(); pa.attr("stroke-dasharray", L + " " + L).attr("stroke-dashoffset", L).transition().duration(900).ease(d3.easeCubicOut).attr("stroke-dashoffset", 0);
+          paths[s] = pa;
+        });
+        // légende cliquable (focus/dim)
+        var lg = document.getElementById("cmpLegend"); lg.innerHTML = "";
+        cmpSeries.forEach(function (s) {
+          var sp = document.createElement("span"); sp.innerHTML = '<i style="background:' + pal[s] + '"></i>' + s; lg.appendChild(sp);
+          sp.onmouseenter = function () { cmpSeries.forEach(function (o) { paths[o].attr("opacity", o === s ? 1 : 0.18); }); };
+          sp.onmouseleave = function () { cmpSeries.forEach(function (o) { paths[o].attr("opacity", 1); }); };
+        });
+        var tip = tipEl(el), fv = svg.append("line").attr("y1", mT).attr("y2", mT + ih).attr("stroke", c.hs).attr("stroke-dasharray", "3 3").style("opacity", 0);
+        svg.append("rect").attr("x", mL).attr("y", mT).attr("width", iw).attr("height", ih).attr("fill", "transparent").style("cursor", "crosshair")
+          .on("mousemove", function (ev) { var px = d3.pointer(ev, this)[0], i = Math.max(0, Math.min(n - 1, Math.round(x.invert(px)))); fv.attr("x1", x(i)).attr("x2", x(i)).style("opacity", 1); tip.style.opacity = 1; tip.style.left = Math.max(82, Math.min(W - 82, x(i))) + "px"; tip.style.top = mT + 8 + "px"; tip.innerHTML = '<div class="q">' + QUARTERS[i] + "</div>" + cmpSeries.map(function (s) { return '<div class="row"><span>' + s + '</span><b>' + fr(MARKETS[s][i]) + " €/m²</b></div>"; }).join(""); })
+          .on("mouseleave", function () { fv.style("opacity", 0); tip.style.opacity = 0; });
+      }
+
+      // ── Graphe 3 : beeswarm des ventes (€/m² × DPE) ──
+      function drawBees(el) {
+        var c = colors(); el.innerHTML = ""; var W = el.clientWidth, H = el.clientHeight; if (!W || !H) return;
+        var mT = 8, mB = 22, mL = 6, mR = 6, iw = W - mL - mR;
+        var x = d3.scaleLinear().domain([d3.min(SALES, function (d) { return d.pxm2; }) - 80, d3.max(SALES, function (d) { return d.pxm2; }) + 80]).range([mL, mL + iw]);
+        var cy = mT + (H - mT - mB) / 2;
+        var nodes = SALES.map(function (d) { return { pxm2: d.pxm2, dpe: d.dpe, surface: d.surface, x: x(d.pxm2), y: cy }; });
+        var sim = d3.forceSimulation(nodes).force("x", d3.forceX(function (d) { return x(d.pxm2); }).strength(1)).force("y", d3.forceY(cy).strength(0.045)).force("collide", d3.forceCollide(5.4)).stop();
+        for (var i = 0; i < 160; i++) sim.tick();
+        var svg = d3.select(el).append("svg").attr("width", W).attr("height", H).style("display", "block");
+        // Beeswarm : toujours des points NETS (chaque vente reste lisible). Glow discret en sombre.
+        var defs = svg.append("defs"), filterUrl = null;
+        if (isDark()) {
+          var bl = defs.append("filter").attr("id", "blB").attr("x", "-60%").attr("y", "-60%").attr("width", "220%").attr("height", "220%");
+          bl.append("feGaussianBlur").attr("stdDeviation", 2.4).attr("result", "b"); var mm = bl.append("feMerge"); mm.append("feMergeNode").attr("in", "b"); mm.append("feMergeNode").attr("in", "SourceGraphic");
+          filterUrl = "url(#blB)";
+        }
+        [3200, 3600, 4000, 4400, 4800].forEach(function (v) { if (v < x.domain()[1] && v > x.domain()[0]) { svg.append("line").attr("x1", x(v)).attr("x2", x(v)).attr("y1", mT).attr("y2", H - mB).attr("stroke", c.line); svg.append("text").attr("x", x(v)).attr("y", H - 6).attr("text-anchor", "middle").attr("fill", c.faint).attr("font-size", 9).style("font-family", "var(--mono)").text(fr(v)); } });
+        var tip = tipEl(el);
+        var g = svg.append("g").style("filter", filterUrl);
+        g.selectAll("circle").data(nodes).enter().append("circle").attr("cx", function (d) { return d.x; }).attr("cy", function (d) { return d.y; }).attr("r", 0).attr("fill", function (d) { return DPE[d.dpe]; }).attr("opacity", isDark() ? 0.92 : 0.85)
+          .on("mousemove", function (ev, d) { tip.style.opacity = 1; tip.style.left = Math.max(70, Math.min(W - 70, d.x)) + "px"; tip.style.top = d.y + "px"; tip.innerHTML = '<div class="row"><span>Prix</span><b>' + fr(d.pxm2) + ' €/m²</b></div><div class="row"><span>Surface</span><b>' + d.surface + ' m²</b></div><div class="row"><span>DPE</span><b>' + d.dpe + "</b></div>"; })
+          .on("mouseleave", function () { tip.style.opacity = 0; })
+          .transition().delay(function (d, i) { return i * 7; }).duration(500).ease(d3.easeBackOut).attr("r", 4.6);
+        var dl = document.getElementById("dpeLegend"); dl.innerHTML = ""; ["A", "B", "C", "D", "E", "F", "G"].forEach(function (k) { var sp = document.createElement("span"); sp.innerHTML = '<i style="background:' + DPE[k] + '"></i>' + k; dl.appendChild(sp); });
+      }
+
+      // ── Graphe 4 : prix vs taux (double axe) ──
+      function drawCorr(el) {
+        var c = colors(); el.innerHTML = ""; var W = el.clientWidth, H = el.clientHeight; if (!W || !H) return;
+        var mT = 12, mR = 40, mB = 22, mL = 44, iw = W - mL - mR, ih = H - mT - mB, n = QUARTERS.length;
+        var x = d3.scaleLinear().domain([0, n - 1]).range([mL, mL + iw]);
+        var yP = d3.scaleLinear().domain([d3.min(MARKETS.Bordeaux) * 0.96, d3.max(MARKETS.Bordeaux) * 1.04]).range([mT + ih, mT]);
+        var yT = d3.scaleLinear().domain([0, 5]).range([mT + ih, mT]);
+        var svg = d3.select(el).append("svg").attr("width", W).attr("height", H).style("display", "block");
+        var defsR = defsFor(svg, "R", c); var lg = defsR.select("#lgR"); lg.attr("x1", mL).attr("x2", mL + iw);
+        yP.ticks(4).forEach(function (v) { svg.append("line").attr("x1", mL).attr("x2", mL + iw).attr("y1", yP(v)).attr("y2", yP(v)).attr("stroke", c.line); svg.append("text").attr("x", mL - 6).attr("y", yP(v) + 3).attr("text-anchor", "end").attr("fill", c.faint).attr("font-size", 9).style("font-family", "var(--mono)").text((v / 1000).toFixed(1) + "k"); });
+        [0, 2, 4].forEach(function (v) { svg.append("text").attr("x", W - mR + 6).attr("y", yT(v) + 3).attr("fill", c.gold).attr("font-size", 9).style("font-family", "var(--mono)").text(v + "%"); });
+        var seen = {}; QUARTERS.forEach(function (qq, i) { var yr = qq.slice(3); if (!seen[yr] && qq.indexOf("T1") === 0) { seen[yr] = 1; svg.append("text").attr("x", x(i)).attr("y", H - 6).attr("text-anchor", "middle").attr("fill", c.faint).attr("font-size", 9).style("font-family", "var(--mono)").text(yr); } });
+        svg.append("path").datum(MARKETS.Bordeaux).attr("fill", "url(#agR)").attr("d", d3.area().x(function (d, i) { return x(i); }).y0(mT + ih).y1(function (d) { return yP(d); }).curve(d3.curveMonotoneX));
+        var p = svg.append("path").datum(MARKETS.Bordeaux).attr("fill", "none").attr("stroke", "url(#lgR)").attr("stroke-width", 2.2).attr("filter", "url(#blR)").attr("d", d3.line().x(function (d, i) { return x(i); }).y(function (d) { return yP(d); }).curve(d3.curveMonotoneX));
+        var L = p.node().getTotalLength(); p.attr("stroke-dasharray", L + " " + L).attr("stroke-dashoffset", L).transition().duration(900).ease(d3.easeCubicOut).attr("stroke-dashoffset", 0);
+        svg.append("path").datum(TAUX).attr("fill", "none").attr("stroke", c.gold).attr("stroke-width", 2).attr("stroke-dasharray", "4 3").attr("d", d3.line().x(function (d, i) { return x(i); }).y(function (d) { return yT(d); }).curve(d3.curveMonotoneX));
+      }
+
+      function renderAll() { drawMain(document.getElementById("chMain")); drawCompare(document.getElementById("chCompare")); drawBees(document.getElementById("chBees")); drawCorr(document.getElementById("chCorr")); }
+      window.addEventListener("resize", function () { clearTimeout(window._rt); window._rt = setTimeout(renderAll, 150); });
+      renderAll();
+
+      document.getElementById("cmpAdd").addEventListener("click", function () { if (cmpSeries.indexOf("Lyon") < 0) { cmpSeries.push("Lyon"); drawCompare(document.getElementById("chCompare")); } });
+      document.getElementById("flowToggle").addEventListener("click", function () { flowOn = !flowOn; this.classList.toggle("on", flowOn); drawMain(document.getElementById("chMain")); });
+
+      document.querySelectorAll(".k-val[data-count]").forEach(function (el) {
+        var target = parseFloat(el.getAttribute("data-count")), dec = +(el.getAttribute("data-dec") || 0), suf = el.getAttribute("data-suf") || "", pre = el.getAttribute("data-pre") || "", t0 = performance.now();
+        (function step(now) { var p = Math.min(1, (now - t0) / 900), e = 1 - Math.pow(1 - p, 3); el.textContent = pre + (target * e).toLocaleString("fr-FR", { minimumFractionDigits: dec, maximumFractionDigits: dec }) + suf; if (p < 1) requestAnimationFrame(step); })(performance.now());
+      });
+      document.getElementById("synthGen").addEventListener("click", function () { var b = this; b.disabled = true; b.innerHTML = '<span class="spin"></span>Génération…'; setTimeout(function () { document.getElementById("synthEmpty").style.display = "none"; document.getElementById("synthOut").classList.add("on"); }, 1300); });
+    </script>
+  </body>
+</html>

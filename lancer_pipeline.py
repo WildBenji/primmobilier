@@ -6,7 +6,10 @@ Enchaîne, dans l'ordre, les étapes documentées dans docs/PIPELINE.md :
   2. pipeline.recuperation_non_match    -> recup_liens (cascade A/B/C)
   3. pipeline.geocodage_residuel        -> recup_liens_final + pertes (BAN >= seuil)
   4. pipeline.reduire_referentiels      -> artefacts service réduits au graphe DVF
-  5. pipeline.construire_comparables    -> comparables + pont_batiment + adresses_ref
+  5. telechargement.preparer_dpe        -> DPE mixé + id_rnb résolu (ademe/cle_ban/spatial)
+     + telechargement.preparer_copro    -> copropriétés RNIC par parcelle
+     + telechargement.preparer_loyers   -> indicateurs de loyers par commune (national)
+  6. pipeline.construire_comparables    -> comparables + pont_batiment + adresses_ref
 
 La mesure de joignabilité (pipeline.qualite_jointure) est un diagnostic optionnel,
 hors du chemin de production ; on la lance avec --mesure.
@@ -26,8 +29,10 @@ from pipeline.qualite_jointure import main as mesurer
 from pipeline.recuperation_non_match import main as recuperer
 from pipeline.reduire_referentiels import main as reduire
 from telechargement.preparer_codes_postaux import main as telecharger_codes_postaux
-from telechargement.preparer_dpe import preparer_dpe as construire_dpe
+from telechargement.preparer_copro import preparer_copro as construire_copro
 from telechargement.preparer_donnees import main as telecharger
+from telechargement.preparer_dpe import preparer_dpe as construire_dpe
+from telechargement.preparer_loyers import preparer_loyers as construire_loyers
 
 
 def _etape(n: int, total: int, titre: str) -> None:
@@ -58,8 +63,10 @@ def main(dept: str, mesure: bool = False) -> None:
     _etape(4, total, "Réduction des référentiels au graphe DVF")
     reduire(dept)
 
-    _etape(5, total, "DPE — récupération (pré S3 + post API résumable) + mix nettoyé")
+    _etape(5, total, "Enrichissements — DPE (id_rnb résolu), copropriétés RNIC, loyers communes")
     construire_dpe(dept)
+    construire_copro(dept)
+    construire_loyers()
 
     _etape(6, total, "Construction de la table comparables + pont + adresses_ref")
     construire(dept)

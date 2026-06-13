@@ -24,6 +24,9 @@ qui n'est pas rattachable de façon défendable est soit localisé à la **parce
 | **Adresses extraites du cadastre** (DGFiP/Etalab) | lien **direct** parcelle↔adresse (source primaire BAN, `codesParcelles` + `destinationPrincipale`) | NDJSON-full par dept |
 | **Contours communes** (geo.api.gouv.fr / IGN) | emprise « commune » + briques des contours code postal | GeoJSON par dept (1 appel), figé en local |
 | **COG** (INSEE) | normalisation des codes communes périmés (fusions) + nom courant | `v_commune` + `v_mvt_commune` (national, figé en local) |
+| **DPE** (ADEME) | signal énergétique (étiquettes A-G, `rnb_lien`) | API data-fair (post-2021) + S3 (pré-2021) — cf. SOURCES_DONNEES §3.1 |
+| **RNIC** (ANAH) | copropriétés par référence cadastrale | CSV national — cf. SOURCES_DONNEES §3.4 |
+| **Carte des loyers** (SDES × ANIL) | loyer de référence + rendement brut par commune | CSV national annuel — cf. SOURCES_DONNEES §3.5 |
 
 ## Architecture
 
@@ -35,6 +38,10 @@ telechargement/      _telechargement.py         # download HTTP robuste partagé
                      preparer_cadastre.py       # cadastre Etalab (sections/parcelles/bâtiments/lieux-dits) -> GeoParquet (par dept) — appelé par preparer_donnees
                      preparer_adresses_parcelle.py # crosswalk DIRECT parcelle↔adresse (NDJSON cadastre + BAN cad_parcelles, fusionnés + harmonisés) -> GeoParquet (par dept) — appelé par preparer_donnees
                      preparer_codes_postaux.py  # contours codes postaux hybrides (union communes + partition BAN) -> GeoParquet (par dept présent)
+                     recuperer_dpe_post2021.py  # fetch API ADEME résumable (curseur checkpointé) -> cache parquet
+                     preparer_dpe.py            # DPE pré+post 2021 mixés, nettoyés, id_rnb résolu en cascade -> dpe_{dept}.parquet
+                     preparer_copro.py          # copropriétés RNIC par référence cadastrale -> copro_{dept}.parquet
+                     preparer_loyers.py         # carte des loyers SDES/ANIL -> loyers_communes.parquet (national)
 pipeline/
   commun.py          # chemins, points RNB, table mutations (partagés)
   qualite_jointure.py        # [diagnostic] mesure du taux de match
@@ -91,15 +98,25 @@ flowchart TD
     RED --> S5[/bdnb_batiments_service_DEPT.parquet/]
     RED --> S6[/cadastre_parcelles_service_DEPT.parquet/]
 
+    ADEME[API ADEME + S3 pre-2021] --> DPE[telechargement.preparer_dpe]
+    DPE --> E1[/dpe_DEPT.parquet/]
+    RNIC[CSV RNIC national] --> COPRO[telechargement.preparer_copro]
+    COPRO --> E2[/copro_DEPT.parquet/]
+    LOY[CSV carte des loyers] --> LOYP[telechargement.preparer_loyers]
+    LOYP --> E3[/loyers_communes.parquet/]
+
     RLF --> CMP[construire_comparables]
     I1 --> CMP
     S1 --> CMP
     S2 --> CMP
     S4 --> CMP
     S5 --> CMP
+    E1 --> CMP
+    E2 --> CMP
     CMP --> C1[/comparables_DEPT.parquet/]
     CMP --> C2[/pont_batiment_DEPT.parquet/]
     CMP --> C3[/adresses_ref_DEPT.parquet/]
+    E3 -.consommé par le service web.-> C1
 
     style C1 fill:#d8f5d8
     style C2 fill:#d8f5d8
@@ -115,13 +132,14 @@ flowchart TD
 | 2 | `pipeline.recuperation_non_match` | interim + BAN | `recup_liens_` | récupère les ~2–5% de ventes dont la parcelle est absente du RNB |
 | 3 | `pipeline.geocodage_residuel` | `recup_liens_` + DVF + API BAN | `recup_liens_final_`, `pertes_` | géocode le résiduel (score ≥ 0,95) ; le reste = perdu |
 | 4 | `pipeline.reduire_referentiels` | interim complet + `recup_liens_final_` | `*_service_` | réduit RNB, BAN, BDNB et Cadastre aux parcelles DVF + bâtiments récupérés |
-| 5 | `pipeline.construire_comparables` | DVF + artefacts service + `recup_liens_final_` | `comparables_`, `pont_batiment_`, `adresses_ref_` | assemble la table de service |
+| 5 | `telechargement.preparer_dpe` + `preparer_copro` + `preparer_loyers` | API ADEME + S3 pré-2021, CSV RNIC, CSV loyers | `dpe_`, `copro_`, `loyers_communes` | **enrichissements** : DPE mixé pré/post avec `id_rnb` résolu en cascade (`ademe`/`cle_ban`/`spatial`), copropriétés RNIC par parcelle, indicateurs de loyers par commune (national, consommé par le service web) |
+| 6 | `pipeline.construire_comparables` | DVF + artefacts service + `recup_liens_final_` + `dpe_` + `copro_` | `comparables_`, `pont_batiment_`, `adresses_ref_` | assemble la table de service |
 
 ### Le cœur : résolution `rnb_id` + confiance
 
 Le rattachement au bâtiment suit une cascade par fiabilité décroissante. Les non-matchs
 (parcelle absente du RNB) passent par la récupération (étapes 2-3) ; les matchs directs sont
-résolus à la construction (étape 4).
+résolus à la construction (étape 6, `construire_comparables`).
 
 ```mermaid
 flowchart TD
@@ -147,11 +165,13 @@ flowchart TD
 ## Modèle de données (sorties)
 
 - **`comparables_{dept}`** — 1 ligne par **bien logement vendu** (dédoublonné des lignes DVF
-  éclatées). Colonnes : `id_mutation, date_mutation, nature_mutation, code_commune, nom_commune,
+  éclatées). Colonnes cœur : `id_mutation, date_mutation, nature_mutation, code_commune, nom_commune,
   id_parcelle, adresse_dvf, type_local, surface_reelle_bati, nombre_pieces_principales,
   valeur_fonciere, rnb_id, batiment_groupe_id, resolution_statut, confiance, source,
-  flag_multi_bien, flag_multi_adresse, commune_modif_origine, commune_modif_date`.
-  Les deux dernières tracent une **modification de commune** (fusion / renommage COG) :
+  flag_multi_bien, flag_multi_adresse, commune_modif_origine, commune_modif_date` ;
+  + enrichissements (étape 5) : `etiquette_dpe, dpe_date, dpe_lien` (DPE du bâtiment, lien
+  qualifié) et colonnes copropriété RNIC (lots, période, syndic, `copro_n_sur_parcelle`).
+  `commune_modif_*` tracent une **modification de commune** (fusion / renommage COG) :
   identité d'origine `Nom (CODE)` + date de l'événement, non nulles seulement si la commune
   de la vente a changé depuis (affichées au détail du bien).
 - **`pont_batiment_{dept}`** — `(id_mutation, id_parcelle) → rnb_id, batiment_groupe_id,
@@ -243,7 +263,8 @@ Le POC web (`web_poc/`) sert de modèle pour les futures fonctions interactives 
   le pipeline conserve la parcelle et ses attributs sourcés sans choisir par surface, distance ou
   taille apparente.
 - **Pas de niveau appartement.** DVF n'a pas de n° d'appartement (seulement le lot de copro,
-  non joignable). Départager les logements d'un immeuble = itération future (DPE/surface).
+  non joignable). L'appariement DPE-par-surface existe (heuristique du lot probable, `/api/dpe`),
+  mais identifier le logement exact d'un immeuble reste hors de portée.
 - **Parcelle de référence ≠ parcelle porteuse du bâti** (copropriété / division en volumes). Le
   repli RNB (cf. « Conventions de service web ») montre le bâti réel de la parcelle voisine en
   confiance haute, mais reste une **approximation étiquetée** : il ne désigne pas le logement précis,
@@ -270,10 +291,13 @@ uv run python -m telechargement.preparer_donnees 47
 uv run python -m pipeline.recuperation_non_match 47
 uv run python -m pipeline.geocodage_residuel 47 0.95
 uv run python -m pipeline.reduire_referentiels 47
+uv run python -m telechargement.preparer_dpe 47      # enrichissements (étape 5)
+uv run python -m telechargement.preparer_copro 47
+uv run python -m telechargement.preparer_loyers
 uv run python -m pipeline.construire_comparables 47
 ```
 
-## Résultats mesurés
+## Résultats mesurés (v1.5, avant enrichissements DPE/copro)
 
 | | Gironde (33, urbain) | Lot-et-Garonne (47, rural) |
 | --- | --- | --- |

@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="fr" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Primmobilier — Atlas du marché</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" />
+    <!-- On réutilise les composants et tokens du POC (mêmes valeurs que base.css). -->
+    <link rel="stylesheet" href="../static/app.css" />
+    <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+    <style>
+      /* ── Refonte Atlas dans le shell commun ────────────────────────────────
+         Clair par défaut (D13). Shell de navigation en haut, la carte et ses
+         panneaux flottants (verre, D18) remplissent le reste. Bouton Exporter
+         et compteur de crédits ajoutés. Carte factice (pas de MapLibre ici). */
+      /* Carte plein écran : le shell est un overlay qui s'auto-masque pour
+         maximiser la carte, et réapparaît quand la souris revient en haut.
+         Dessous concave (type macOS) : plein sur les côtés où vit le contenu,
+         creusé au milieu (vide) pour garder un maximum de carte visible même
+         déroulé. clip-path en unités objectBoundingBox => responsive sans JS,
+         et offsetHeight reste 56px donc la réactivité souris est identique. */
+      .shell {
+        position: fixed;
+        top: 0; left: 0; right: 0;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        gap: 22px;
+        height: 56px;
+        padding: 0 26px;
+        background: color-mix(in srgb, var(--surface) 90%, transparent);
+        -webkit-backdrop-filter: var(--glass);
+        backdrop-filter: var(--glass);
+        clip-path: url(#shellClip);
+        /* 1er drop-shadow = liseré 1px qui épouse tout le bord (dont la courbe
+           concave) ; 2e = ombre portée douce sous le bandeau. */
+        filter: drop-shadow(0 1.2px 0 var(--hairline-strong)) drop-shadow(0 7px 16px rgba(10, 16, 24, 0.24));
+        transform: translateY(-100%);
+        transition: transform 0.28s var(--ease);
+      }
+      .shell.show, .shell:focus-within { transform: translateY(0); }
+      /* Sombre : le liseré devient une lueur teal (signature néon) et l'ombre
+         se creuse pour détacher le bandeau de la carte sombre. */
+      :root[data-theme="dark"] .shell {
+        background: color-mix(in srgb, var(--surface) 82%, transparent);
+        filter: drop-shadow(0 1px 1px var(--accent-glow)) drop-shadow(0 9px 24px rgba(0, 0, 0, 0.55));
+      }
+      /* Onglet indicateur quand le shell est masqué. */
+      .shell-peek {
+        position: fixed; top: 0; left: 50%; transform: translateX(-50%);
+        width: 56px; height: 5px; border-radius: 0 0 7px 7px;
+        background: var(--hairline-strong); z-index: 18; opacity: 0.7;
+        transition: opacity 0.2s;
+      }
+      .shell.show ~ .shell-peek { opacity: 0; }
+
+      /* Les panneaux flottants se décalent EN DOUCEUR sous le shell quand il
+         descend (--shell-h : 0 → 56px, posé en JS). max-height ajustée pour que
+         le panneau ne déborde jamais : son bas reste à 14px du bord d'écran. */
+      :root { --shell-h: 0px; }
+      .panel {
+        top: calc(14px + var(--shell-h));
+        max-height: calc(100vh - 28px - var(--shell-h));
+        transition: top 0.28s var(--ease), max-height 0.28s var(--ease);
+      }
+      .table-wrap {
+        top: calc(14px + var(--shell-h));
+        transition: top 0.28s var(--ease);
+      }
+      .shell-brand {
+        display: flex; align-items: center; gap: 9px;
+        font-family: var(--font-display); font-size: 16px; font-weight: 600;
+        letter-spacing: 0.04em; text-transform: uppercase; color: var(--text);
+      }
+      .shell-nav { display: flex; gap: 6px; }
+      .shell-nav a {
+        padding: 7px 12px; border-radius: var(--r-sm); font-size: 13px;
+        color: var(--text-muted); text-decoration: none; transition: color .2s, background .2s;
+      }
+      .shell-nav a:hover { color: var(--text); background: var(--surface-2); }
+      .shell-nav a.active { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+      .shell-spacer { flex: 1; }
+      .shell-actions { display: flex; align-items: center; gap: 12px; }
+      .credits {
+        display: inline-flex; align-items: center; gap: 7px;
+        padding: 5px 11px; border: 1px solid var(--hairline); border-radius: 99px;
+        background: var(--surface-2); font-size: 12px; color: var(--text-muted);
+      }
+      .credits b { color: var(--accent); font-variant-numeric: tabular-nums; }
+      :root[data-theme="dark"] .credits b { text-shadow: 0 0 10px var(--accent-glow); }
+      .shell-actions .ghost {
+        padding: 7px 13px; border: 1px solid var(--hairline-strong); border-radius: var(--r-sm);
+        background: transparent; color: var(--text); font-size: 13px; cursor: pointer;
+      }
+      .shell-actions .ghost:hover { border-color: var(--accent-line); color: var(--accent); }
+
+      /* La carte occupe tout l'écran ; le shell flotte par-dessus. */
+      .app { height: 100%; }
+      :root .panel { animation: none; }
+
+      /* Carte factice — fond clair type Positron + routes + parc + rivière. */
+      #map {
+        background:
+          radial-gradient(circle at 76% 30%, rgba(122, 178, 128, 0.30) 0 6%, transparent 7%),
+          radial-gradient(circle at 20% 72%, rgba(122, 178, 128, 0.22) 0 9%, transparent 10%),
+          linear-gradient(118deg, transparent 30%, rgba(120, 172, 212, 0.38) 30.6% 33%, transparent 33.6%),
+          repeating-linear-gradient(26deg, transparent 0 92px, rgba(20, 30, 40, 0.05) 92px 94px),
+          repeating-linear-gradient(0deg, transparent 0 60px, rgba(20, 30, 40, 0.05) 60px 62px),
+          repeating-linear-gradient(90deg, transparent 0 60px, rgba(20, 30, 40, 0.05) 60px 62px),
+          #e8ebe6;
+      }
+      :root[data-theme="dark"] #map {
+        background:
+          radial-gradient(circle at 76% 30%, rgba(45, 212, 191, 0.10) 0 6%, transparent 7%),
+          linear-gradient(118deg, transparent 30%, rgba(34, 211, 238, 0.16) 30.6% 33%, transparent 33.6%),
+          repeating-linear-gradient(26deg, transparent 0 92px, rgba(255, 255, 255, 0.035) 92px 94px),
+          repeating-linear-gradient(0deg, transparent 0 60px, rgba(255, 255, 255, 0.03) 60px 62px),
+          repeating-linear-gradient(90deg, transparent 0 60px, rgba(255, 255, 255, 0.03) 60px 62px),
+          #0c1118;
+      }
+
+      /* Marqueurs factices sur la carte. */
+      /* Overlay carte dessiné en D3 (zone, comparables, cible) avec lueur. */
+      .mq-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
+
+      /* Bouton Exporter et ligne d'actions du résultat. */
+      .result-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 2px; }
+      .btn-export, .btn-soft {
+        min-height: 36px; border-radius: var(--r-sm); cursor: pointer; font: inherit;
+        font-size: 12.5px; font-weight: 600; display: inline-flex; align-items: center;
+        justify-content: center; gap: 7px; text-decoration: none;
+      }
+      .btn-export {
+        border: 0; color: var(--accent-ink);
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        box-shadow: 0 3px 16px var(--accent-glow);
+      }
+      .btn-export:hover { filter: brightness(1.07); }
+      .btn-soft { border: 1px solid var(--hairline-strong); background: var(--surface-2); color: var(--text); }
+      .btn-soft:hover { border-color: var(--accent-line); color: var(--accent); }
+
+      /* Frise : histogramme D3 (volume par trimestre + fenêtre sélectionnée). */
+      .tl-d3 { position: absolute; inset: 0; width: 100%; height: 100%; }
+      .timeline { animation: none; }
+    </style>
+  </head>
+  <body>
+    <!-- Shell de navigation commun -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><clipPath id="shellClip" clipPathUnits="objectBoundingBox"><path d="M0,0 L1,0 L1,1 C0.68,1 0.6,0.14 0.5,0.14 C0.4,0.14 0.32,1 0,1 Z" /></clipPath></defs></svg>
+    <nav class="shell">
+      <a class="shell-brand" href="accueil.html"><span class="brand-dot" aria-hidden="true"></span>Primmobilier</a>
+      <div class="shell-nav">
+        <a class="active" href="#">Atlas du marché</a>
+        <a href="observatoire.html">Observatoire</a>
+        <a href="#">Tarifs</a>
+      </div>
+      <div class="shell-spacer"></div>
+      <div class="shell-actions">
+        <span class="credits" title="Crédits restants ce mois"><b>5</b> crédits</span>
+        <button class="theme-toggle" id="themeToggle" type="button" aria-label="Basculer le thème">
+          <svg class="icon-sun" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5.2 5.2l1.7 1.7M17.1 17.1l1.7 1.7M18.8 5.2l-1.7 1.7M6.9 17.1l-1.7 1.7"/></svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/></svg>
+        </button>
+        <button class="ghost" type="button">Se connecter</button>
+      </div>
+    </nav>
+    <div class="shell-peek" aria-hidden="true" title="Revenez en haut pour afficher le menu"></div>
+
+    <main class="app">
+      <!-- Panneau d'analyse flottant (verre sur carte, D18) -->
+      <section class="panel" aria-label="Analyse">
+        <div class="mode-control" aria-label="Mode">
+          <button type="button" class="active">Estimation</button>
+          <button type="button">Exploration</button>
+        </div>
+
+        <div class="search-wrap">
+          <label class="field search-field">
+            <span>Adresse, zone ou ville</span>
+            <input value="12 cours de l'Intendance, Bordeaux" />
+          </label>
+        </div>
+
+        <div class="grid">
+          <label class="field"><span>Type</span>
+            <select><option>Maison</option><option>Appartement</option></select>
+          </label>
+          <label class="field"><span>Surface</span><input type="number" value="92" /></label>
+          <label class="field"><span>Pièces</span><input type="number" value="4" /></label>
+          <label class="field"><span>Prix soumis</span><input type="number" placeholder="optionnel" /></label>
+        </div>
+
+        <div class="section-label">Emprise</div>
+        <div class="scope-control" aria-label="Emprise de comparaison">
+          <button type="button" class="active">Rayon</button>
+          <button type="button">Section</button>
+          <button type="button">Code postal</button>
+          <button type="button">Commune</button>
+        </div>
+
+        <div class="zone-row">
+          <label class="zone-toggle">
+            <input type="checkbox" checked />
+            <span class="switch" aria-hidden="true"></span>
+            <span>Afficher la zone sur la carte</span>
+          </label>
+          <input class="zone-color" type="range" min="0" max="360" step="2" value="170" aria-label="Couleur de la zone" />
+        </div>
+
+        <div class="radius-control slider-radius">
+          <div class="radius-head"><span>Rayon</span><strong>600 m</strong></div>
+          <input type="range" min="0" max="13" step="1" value="4" aria-label="Rayon de comparaison" />
+          <div class="radius-scale" aria-hidden="true"><span>100 m</span><span>20 km</span></div>
+        </div>
+
+        <div class="history-control slider-history">
+          <div class="radius-head"><span>Historique</span><strong>0 – 5 ans</strong></div>
+          <div class="dual-range">
+            <input type="range" min="0" max="5" step="1" value="0" aria-label="Âge minimum" />
+            <input type="range" min="0" max="5" step="1" value="5" aria-label="Âge maximum" />
+          </div>
+          <div class="radius-scale" aria-hidden="true"><span>0</span><span>5 ans</span></div>
+        </div>
+
+        <div class="toolbar">
+          <button id="estimate" type="button">Estimer</button>
+          <button id="reset" type="button">Reset</button>
+        </div>
+
+        <section class="result">
+          <div>
+            <span class="label">Prix médian estimé</span>
+            <strong id="estimatedPrice">287 400 €</strong>
+          </div>
+          <div class="metrics">
+            <span><b>3 980</b> €/m²</span>
+            <span><button class="scope-chip sales-chip" type="button"><b>72</b> ventes</button></span>
+            <span><button class="scope-chip" type="button">Rayon 600 m</button></span>
+          </div>
+          <div class="result-stats">
+            <div class="range">Fourchette 264 000 € – 312 000 € (P25–P75)</div>
+            <div class="range">Loyer médian ~13,5 €/m² · rendement brut ~3,9 %</div>
+          </div>
+          <div class="result-actions">
+            <button class="btn-export" type="button">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>
+              Exporter
+            </button>
+            <a class="btn-soft" href="observatoire.html">Ouvrir l'Observatoire</a>
+          </div>
+        </section>
+      </section>
+      <!-- Languette de rétraction du panneau (toujours disponible, comme l'Observatoire) -->
+      <button id="expandEstimation" class="expand-estimation" type="button" aria-label="Replier / ouvrir les paramètres">›</button>
+
+      <!-- Carte factice -->
+      <div id="map">
+        <svg class="mq-layer" id="mapFx" aria-hidden="true"></svg>
+      </div>
+
+      <!-- Frise temporelle -->
+      <div class="timeline" aria-label="Frise temporelle du marché">
+        <button class="timeline-play" type="button" aria-label="Lecture">
+          <svg class="icon-play" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M7 4.8c0-1 1.1-1.6 1.9-1.1l11 6.7c.8.5.8 1.7 0 2.2l-11 6.7c-.8.5-1.9-.1-1.9-1.1z"/></svg>
+        </button>
+        <div class="timeline-track">
+          <svg class="tl-d3" id="tl" aria-hidden="true"></svg>
+        </div>
+        <div class="timeline-meta">
+          <strong>janv. 2019 – déc. 2024</strong>
+          <span>72 ventes</span>
+        </div>
+        <button class="timeline-all" type="button">Tout</button>
+      </div>
+
+      <!-- Tiroir de résultats -->
+      <aside class="table-wrap has-results" aria-label="Résultats">
+        <div class="list-panel">
+          <div class="table-head">
+            <strong>Résultats</strong>
+            <div class="head-actions">
+              <div class="sort-menu">
+                <button type="button">Trier · Similarité</button>
+              </div>
+              <span>72 comparables</span>
+            </div>
+          </div>
+          <div class="comparables-list">
+            <div class="comparable-card selected">
+              <button class="comparable" type="button">
+                <b>295 000 €</b><b>3 933 €/m²</b>
+                <span>Maison 75 m² · 4 pièces · <span class="dpe-badge dpe-c">C</span></span>
+                <span class="result-date">mars 2024</span>
+              </button>
+            </div>
+            <div class="comparable-card">
+              <button class="comparable" type="button">
+                <b>312 000 €</b><b>3 950 €/m²</b>
+                <span>Maison 79 m² · 5 pièces · <span class="dpe-badge dpe-d">D</span></span>
+                <span class="result-date">nov. 2023</span>
+              </button>
+            </div>
+            <div class="comparable-card">
+              <button class="comparable" type="button">
+                <b>268 000 €</b><b>4 060 €/m²</b>
+                <span>Appartement 66 m² · 3 pièces · <span class="dpe-badge dpe-b">B</span></span>
+                <span class="result-date">sept. 2023</span>
+              </button>
+            </div>
+            <div class="comparable-card">
+              <button class="comparable" type="button">
+                <b>281 500 €</b><b>3 845 €/m²</b>
+                <span>Maison 73 m² · 4 pièces · <span class="dpe-badge dpe-e">E</span></span>
+                <span class="result-date">juin 2023</span>
+              </button>
+            </div>
+            <div class="comparable-card">
+              <button class="comparable" type="button">
+                <b>330 000 €</b><b>4 125 €/m²</b>
+                <span>Maison 80 m² · 5 pièces · <span class="dpe-badge dpe-c">C</span></span>
+                <span class="result-date">avr. 2023</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <button class="expand-comparables" type="button" aria-label="Replier / ouvrir les résultats">‹</button>
+      </aside>
+    </main>
+
+    <!-- Bascule de thème — CLAIR par défaut (D13), sans persistance -->
+    <script>
+      (function () {
+        var root = document.documentElement;
+        if (new URLSearchParams(location.search).get("theme") === "dark") root.setAttribute("data-theme", "dark");
+        document.getElementById("themeToggle").addEventListener("click", function () {
+          root.setAttribute("data-theme", root.getAttribute("data-theme") === "dark" ? "light" : "dark");
+        });
+      })();
+    </script>
+
+    <!-- Shell auto-masquant : se range pour libérer la carte, réapparaît quand
+         la souris revient en haut (ou au focus clavier). Aperçu au chargement. -->
+    <script>
+      (function () {
+        var shell = document.querySelector(".shell");
+        var root = document.documentElement;
+        function setShell(open) {
+          shell.classList.toggle("show", open);
+          root.style.setProperty("--shell-h", open ? "56px" : "0px");
+        }
+        document.addEventListener("pointermove", function (e) {
+          if (e.clientY <= 6) setShell(true);
+          else if (e.clientY > shell.offsetHeight + 10 && !shell.matches(":hover")) setShell(false);
+        });
+        setShell(true);
+        setTimeout(function () { setShell(false); }, 1900);
+
+        // Languettes de rétraction des panneaux (mêmes que l'Observatoire).
+        var panel = document.querySelector(".panel"), tw = document.querySelector(".table-wrap");
+        var ee = document.querySelector(".expand-estimation"), ec = document.querySelector(".expand-comparables");
+        if (ee) ee.addEventListener("click", function () { panel.classList.toggle("collapsed"); });
+        if (ec) ec.addEventListener("click", function () { tw.classList.toggle("collapsed"); });
+      })();
+    </script>
+
+    <!-- Accents D3 : overlay carte (zone, comparables, cible) + frise (histogramme du volume) -->
+    <script>
+      (function () {
+        if (!window.d3) return;
+        var rootEl = document.documentElement;
+        function isDark() { return rootEl.getAttribute("data-theme") === "dark"; }
+        function colors() { var s = getComputedStyle(rootEl), g = function (n) { return s.getPropertyValue(n).trim(); }; return { accent: g("--accent"), accent2: g("--accent-2"), accentLine: g("--accent-line"), gold: g("--gold") }; }
+        function bloom(defs, id, sd) { var f = defs.append("filter").attr("id", id).attr("x", "-60%").attr("y", "-60%").attr("width", "220%").attr("height", "220%"); f.append("feGaussianBlur").attr("stdDeviation", sd).attr("result", "b"); var m = f.append("feMerge"); m.append("feMergeNode").attr("in", "b"); m.append("feMergeNode").attr("in", "SourceGraphic"); }
+
+        var TL = [];
+        for (var i = 0; i < 24; i++) { TL.push({ vol: Math.max(2, Math.round(8 + 5 * Math.sin(i * 0.7) + 3 * Math.cos(i * 0.3) + (i < 19 ? i * 0.2 : (24 - i) * 0.8))) }); }
+        var DOTS = [[0.60, 0.42, 1], [0.46, 0.38, 0], [0.62, 0.56, 0], [0.48, 0.62, 0], [0.66, 0.48, 0], [0.42, 0.52, 0], [0.58, 0.64, 0]];
+
+        function drawMap() {
+          var el = document.getElementById("mapFx"); if (!el) return;
+          var W = el.clientWidth, H = el.clientHeight; if (!W || !H) return;
+          var c = colors(), svg = d3.select(el); svg.selectAll("*").remove();
+          var defs = svg.append("defs"); bloom(defs, "mapGlow", isDark() ? 4 : 1.4);
+          var dg = defs.append("radialGradient").attr("id", "dotG"); dg.append("stop").attr("offset", "0%").attr("stop-color", c.accent).attr("stop-opacity", isDark() ? 0.9 : 0.7); dg.append("stop").attr("offset", "100%").attr("stop-color", c.accent).attr("stop-opacity", 0);
+          var dgg = defs.append("radialGradient").attr("id", "dotGGold"); dgg.append("stop").attr("offset", "0%").attr("stop-color", c.gold).attr("stop-opacity", 0.85); dgg.append("stop").attr("offset", "100%").attr("stop-color", c.gold).attr("stop-opacity", 0);
+          var zx = 0.54 * W, zy = 0.50 * H, zr = Math.min(W, H) * 0.24;
+          svg.append("circle").attr("cx", zx).attr("cy", zy).attr("r", zr).attr("fill", c.accent).attr("opacity", 0.05);
+          svg.append("circle").attr("cx", zx).attr("cy", zy).attr("r", zr).attr("fill", "none").attr("stroke", c.accentLine).attr("stroke-width", 1.4).attr("filter", "url(#mapGlow)");
+          DOTS.forEach(function (d) { var dx = d[0] * W, dy = d[1] * H, gold = d[2]; svg.append("circle").attr("cx", dx).attr("cy", dy).attr("r", 11).attr("fill", gold ? "url(#dotGGold)" : "url(#dotG)"); svg.append("circle").attr("cx", dx).attr("cy", dy).attr("r", 3.4).attr("fill", gold ? c.gold : c.accent).attr("filter", "url(#mapGlow)"); });
+          svg.append("circle").attr("cx", zx).attr("cy", zy).attr("r", 5.2).attr("fill", c.accent).attr("stroke", "#fff").attr("stroke-width", 2).attr("filter", "url(#mapGlow)");
+          var ring = svg.append("circle").attr("cx", zx).attr("cy", zy).attr("r", 6).attr("fill", "none").attr("stroke", c.accentLine);
+          ring.append("animate").attr("attributeName", "r").attr("values", "6;20").attr("dur", "2.4s").attr("repeatCount", "indefinite");
+          ring.append("animate").attr("attributeName", "opacity").attr("values", "0.8;0").attr("dur", "2.4s").attr("repeatCount", "indefinite");
+        }
+
+        function drawTimeline() {
+          var el = document.getElementById("tl"); if (!el) return;
+          var W = el.clientWidth, H = el.clientHeight; if (!W || !H) return;
+          var c = colors(), svg = d3.select(el); svg.selectAll("*").remove();
+          var defs = svg.append("defs"); bloom(defs, "tlGlow", isDark() ? 2.4 : 0.0001);
+          var bg = defs.append("linearGradient").attr("id", "tlBar").attr("x1", 0).attr("y1", 0).attr("x2", 0).attr("y2", 1); bg.append("stop").attr("offset", "0%").attr("stop-color", c.accent2); bg.append("stop").attr("offset", "100%").attr("stop-color", c.accent).attr("stop-opacity", 0.45);
+          var n = TL.length, x = d3.scaleLinear().domain([0, n]).range([0, W]), bw = W / n;
+          var yV = d3.scaleLinear().domain([0, d3.max(TL, function (d) { return d.vol; })]).range([H - 2, H * 0.32]);
+          var s0 = 6, s1 = 19, x0 = x(s0), x1 = x(s1 + 1);
+          svg.append("rect").attr("x", x0).attr("y", 0).attr("width", x1 - x0).attr("height", H).attr("fill", c.accent).attr("opacity", 0.07);
+          TL.forEach(function (d, i) { var inw = i >= s0 && i <= s1; svg.append("rect").attr("x", x(i) + 1.6).attr("width", bw - 3.2).attr("y", yV(d.vol)).attr("height", (H - 2) - yV(d.vol)).attr("rx", 1.5).attr("fill", "url(#tlBar)").attr("opacity", inw ? 0.95 : 0.28); });
+          [x0, x1].forEach(function (hx) { svg.append("rect").attr("x", hx - 1).attr("y", 0).attr("width", 2).attr("height", H).attr("rx", 1).attr("fill", c.accent).attr("filter", "url(#tlGlow)"); });
+        }
+
+        function render() { drawMap(); drawTimeline(); }
+        render();
+        window.addEventListener("resize", function () { clearTimeout(window._tlr); window._tlr = setTimeout(render, 150); });
+        var tt = document.getElementById("themeToggle"); if (tt) tt.addEventListener("click", function () { setTimeout(render, 0); });
+      })();
+    </script>
+  </body>
+</html>

@@ -41,11 +41,11 @@ Fichier Parquet prepare localement et partitionne par departement pour represent
 _Avoid_: export temporaire, cache local
 
 **Base de service DuckDB**:
-Base DuckDB deployee sur le serveur pour organiser et accelerer les requetes sur les donnees preparees.
-_Avoid_: source canonique, stockage brut
+Moteur DuckDB embarque dans le serveur, reconstructible a tout moment depuis les Parquets departementaux canoniques (cf. ADR 0002) — pas un fichier base deploye ni une source de verite.
+_Avoid_: source canonique, stockage brut, base a sauvegarder
 
 **Table large orientee requete**:
-Table denormalisee construite pour eviter des jointures repetitives lors des requetes serveur frequentes.
+Table denormalisee construite pour eviter des jointures repetitives lors des requetes serveur frequentes. Realisee : `comparables_{dept}` au grain bien logement (cf. ADR 0005).
 _Avoid_: modele source, verite metier unique
 
 **Requete analytique immobiliere**:
@@ -280,6 +280,38 @@ _Avoid_: ajustement forfaitaire, montant fixe
 Controle global permettant d'appliquer ou de neutraliser les ajustements qualitatifs declaratifs.
 _Avoid_: ajustement obligatoire, reglage par facteur uniquement
 
+**Formule**:
+Niveau de droits d'un visiteur ou d'un compte (anonyme, gratuite, deux paliers payants) qui definit ses quotas d'unites d'analyse et d'export. Les seuils sont parametrables en configuration, jamais en dur dans le code.
+_Avoid_: role, groupe, abonnement (la formule existe avant tout paiement)
+
+**Unite d'analyse**:
+Une adresse resolue distincte consultee en estimation ou en exploration, decomptee une fois par periode de quota quel que soit le nombre de reglages, de modes ou d'emprises appliques dessus. Re-estimer ou re-filtrer la meme adresse ne consomme rien.
+_Avoid_: requete API, appel serveur, session, clic Estimer
+
+**Unite d'export**:
+Un fichier d'export genere (donnees ou graphiques), decompte du quota d'exports de la formule au moment de la generation.
+_Avoid_: telechargement de page, capture d'ecran, export de tuiles
+
+**Quota**:
+Nombre d'unites d'analyse et d'unites d'export accorde par une formule sur sa periode de decompte (mois calendaire pour les comptes ; allocation unique avant inscription pour les anonymes).
+_Avoid_: rate limit technique, plafond API
+
+**Analyse**:
+L'objet de travail courant du site : une adresse resolue, son mode (estimation ou exploration), son emprise d'analyse, ses filtres et sa fenetre temporelle, avec les comparables qui en resultent. C'est ce que l'Observatoire visualise et ce que l'export serialise.
+_Avoid_: selection courante, recherche, requete, dossier
+
+**Observatoire**:
+Page du site presentant les metriques et graphiques calcules sur l'Analyse courante (prix, volumes, evolutions, distributions). Porte un bouton Exporter, comme la page d'estimation/exploration.
+_Avoid_: page metriques, dashboard, tableau de bord, page marche
+
+**Atlas du marche**:
+Page carte du site reunissant les modes estimation et exploration sur l'Analyse courante. Nom complet en titre, abrege en « Atlas » dans la navigation.
+_Avoid_: la carte, page principale, atlas (sans complement, trop large)
+
+**Analyse sauvegardee**:
+Vue parametrique d'une Analyse enregistree au compte : uniquement les parametres (adresse, mode, emprise, filtres, fenetre temporelle), regeneree a la volee a l'ouverture. Les fichiers produits (PDF, CSV, GeoJSON) ne sont jamais conserves.
+_Avoid_: rapport archive, fichier sauvegarde, cache de resultats
+
 ## Relationships
 
 - Un **Socle immobilier cartographique** contient une ou plusieurs **Tranches geographiques**
@@ -364,164 +396,41 @@ _Avoid_: ajustement obligatoire, reglage par facteur uniquement
 
 ## Example dialogue
 
+Les echanges ci-dessous illustrent les distinctions les MOINS intuitives du modele —
+le reste decoule des Relationships.
+
 > **Dev:** "On commence par Bordeaux pour simplifier le pipeline ?"
 > **Domain expert:** "Non, Bordeaux est seulement une tranche du socle national ; le pipeline doit rester national dans son principe."
 
 > **Dev:** "Le serveur telecharge et transforme les donnees publiques ?"
 > **Domain expert:** "Non, la preparation lourde se fait en local ; le serveur recoit seulement les artefacts prepares."
 
-> **Dev:** "Faut-il synchroniser les donnees publiques en continu ?"
-> **Domain expert:** "Non, les sources publiques sont publiees periodiquement ; un cycle de preparation batch suffit."
-
-> **Dev:** "La date du build suffit-elle pour comprendre une estimation ?"
-> **Domain expert:** "Non, il faut aussi connaitre l'instantane source utilise pour produire les donnees."
-
-> **Dev:** "L'absence d'un DPE doit-elle empecher une estimation ?"
-> **Domain expert:** "Non, DPE est un enrichissement optionnel ; BAN, DVF et Cadastre sont les sources socle attendues."
-
-> **Dev:** "Une ecole proche augmente-t-elle automatiquement le prix ?"
-> **Domain expert:** "Non, la proximite peut etre positive ou negative selon le cas ; elle explique le contexte sans ajuster le prix."
-
 > **Dev:** "La base DuckDB est-elle la source de verite ?"
 > **Domain expert:** "Non, les Parquets departementaux sont canoniques ; DuckDB est une base de service reconstructible."
-
-> **Dev:** "Doit-on construire une table unique denormalisee des maintenant ?"
-> **Domain expert:** "Non, c'est une table large orientee requete a envisager si les jointures repetitives coutent trop cher."
-
-> **Dev:** "On stocke les tuiles de carte sur notre serveur ?"
-> **Domain expert:** "Non, le serveur repond aux requetes immobilieres ; les fonds cartographiques viennent de services externes gratuits ou activables."
-
-> **Dev:** "La mutation DVF est le centre du produit ?"
-> **Domain expert:** "Non, l'utilisateur part d'une adresse cible ; les mutations servent a trouver des comparables autour."
-
-> **Dev:** "L'adresse suffit pour estimer le logement ?"
-> **Domain expert:** "Non, l'utilisateur decrit le bien cible avec ses caracteristiques ; l'adresse sert a le localiser."
-
-> **Dev:** "Peut-on calculer un prix sans surface ?"
-> **Domain expert:** "Non, l'utilisateur fournit la surface ou le socle la retrouve ; sinon l'estimation s'arrete."
-
-> **Dev:** "Peut-on estimer sans savoir si le bien est une maison ou un appartement ?"
-> **Domain expert:** "Non, le type cible est obligatoire ; maison et appartement ne doivent pas etre melanges."
-
-> **Dev:** "Le nombre de pieces manquant bloque-t-il l'estimation ?"
-> **Domain expert:** "Non, il peut etre infere a partir de la surface en l'indiquant clairement, avec une confiance reduite."
-
-> **Dev:** "Deux maisons de meme surface batie sont-elles comparables quel que soit leur terrain ?"
-> **Domain expert:** "Non, la surface de terrain doit etre utilisee comme critere fortement recommande quand elle est disponible."
-
-> **Dev:** "Peut-on filtrer les appartements DVF par etage, vue ou terrasse ?"
-> **Domain expert:** "Pas par defaut ; ces facteurs comptent beaucoup mais sont difficiles a observer et a matcher fiablement."
 
 > **Dev:** "Si le rayon choisi donne peu de comparables, on elargit automatiquement ?"
 > **Domain expert:** "Non, l'emprise d'analyse est choisie par l'utilisateur ; on l'avertit si l'echantillon est faible."
 
-> **Dev:** "Peut-on elargir automatiquement la zone si on manque de comparables ?"
-> **Domain expert:** "Non, l'utilisateur choisit lui-meme une autre emprise d'analyse."
-
 > **Dev:** "Le mode cadastral utilise la parcelle du bien ?"
 > **Domain expert:** "Non, il utilise la section cadastrale ; la parcelle individuelle est trop fine pour l'estimation."
 
-> **Dev:** "Une moyenne nationale peut-elle estimer le bien cible ?"
-> **Domain expert:** "Non, elle sert de contexte de marche pour comprendre les ordres de grandeur."
-
-> **Dev:** "L'utilisateur choisit-il n'importe quelle periode historique ?"
-> **Domain expert:** "Non, on exploite l'historique DVF disponible et on affiche aussi une lecture de marche recent sur douze mois."
-
-> **Dev:** "La tendance temporelle remplace-t-elle la mediane des comparables ?"
-> **Domain expert:** "Non, elle accompagne l'estimation comme indicateur secondaire."
-
-> **Dev:** "Peut-on afficher une estimation sans parler des taux d'emprunt ?"
-> **Domain expert:** "Non, le contexte de taux doit toujours accompagner l'estimation car il est fortement lie au marche immobilier."
-
-> **Dev:** "Doit-on prevoir les taux futurs ?"
-> **Domain expert:** "Non, on affiche le taux actuel et l'historique recent sans faire de prevision."
-
-> **Dev:** "Quelle source utilise-t-on pour les taux d'emprunt ?"
-> **Domain expert:** "Banque de France Webstat, source officielle et suffisante pour ce besoin."
-
-> **Dev:** "L'utilisateur saisit-il une adresse libre sans geocodage ?"
-> **Domain expert:** "Non, il selectionne une adresse via la recherche BAN, qui fournit les coordonnees et les codes utiles aux jointures."
-
-> **Dev:** "Faut-il telecharger toute la BAN en premiere version ?"
-> **Domain expert:** "Non, on utilise l'API BAN directe ; l'ingestion nationale sera reconsideree si le besoin apparait."
-
-> **Dev:** "Faut-il toujours retrouver la parcelle par jointure spatiale apres la recherche BAN ?"
-> **Domain expert:** "Non, si BAN fournit un rattachement cadastral, on l'utilise d'abord pour joindre le Cadastre."
-
-> **Dev:** "Toutes les recherches de comparables utilisent-elles une requete spatiale ?"
-> **Domain expert:** "Non, seul le mode distance utilise le spatial ; les emprises administratives utilisent leurs codes."
-
-> **Dev:** "Pour Paris, Lyon ou Marseille, utilise-t-on toujours la commune entiere ?"
-> **Domain expert:** "Non, on utilise l'arrondissement quand il est disponible."
-
-> **Dev:** "Le tableau comparatif doit-il afficher aussi des zones plus fines que le choix utilisateur ?"
-> **Domain expert:** "Non, il affiche seulement des emprises plus larges que l'emprise d'analyse active."
-
-> **Dev:** "Le tableau comparatif regional compare-t-il le bien a tous les logements de la region ?"
-> **Domain expert:** "Non, il reutilise les memes filtres de comparabilite ; seule l'emprise change."
-
-> **Dev:** "Faut-il lancer une requete differente pour chaque emprise comparative ?"
-> **Domain expert:** "Pas necessairement ; on peut filtrer une cohorte nationale comparable puis l'agreger par emprises, si c'est assez rapide."
-
-> **Dev:** "La cohorte comparable doit-elle etre limitee directement aux douze derniers mois ?"
-> **Domain expert:** "Non, on construit la cohorte sur l'historique DVF disponible puis on produit aussi une lecture marche recent."
-
-> **Dev:** "Faut-il afficher historique complet et douze mois dans le meme tableau ?"
-> **Domain expert:** "Non, on les separe en deux onglets de comparaison."
-
-> **Dev:** "Le tableau comparatif doit-il etre complet des la premiere version ?"
-> **Domain expert:** "Non, il demarre avec le nombre de comparables et le prix au metre carre median, puis evoluera."
-
-> **Dev:** "Doit-on afficher un prix unique ?"
-> **Domain expert:** "Non, on affiche d'abord le prix median estime, puis une fourchette et une confiance d'estimation."
+> **Dev:** "Deux maisons de meme surface batie sont-elles comparables quel que soit leur terrain ?"
+> **Domain expert:** "Non, la surface de terrain doit etre utilisee comme critere fortement recommande quand elle est disponible."
 
 > **Dev:** "Le prix demande par l'utilisateur influence-t-il l'estimation ?"
 > **Domain expert:** "Non, il sert seulement a positionner l'offre par rapport a l'estimation."
 
-> **Dev:** "Compare-t-on le prix soumis seulement en euros ?"
-> **Domain expert:** "Non, on le positionne comme dans le notebook : prix total et prix au metre carre."
-
-> **Dev:** "Les ventes utilisees restent-elles cachees derriere la statistique ?"
-> **Domain expert:** "Non, les comparables retenus sont affiches pour rendre l'estimation auditable."
-
 > **Dev:** "Peut-on afficher un prix avec trois ventes similaires ?"
 > **Domain expert:** "Non, il faut au moins cinq comparables retenus ; en dessous on affiche une absence d'estimation fiable."
-
-> **Dev:** "Le nombre de comparables suffit-il a mesurer la confiance ?"
-> **Domain expert:** "Non, il faut aussi tenir compte de la dispersion des prix au metre carre."
-
-> **Dev:** "Peut-on comparer une maison de 120 m2 a une maison de 50 m2 si elles sont dans la meme rue ?"
-> **Domain expert:** "Non, la tolerance de comparabilite doit exclure les biens trop differents avant le calcul."
-
-> **Dev:** "Que fait-on si la tolerance de surface maximale ne donne pas assez de ventes ?"
-> **Domain expert:** "On n'affiche pas de prix fiable ; l'utilisateur peut choisir une emprise d'analyse plus large."
 
 > **Dev:** "Calcule-t-on la mediane des prix totaux des comparables ?"
 > **Domain expert:** "Non, on calcule la mediane du prix au metre carre, puis on la multiplie par la surface du bien cible."
 
-> **Dev:** "Les attributs absents de DVF sont toujours des ajustements manuels ?"
-> **Domain expert:** "Non, on cherche d'abord un appariement DPE credible ; les ajustements declaratifs viennent ensuite."
-
 > **Dev:** "Si on trouve plusieurs DPE a l'adresse d'un appartement, on choisit le plus proche comme DPE du bien ?"
 > **Domain expert:** "Non, on presente un profil DPE d'adresse ; seul un rattachement direct devient le DPE officiel du bien."
 
-> **Dev:** "Le profil DPE d'adresse d'un appartement suffit-il pour affirmer sa classe energetique ?"
-> **Domain expert:** "Non, il renseigne le contexte de l'immeuble et doit etre accompagne d'un avertissement de fiabilite."
-
-> **Dev:** "Le DPE est-il seulement une information annexe ?"
-> **Domain expert:** "Non, c'est un signal energetique qui influence le prix car il indique souvent des travaux energetiques probables."
-
-> **Dev:** "L'ajustement DPE est-il toujours un bareme fixe ?"
-> **Domain expert:** "Non, on privilegie une comparaison locale entre biens enrichis DPE ; le bareme sert seulement de repli."
-
-> **Dev:** "Les ajustements qualitatifs sont-ils imposes a l'utilisateur ?"
-> **Domain expert:** "Non, ils ont des coefficients proposes et editables, avec une activation globale."
-
-> **Dev:** "Les ajustements s'appliquent-ils au prix total ou au prix au metre carre ?"
-> **Domain expert:** "On les applique au prix au metre carre median, puis on multiplie par la surface cible."
-
-> **Dev:** "Peut-on saisir un ajustement forfaitaire en euros ?"
-> **Domain expert:** "Non, les ajustements declaratifs sont exprimes en pourcentage dans la premiere version."
+> **Dev:** "Doit-on prevoir les taux futurs ?"
+> **Domain expert:** "Non, on affiche le taux actuel et l'historique recent sans faire de prevision."
 
 ## Flagged ambiguities
 
@@ -532,4 +441,4 @@ _Avoid_: ajustement obligatoire, reglage par facteur uniquement
 - "DPE du bien" et "moyenne des DPE a l'adresse" ne sont pas equivalentes : le premier est un **DPE officiel du bien**, la seconde est un **Profil DPE d'adresse**.
 - "DPE" ne doit pas etre confondu avec un diagnostic complet de l'etat du bati : il est utilise comme **Signal energetique**, pas comme preuve certaine de tous les travaux a prevoir.
 - Le **pivot de rattachement** entre sources est **tranche** (mesure dept 33) : le `rnb_id` du RNB est le pivot batiment, la parcelle (`id_parcelle`) est un lien secondaire fiable mais ambigu a l'unite (38% de parcelles mono-batiment). Voir [docs/adr/0003-rnb-pivot-batiment.md](docs/adr/0003-rnb-pivot-batiment.md) et [docs/SOURCES_DONNEES.md](docs/SOURCES_DONNEES.md).
-- L'**Appariement DPE** etait suppose purement probabiliste (jointure par adresse). En realite le DPE porte une cle `identifiant_ban` dans le meme namespace que `RNB.cle_interop_ban` : une jointure directe par cle d'adresse est viable (pas de `rnb_id` ni parcelle dans le DPE open data). A mesurer sur le dept 33 : taux de match, part des cles au niveau voie sans numero, qualite `score_ban`. Voir [docs/SOURCES_DONNEES.md](docs/SOURCES_DONNEES.md).
+- L'**Appariement DPE** est resolu et mesure (dept 33) : cascade `id_rnb` natif → cle BAN mono-batiment → spatial ≤ 15 m, soit 61 % de DPE joignables et 87 % de match par cle, chaque lien qualifie par `rnb_lien`. Voir [docs/SOURCES_DONNEES.md](docs/SOURCES_DONNEES.md) §3.1 et [docs/EXPLORATION_DPE.md](docs/EXPLORATION_DPE.md) §8.1.

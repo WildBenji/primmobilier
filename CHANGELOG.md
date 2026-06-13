@@ -1,12 +1,35 @@
 # Changelog
 
+## v1.9.0 - 2026-06-13
+
+Phase 1 (recherche design) du **Site 2028** : explorations visuelles tranchées « sur pièces » sous forme de maquettes HTML statiques jetables (`web_poc/maquettes/`, hors POC livré), sur les tokens actés (clair par défaut D13, teal deux tons D16, Inter + Space Grotesk D17). Direction verrouillée sur les trois écrans clés.
+
+- **Accueil** : hero centré sous « lampadaire » — trois faisceaux (un central, deux partant des coins hauts, effet scène) qui s'intensifient quand la souris approche de la barre de recherche ; en sombre ils s'allument en néon, en clair ils assombrissent pour créer du relief. Parcours démo-first : grande barre d'adresse en vedette, puis deux actions à poids égal Estimer / Explorer (l'outil sert aussi à explorer le marché et générer des rapports, pas qu'à estimer). Carte en bandeau bas. Clair par défaut, signature néon au toggle.
+- **Atlas refondu** : shell de navigation commun auto-masquant (se range pour libérer la carte, revient quand la souris remonte), panneaux flottants en verre (D18) qui se décalent en douceur sous le shell sans déborder, languettes de rétraction, bouton Exporter et compteur de crédits. Overlay carte en D3 (zone qui rayonne, comparables à halo, cible pulsante) et frise en histogramme du volume par trimestre.
+- **Observatoire** : une seule interface de paramètres, deux vues de résultats (carte = Atlas, graphiques = Observatoire). Quatre graphes en **D3.js** (zéro-build via CDN, conforme ADR 0008) à la signature aérienne : médiane €/m² (aire + ruban P25–P75, ligne à dégradé le long du tracé, flux animé désactivable, bloom en sombre, crosshair), comparaison multi-marchés (focus/estompe, « + Zone »), ventes individuelles en beeswarm coloré par DPE, prix vs taux d'emprunt (double axe). KPI propres à l'Observatoire (sans redondance avec le panneau, sans métrique fabriquée). Synthèse IA en bas, à la demande.
+- **Bandeau de navigation concave** (type macOS) commun à l'Atlas et à l'Observatoire : plein sur les côtés où vit le contenu, creusé au milieu pour libérer un maximum de vue même déroulé ; `clip-path` responsive, réactivité souris inchangée, liseré teal en sombre.
+- **Documentation** : `docs/REFERENCES_VISUEL.md` (référence visuelle canonique, Nadieh Bremer en tête, galeries de concours, catalogue de techniques D3) et journal de décisions design dans `docs/JOURNAL_SITE_2028.md`. Décision « lib de graphiques » fermée sur D3.js.
+
+## v1.8.0 - 2026-06-12
+
+- **Frise temporelle déplaçable** : une fois la période sélectionnée, on attrape la fenêtre entre les deux poignées et on la translate d'un bloc à largeur constante (glisser sur le canvas, bornes respectées). Curseur `grab`/`grabbing`, support tactile.
+- **Couleur de zone réglable** : un petit curseur-palette à côté du toggle « Afficher la zone » change la teinte du cercle/de l'emprise sur la carte (dégradé arc-en-ciel dans la piste, pouce à la couleur choisie).
+- **Correctif — persistance de la couleur de zone** : la zone était peinte selon le thème UI, donc invisible (teal pâle) sur un fond clair sous thème sombre. Les couleurs de zone suivent désormais le **fond de carte affiché** (`BASE_TONE`), pas le thème — la zone reste lisible sur tous les fonds.
+- **Tri des résultats par DPE** : nouveau critère « DPE » dans le menu de tri (étiquettes A→G, biens sans étiquette en fin de liste). _(Données présentes uniquement sur le 33 pour l'instant.)_
+- **Bâti cadastral — filtre de recouvrement** : une empreinte n'est listée que si ≥ 10 % de sa surface tombe dans la parcelle (`BATIMENT_MIN_OVERLAP`), au lieu d'un simple `ST_Intersects` qui captait en entier les bâtiments voisins se touchant en limite. Élimine les faux positifs (mesuré : 58 → 32 bâtiments sur 40 parcelles).
+- **Documentation — grand nettoyage** : suppression de `NOTEBOOK_ESTIMATION_DONNEES.md` (absorbé/périmé), HAND-OFF DPE réduit au reste-à-faire, CHANGELOG/CONTEXT/EXPLORATION_DPE condensés (narrations d'exploration abandonnées ou absorbées retirées), SOURCES_DONNEES et PIPELINE recalés sur l'état réel du code (statuts, étape 5 enrichissements), micro-corrections ADR 0003/0004/0005. ~75 Ko de doc retirés/réécrits sans perte d'information unique.
+- **Cadrage Site 2028** : plan d'attaque et journal de décisions pour transformer le POC en site complet (comptes, quotas, Observatoire, export, design 2028) — `docs/PLAN_SITE_2028.md`, `docs/JOURNAL_SITE_2028.md`, ADR 0007 (FastAPI + SQLite) et 0008 (front vanilla zéro-build), termes produit au CONTEXT.md.
+
+## v1.7.0 - 2026-06-12
+
+- **Refonte visuelle du POC web** : design à tokens en **double thème** persisté (sombre « aerial » / clair nordique), fond de carte suivant le thème sans écraser un choix manuel.
+- **Frise temporelle du marché** : histogramme des ventes par mois, sélection libre **[début, fin]** à deux poignées, lecture animée, filtrage carte instantané sans re-requête.
+- **Couche données — récupération maximisée** (mesuré dept 33) : DPE joignables **26 % → 61 %** (cascade `rnb_lien`), clé d'adresse bis/ter, copropriétés RNIC, carte des loyers + rendement brut, perf jointures spatiales (équi-jointure 9 cellules). Détails : [docs/SOURCES_DONNEES.md](docs/SOURCES_DONNEES.md) §3.1/§3.4/§3.5.
+- **Exploration multi-types** : sélection multiple des catégories, synchronisée dans les deux sens avec les lignes de stats du bas.
+
 ## v1.6.0 - 2026-06-12
 
-- **DPE (performance énergétique) — chaîne complète.** Nouveau fichier socle `dpe_{dept}.parquet` : récupération **pré-2021** (parquet S3 d'enrichissement) + **post-2021** (API ADEME data-fair), mix, nettoyage et harmonisation en 20 colonnes utiles à l'appli, puis jointure sur les comparables. C'est ce fichier local, lui seul, qui alimente l'appli (les sources distantes ne servent qu'à le bâtir).
-  - **Acquisition résumable** (`telechargement/recuperer_dpe_post2021.py`) : le serveur ADEME est lent et globalement throttlé (parallélisation testée et écartée, ×0,3) ; le fetch checkpointe le curseur et reprend après coupure (~12 min/dept). Filtre par `qs=code_departement_ban` + curseur `next` + `select` réduit.
-  - **Nettoyage/harmonisation** (`telechargement/preparer_dpe.py`) : surface clippée [8–1000] m², année [1700–année] sinon null, période de construction unifiée pré/post, étiquettes A-G strictes, DPE vierges flaggés et étiquette annulée (faux « A »), 14 types d'énergie normalisés en tokens, coords WGS84 hors-France→null + flag de précision géo, dédup inter-millésime restreinte aux maisons (la géo ne distingue pas les logements d'un immeuble).
-  - **Intégration appli** : étiquette énergie jointe aux comparables via `id_rnb` (`pipeline/construire_comparables.py`), badge classe-énergie A-G (échelle officielle) sur les cartes, et **panneau « DPE (énergie) »** dans la fiche détail (endpoint `/api/dpe` : DPE du bâtiment, le plus proche en surface, distribution par classe pour les bâtiments à N diagnostics).
-  - Étape DPE ajoutée à `lancer_pipeline`. Documentation : `docs/EXPLORATION_DPE.md` (vérifications API/S3, audit, spec de nettoyage). _Limite connue : couverture du match encore basse (28 % des maisons) — chantier des angles de jointure sans clé en cours._
+- **DPE (performance énergétique) — chaîne complète.** Nouveau fichier socle `dpe_{dept}.parquet` (pré-2021 S3 + post-2021 API ADEME, fetch résumable, nettoyage harmonisé), jointure sur les comparables via `id_rnb`, badge A-G sur les cartes et panneau « DPE (énergie) » dans la fiche (`/api/dpe`). Étape ajoutée à `lancer_pipeline`. Doctrine, acquisition et règles de nettoyage : [docs/EXPLORATION_DPE.md](docs/EXPLORATION_DPE.md). _(La couverture du match, 28 % ici, est résolue en v1.7.0 : 61 %.)_
 - **Survol bâti cadastral bidirectionnel** : survoler une empreinte de bâtiment sur la carte illumine la box correspondante du détail (et inversement, comme avant) ; ouvre automatiquement le panneau « Bâti cadastral » s'il est replié.
 
 ## v1.5.0 - 2026-06-12
@@ -42,8 +65,8 @@
 
 ## v1.1.0 - 2026-06-11
 
-- **Emprises géographiques sur contours IGN locaux** : contours communes figés depuis geo.api (`preparer_communes.py`) et contours codes postaux hybrides (union de communes + partition intra-communale par plus proche adresse BAN) remplaçant le dataset « contours calculés » 2021 débordant. Filtrage **géométrique côté serveur** (`ST_Within` sur le polygone de l'emprise) : stats, compteur et carte alignés sur l'emprise réellement tracée ; le front dessine l'emprise depuis le serveur (`/api/commune`, `/api/codepostal`), plus de dépendance runtime à geo.api ni de rognage point-in-polygon côté client.
-- **Normalisation COG des communes** : `preparer_passage_communes.py` télécharge le Code Officiel Géographique (INSEE — `v_commune` + `v_mvt_commune`) et remappe les codes communes périmés (fusions, communes nouvelles) vers la commune courante, avec nom autoritaire — sinon les ventes DVF sous d'anciens codes seraient sans contour ni adresse. La fusion / le renommage est **tracé au détail d'une vente** (commune d'origine + date de l'événement). Vérifié sur les départements 17 / 33 / 47 : 0 code commune orphelin, 0 nom divergent du contour.
+- **Emprises géographiques sur contours IGN locaux** : contours communes figés et contours codes postaux hybrides, filtrage **géométrique côté serveur** (`ST_Within`) — stats, compteur et carte alignés sur l'emprise réellement tracée, plus de dépendance runtime à geo.api. Mécanique : [docs/SOURCES_DONNEES.md](docs/SOURCES_DONNEES.md) §1.4-§1.5.
+- **Normalisation COG des communes** : remappage des codes communes périmés (fusions, communes nouvelles) vers la commune courante, tracé au détail d'une vente. Détails et chiffres de vérification : [docs/SOURCES_DONNEES.md](docs/SOURCES_DONNEES.md) §1.5.
 - **Finitions UI** : fermeture des menus « Fond de carte » / « Grille cadastre » après sélection (plus besoin de cliquer sur la carte), loupe légère au survol d'un résultat avec illumination du point correspondant sur la carte, panneau détail en finition « verre », emprise cliquable (chip + détails).
 - Hygiène : `.gitignore` couvre les fichiers macOS ; pipeline de téléchargement et pipeline de transformation documentées comme couches indépendantes.
 
@@ -59,13 +82,9 @@
 - **Résolution bâtiment par BDNB** ([ADR 0006](docs/adr/0006-bdnb-parcelle-pour-resolution-batiment.md)) : extraction BDNB Open départementale dans `preparer_donnees.py`, et `construire_comparables.py` résout `batiment_groupe_id` + attributs (usage, logements, hauteur, niveaux, emprise, année…) quand une parcelle porte un groupe BDNB unique, sans relation RNB↔BDNB inventée. Nouvelle étape `pipeline/reduire_referentiels.py` qui réduit RNB/BAN/BDNB/Cadastre au graphe DVF, câblée dans `lancer_pipeline.py`.
 - **Emprises réelles « code postal » et « commune »** : nouveau référentiel national des contours codes postaux (`telechargement/preparer_codes_postaux.py`, GeoJSON → GeoParquet) servi par l'endpoint `/api/codepostal` — les grandes villes sont découpées par CP, plus de tracé débordant sur la commune entière. La commune utilise les contours administratifs (geo.api.gouv.fr). Garde anti-réponse-périmée par jeton de séquence.
 - **Bâti cadastral dans le détail** : acquisition de la couche bâtiments du cadastre (`preparer_cadastre.py`), endpoint `/api/batiments` qui rattache les empreintes à la parcelle par intersection spatiale (préfiltre bbox **élargi d'une marge** pour ne pas rater un bâtiment qui déborde la parcelle, puis `ST_Intersects`) et renvoie type (en dur / léger) + surface au sol. La fiche détail dessine la parcelle et ses bâtiments distinctement (maison / annexes / garage) et les liste ; survoler une box illumine l'empreinte correspondante sur la carte. La date cadastrale (relevé) n'est plus affichée comme une année de construction — elle passe en infobulle.
-- **Définitions au survol** : un « ? » à côté de chaque label de la fiche détail explique la donnée (surface habitable DVF vs emprise au sol cadastre vs emprise BDNB, année de construction vs relevé cadastral, etc.).
-- **Focus parcelle à la sélection** : sélectionner un comparable affiche automatiquement la grille cadastre de sa parcelle seule et masque les autres ; fermer le détail rétablit l'overlay du menu « Grille cadastre » (renommé depuis « Cadastre »).
-- **Panneaux modernisés** : ouverture des panneaux détail / vue rue en glissé + fondu, blocs repliables animés (`grid-template-rows`), finition « verre » (flou d'arrière-plan, coins arrondis, ombres douces), le tout respectant `prefers-reduced-motion`.
+- **Fiche détail enrichie** : focus parcelle à la sélection (grille cadastre de la parcelle seule), définitions au survol (« ? ») sur chaque donnée, panneaux et blocs repliables modernisés.
 - **Tri des comparables** : option « Similarité » ajoutée et tri par similarité décroissante par défaut.
-- **Carte** : double-clic sur un comparable = zoom rapproché + ouverture du détail (le double-clic ailleurs garde le recentrage + géocodage inverse). Au zoom rapproché, les points/halo s'effacent (le point devient un anneau) pour ne plus masquer le bâtiment et le cadastre.
-- **UI carte** : menus « Fond de carte » et « Grille cadastre » au survol (groupés par fournisseur, accessibles au clavier via `:focus-within`) en remplacement des `<select>` ; case « Afficher la zone » pour masquer/afficher l'emprise ; type Appartement/Maison pris en compte immédiatement.
-- **Libellés d'emprise** : le message de fin et la fourchette observée reflètent l'emprise choisie (rayon, code postal, `Commune (code INSEE)`, section) au lieu du seul département.
+- **UI carte** : menus « Fond de carte » / « Grille cadastre » au survol, case « Afficher la zone », double-clic comparable = zoom + détail, libellés reflétant l'emprise choisie.
 - Hygiène : en-tête `Cache-Control: no-store` (limité au service local), endpoints servis par les référentiels `*_service` quand ils existent.
 
 ## v0.8.0 - 2026-06-10
@@ -85,15 +104,10 @@
 
 ## v0.6.0 - 2026-06-10
 
-- Mode **Exploration** (panorama de marché) dans le POC web, en plus de l'Estimation : nouvel endpoint `/api/market` affichant le prix de **tous les biens** d'une emprise (maison, appartement, terrain, dépendance, local), indépendamment d'un bien cible — seules comptent la localisation (adresse, code postal ou commune) et l'emprise. Médiane €/m² et prix médian par type.
-- Qualité des prix par construction (cf. `docs/SOURCES_DONNEES.md` §9) : logement (Maison/Appartement) depuis la table `comparables` propre ; terrain/dépendance/local depuis les **mutations DVF mono-ligne** uniquement (évite le `valeur_fonciere` dupliqué des ventes multi-lignes), étiquetés « indicatif ».
-- Bascule de mode via un **switch segmenté** Estimation/Exploration ; en Exploration, **chips** de filtre par type de bien ; les champs propres à chaque mode (caractéristiques du bien d'un côté, filtres de l'autre) sont masqués dans l'autre mode.
-- **Sélecteur de fonds de carte** (6 couches) : IGN Plan (défaut), CARTO Positron, CARTO Voyager, OpenStreetMap, IGN Satellite, Stadia Satellite. Stadia utilisable sans clé en local uniquement (auth par domaine) — documenté dans `docs/SOURCES_DONNEES.md` §8.
-- **Panneaux déplaçables** (estimation, fond de carte, comparables, vue rue) par leur en-tête, en état ouvert comme replié ; double-clic sur l'en-tête pour remettre à la position d'origine.
-- Bouton **Reset** qui remet l'interface à l'état initial (carte, points, estimation, comparables, formulaire).
-- Nombre de comparables affichés **paramétrable** (défaut 200, validé par Entrée, plafonné automatiquement au nombre réellement disponible) et compteur `affichés/total`.
-- Découplage carte/liste pour la performance : la carte reçoit **tous les points** de l'emprise en payload allégé (coords + type + prix), la liste DOM reste plafonnée ; les statistiques restent calculées sur la cohorte complète.
-- Correctif d'affichage : les sections masquées par l'attribut `hidden` (`.grid`, `.result`) étaient neutralisées par `display: grid` — les blocs spécifiques à un mode persistaient à tort en changeant de mode.
+- Mode **Exploration** (panorama de marché) en plus de l'Estimation : endpoint `/api/market` affichant le prix de **tous les biens** d'une emprise, médiane €/m² et prix médian par type, switch de mode segmenté et chips de filtre.
+- Qualité des prix par construction : logement depuis la table `comparables` propre ; terrain/dépendance/local depuis les **mutations DVF mono-ligne** uniquement, étiquetés « indicatif » (doctrine : `docs/SOURCES_DONNEES.md` §9).
+- **Sélecteur de fonds de carte** (6 couches, dont Stadia sans clé en local uniquement — `docs/SOURCES_DONNEES.md` §8).
+- Découplage carte/liste pour la performance : la carte reçoit tous les points en payload allégé, la liste DOM est plafonnée, les statistiques restent sur la cohorte complète.
 
 ## v0.5.0 - 2026-06-10
 

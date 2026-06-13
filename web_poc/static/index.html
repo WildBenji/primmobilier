@@ -1,9 +1,13 @@
 <!doctype html>
-<html lang="fr">
+<html lang="fr" data-theme="dark">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Primmobilier POC</title>
+    <title>Primmobilier — Atlas du marché</title>
+    <meta name="theme-color" content="#0a0d12">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap">
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.14.0/dist/maplibre-gl.css">
     <link rel="stylesheet" href="/app.css">
   </head>
@@ -11,9 +15,18 @@
     <main class="app">
       <section id="estimationPanel" class="panel" aria-label="Estimation immobilière">
         <div class="brand">
-          <strong>Primmobilier</strong>
+          <strong><span class="brand-dot" aria-hidden="true"></span>Primmobilier</strong>
           <div class="head-actions">
-            <span>POC comparables DVF</span>
+            <span>Atlas DVF</span>
+            <button id="themeToggle" class="theme-toggle" type="button" aria-label="Basculer le thème">
+              <svg class="icon-sun" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="4.2"/>
+                <path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5.2 5.2l1.7 1.7M17.1 17.1l1.7 1.7M18.8 5.2l-1.7 1.7M6.9 17.1l-1.7 1.7"/>
+              </svg>
+              <svg class="icon-moon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/>
+              </svg>
+            </button>
           </div>
         </div>
 
@@ -72,6 +85,7 @@
           </div>
         </div>
 
+        <div class="section-label">Emprise</div>
         <div class="scope-control" aria-label="Emprise de comparaison">
           <button type="button" data-scope="radius" class="active">Rayon</button>
           <button type="button" data-scope="cadastre">Section</button>
@@ -79,10 +93,14 @@
           <button type="button" data-scope="city">Commune</button>
         </div>
 
-        <label class="zone-toggle">
-          <input type="checkbox" id="zoneToggle" checked>
-          <span>Afficher la zone sur la carte</span>
-        </label>
+        <div class="zone-row">
+          <label class="zone-toggle">
+            <input type="checkbox" id="zoneToggle" checked>
+            <span class="switch" aria-hidden="true"></span>
+            <span>Afficher la zone sur la carte</span>
+          </label>
+          <input id="zoneColor" class="zone-color" type="range" min="0" max="360" step="2" value="170" aria-label="Couleur de la zone" title="Couleur de la zone">
+        </div>
 
         <div id="radiusControl" class="radius-control slider-radius">
           <div class="radius-head">
@@ -166,32 +184,33 @@
             <span>Fond de carte</span>
             <div class="layer-menu-trigger">
               <button type="button" class="layer-menu-current">
-                <span id="baseLayerLabel">IGN Plan</span>
+                <span id="baseLayerLabel">Dark Matter</span>
                 <span class="layer-menu-caret">▾</span>
               </button>
               <div class="layer-menu-providers">
                 <div class="layer-provider">
-                  <button type="button" class="layer-provider-name">IGN<span class="layer-menu-caret">‹</span></button>
+                  <button type="button" class="layer-provider-name">CARTO<span class="layer-menu-caret">›</span></button>
                   <div class="layer-submenu">
-                    <button type="button" data-layer="ignplan" class="active">IGN Plan</button>
-                    <button type="button" data-layer="ign">IGN Satellite</button>
-                  </div>
-                </div>
-                <div class="layer-provider">
-                  <button type="button" class="layer-provider-name">CARTO<span class="layer-menu-caret">‹</span></button>
-                  <div class="layer-submenu">
+                    <button type="button" data-layer="cartodark" class="active">Dark Matter</button>
                     <button type="button" data-layer="carto">Positron</button>
                     <button type="button" data-layer="voyager">Voyager</button>
                   </div>
                 </div>
                 <div class="layer-provider">
-                  <button type="button" class="layer-provider-name">OSM<span class="layer-menu-caret">‹</span></button>
+                  <button type="button" class="layer-provider-name">IGN<span class="layer-menu-caret">›</span></button>
+                  <div class="layer-submenu">
+                    <button type="button" data-layer="ignplan">IGN Plan</button>
+                    <button type="button" data-layer="ign">IGN Satellite</button>
+                  </div>
+                </div>
+                <div class="layer-provider">
+                  <button type="button" class="layer-provider-name">OSM<span class="layer-menu-caret">›</span></button>
                   <div class="layer-submenu">
                     <button type="button" data-layer="osm">OSM standard</button>
                   </div>
                 </div>
                 <div class="layer-provider">
-                  <button type="button" class="layer-provider-name">Stadia<span class="layer-menu-caret">‹</span></button>
+                  <button type="button" class="layer-provider-name">Stadia<span class="layer-menu-caret">›</span></button>
                   <div class="layer-submenu">
                     <button type="button" data-layer="stadiasat">Stadia Satellite</button>
                   </div>
@@ -230,6 +249,7 @@
           <div id="scopeDetails" class="scope-details" hidden></div>
           <div id="estimationStats" class="result-stats">
             <div id="range" class="range"></div>
+            <div id="loyerContext" class="range"></div>
             <div id="askedPosition" class="range"></div>
           </div>
         </section>
@@ -246,6 +266,23 @@
       <button id="expandEstimation" class="expand-estimation" type="button" aria-label="Ouvrir la recherche">›</button>
 
       <div id="map"></div>
+
+      <div id="timeline" class="timeline" hidden aria-label="Frise temporelle du marché" title="Double-clic : réduire / agrandir">
+        <button id="timelinePlay" class="timeline-play" type="button" aria-label="Lecture">
+          <svg class="icon-play" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M7 4.8c0-1 1.1-1.6 1.9-1.1l11 6.7c.8.5.8 1.7 0 2.2l-11 6.7c-.8.5-1.9-.1-1.9-1.1z"/></svg>
+          <svg class="icon-pause" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><rect x="5.5" y="4" width="4.4" height="16" rx="1.4"/><rect x="14.1" y="4" width="4.4" height="16" rx="1.4"/></svg>
+        </button>
+        <div class="timeline-track">
+          <canvas id="timelineCanvas" class="timeline-canvas" aria-hidden="true"></canvas>
+          <input id="timelineStart" type="range" min="0" max="0" step="1" value="0" aria-label="Début de période">
+          <input id="timelineEnd" type="range" min="0" max="0" step="1" value="0" aria-label="Fin de période">
+        </div>
+        <div class="timeline-meta">
+          <strong id="timelineWindow">—</strong>
+          <span id="timelineTicker"></span>
+        </div>
+        <button id="timelineAll" class="timeline-all" type="button" hidden>Tout</button>
+      </div>
 
       <aside class="table-wrap collapsed" aria-label="Résultats">
         <div id="comparableDetail" class="detail-panel" hidden>
@@ -266,6 +303,7 @@
                   <button type="button" data-sort="price">Prix</button>
                   <button type="button" data-sort="date">Date</button>
                   <button type="button" data-sort="surface">m²</button>
+                  <button type="button" data-sort="dpe">DPE</button>
                 </div>
               </div>
               <span id="tableMeta">Aucun calcul</span>
