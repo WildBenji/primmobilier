@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="fr" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Primmobilier — Atlas du marché</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" />
+    <!-- On réutilise les composants et tokens du POC (mêmes valeurs que base.css). -->
+    <link rel="stylesheet" href="../static/app.css" />
+    <style>
+      /* ── Refonte Atlas dans le shell commun ────────────────────────────────
+         Clair par défaut (D13). Shell de navigation en haut, la carte et ses
+         panneaux flottants (verre, D18) remplissent le reste. Bouton Exporter
+         et compteur de crédits ajoutés. Carte factice (pas de MapLibre ici). */
+      /* Carte plein écran : le shell est un overlay qui s'auto-masque pour
+         maximiser la carte, et réapparaît quand la souris revient en haut. */
+      .shell {
+        position: fixed;
+        top: 0; left: 0; right: 0;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        gap: 22px;
+        height: 56px;
+        padding: 0 18px;
+        background: color-mix(in srgb, var(--surface-solid) 90%, transparent);
+        -webkit-backdrop-filter: var(--glass);
+        backdrop-filter: var(--glass);
+        border-bottom: 1px solid var(--hairline);
+        box-shadow: var(--shadow-pop);
+        transform: translateY(-100%);
+        transition: transform 0.28s var(--ease);
+      }
+      .shell.show, .shell:focus-within { transform: translateY(0); }
+      /* Onglet indicateur quand le shell est masqué. */
+      .shell-peek {
+        position: fixed; top: 0; left: 50%; transform: translateX(-50%);
+        width: 56px; height: 5px; border-radius: 0 0 7px 7px;
+        background: var(--hairline-strong); z-index: 18; opacity: 0.7;
+        transition: opacity 0.2s;
+      }
+      .shell.show ~ .shell-peek { opacity: 0; }
+
+      /* Les panneaux flottants se décalent EN DOUCEUR sous le shell quand il
+         descend (--shell-h : 0 → 56px, posé en JS). max-height ajustée pour que
+         le panneau ne déborde jamais : son bas reste à 14px du bord d'écran. */
+      :root { --shell-h: 0px; }
+      .panel {
+        top: calc(14px + var(--shell-h));
+        max-height: calc(100vh - 28px - var(--shell-h));
+        transition: top 0.28s var(--ease), max-height 0.28s var(--ease);
+      }
+      .table-wrap {
+        top: calc(14px + var(--shell-h));
+        transition: top 0.28s var(--ease);
+      }
+      .shell-brand {
+        display: flex; align-items: center; gap: 9px;
+        font-family: var(--font-display); font-size: 16px; font-weight: 600;
+        letter-spacing: 0.04em; text-transform: uppercase; color: var(--text);
+      }
+      .shell-nav { display: flex; gap: 6px; }
+      .shell-nav a {
+        padding: 7px 12px; border-radius: var(--r-sm); font-size: 13px;
+        color: var(--text-muted); text-decoration: none; transition: color .2s, background .2s;
+      }
+      .shell-nav a:hover { color: var(--text); background: var(--surface-2); }
+      .shell-nav a.active { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+      .shell-spacer { flex: 1; }
+      .shell-actions { display: flex; align-items: center; gap: 12px; }
+      .credits {
+        display: inline-flex; align-items: center; gap: 7px;
+        padding: 5px 11px; border: 1px solid var(--hairline); border-radius: 99px;
+        background: var(--surface-2); font-size: 12px; color: var(--text-muted);
+      }
+      .credits b { color: var(--accent); font-variant-numeric: tabular-nums; }
+      :root[data-theme="dark"] .credits b { text-shadow: 0 0 10px var(--accent-glow); }
+      .shell-actions .ghost {
+        padding: 7px 13px; border: 1px solid var(--hairline-strong); border-radius: var(--r-sm);
+        background: transparent; color: var(--text); font-size: 13px; cursor: pointer;
+      }
+      .shell-actions .ghost:hover { border-color: var(--accent-line); color: var(--accent); }
+
+      /* La carte occupe tout l'écran ; le shell flotte par-dessus. */
+      .app { height: 100%; }
+      :root .panel { animation: none; }
+
+      /* Carte factice — fond clair type Positron + routes + parc + rivière. */
+      #map {
+        background:
+          radial-gradient(circle at 76% 30%, rgba(122, 178, 128, 0.30) 0 6%, transparent 7%),
+          radial-gradient(circle at 20% 72%, rgba(122, 178, 128, 0.22) 0 9%, transparent 10%),
+          linear-gradient(118deg, transparent 30%, rgba(120, 172, 212, 0.38) 30.6% 33%, transparent 33.6%),
+          repeating-linear-gradient(26deg, transparent 0 92px, rgba(20, 30, 40, 0.05) 92px 94px),
+          repeating-linear-gradient(0deg, transparent 0 60px, rgba(20, 30, 40, 0.05) 60px 62px),
+          repeating-linear-gradient(90deg, transparent 0 60px, rgba(20, 30, 40, 0.05) 60px 62px),
+          #e8ebe6;
+      }
+      :root[data-theme="dark"] #map {
+        background:
+          radial-gradient(circle at 76% 30%, rgba(45, 212, 191, 0.10) 0 6%, transparent 7%),
+          linear-gradient(118deg, transparent 30%, rgba(34, 211, 238, 0.16) 30.6% 33%, transparent 33.6%),
+          repeating-linear-gradient(26deg, transparent 0 92px, rgba(255, 255, 255, 0.035) 92px 94px),
+          repeating-linear-gradient(0deg, transparent 0 60px, rgba(255, 255, 255, 0.03) 60px 62px),
+          repeating-linear-gradient(90deg, transparent 0 60px, rgba(255, 255, 255, 0.03) 60px 62px),
+          #0c1118;
+      }
+
+      /* Marqueurs factices sur la carte. */
+      .mq-layer { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
+      .mq-zone {
+        position: absolute; top: 50%; left: 54%; width: 360px; height: 360px;
+        transform: translate(-50%, -50%); border-radius: 50%;
+        border: 1.5px solid var(--accent-line);
+        background: radial-gradient(circle, var(--accent-soft), transparent 70%);
+      }
+      .mq-marker {
+        position: absolute; top: 50%; left: 54%; width: 18px; height: 18px;
+        transform: translate(-50%, -50%);
+      }
+      .mq-marker::after {
+        content: ""; position: absolute; inset: 3px; border-radius: 50%;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        border: 2px solid #fff; box-shadow: 0 0 12px var(--accent-glow), 0 2px 6px rgba(0, 0, 0, 0.4);
+      }
+      .mq-dot {
+        position: absolute; width: 11px; height: 11px; border-radius: 50%;
+        background: var(--accent); box-shadow: 0 0 8px var(--accent-glow);
+        transform: translate(-50%, -50%); opacity: 0.85;
+      }
+      .mq-dot.gold { background: var(--gold); box-shadow: 0 0 10px color-mix(in srgb, var(--gold) 50%, transparent); }
+
+      /* Bouton Exporter et ligne d'actions du résultat. */
+      .result-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 2px; }
+      .btn-export, .btn-soft {
+        min-height: 36px; border-radius: var(--r-sm); cursor: pointer; font: inherit;
+        font-size: 12.5px; font-weight: 600; display: inline-flex; align-items: center;
+        justify-content: center; gap: 7px; text-decoration: none;
+      }
+      .btn-export {
+        border: 0; color: var(--accent-ink);
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        box-shadow: 0 3px 16px var(--accent-glow);
+      }
+      .btn-export:hover { filter: brightness(1.07); }
+      .btn-soft { border: 1px solid var(--hairline-strong); background: var(--surface-2); color: var(--text); }
+      .btn-soft:hover { border-color: var(--accent-line); color: var(--accent); }
+
+      /* Frise : histogramme factice (pas de canvas JS ici). */
+      .mq-hist { position: absolute; inset: 0; display: flex; align-items: flex-end; gap: 2px; padding: 6px 2px; }
+      .mq-hist i {
+        flex: 1; border-radius: 2px 2px 0 0;
+        background: linear-gradient(180deg, var(--accent-line), var(--surface-3));
+        opacity: 0.5;
+      }
+      .timeline { animation: none; }
+    </style>
+  </head>
+  <body>
+    <!-- Shell de navigation commun -->
+    <nav class="shell">
+      <a class="shell-brand" href="accueil.html"><span class="brand-dot" aria-hidden="true"></span>Primmobilier</a>
+      <div class="shell-nav">
+        <a class="active" href="#">Atlas du marché</a>
+        <a href="observatoire.html">Observatoire</a>
+        <a href="#">Tarifs</a>
+      </div>
+      <div class="shell-spacer"></div>
+      <div class="shell-actions">
+        <span class="credits" title="Crédits restants ce mois"><b>5</b> crédits</span>
+        <button class="theme-toggle" id="themeToggle" type="button" aria-label="Basculer le thème">
+          <svg class="icon-sun" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5.2 5.2l1.7 1.7M17.1 17.1l1.7 1.7M18.8 5.2l-1.7 1.7M6.9 17.1l-1.7 1.7"/></svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/></svg>
+        </button>
+        <button class="ghost" type="button">Se connecter</button>
+      </div>
+    </nav>
+    <div class="shell-peek" aria-hidden="true" title="Revenez en haut pour afficher le menu"></div>
+
+    <main class="app">
+      <!-- Panneau d'analyse flottant (verre sur carte, D18) -->
+      <section class="panel" aria-label="Analyse">
+        <div class="mode-control" aria-label="Mode">
+          <button type="button" class="active">Estimation</button>
+          <button type="button">Exploration</button>
+        </div>
+
+        <div class="search-wrap">
+          <label class="field search-field">
+            <span>Adresse, zone ou ville</span>
+            <input value="12 cours de l'Intendance, Bordeaux" />
+          </label>
+        </div>
+
+        <div class="grid">
+          <label class="field"><span>Type</span>
+            <select><option>Maison</option><option>Appartement</option></select>
+          </label>
+          <label class="field"><span>Surface</span><input type="number" value="92" /></label>
+          <label class="field"><span>Pièces</span><input type="number" value="4" /></label>
+          <label class="field"><span>Prix soumis</span><input type="number" placeholder="optionnel" /></label>
+        </div>
+
+        <div class="section-label">Emprise</div>
+        <div class="scope-control" aria-label="Emprise de comparaison">
+          <button type="button" class="active">Rayon</button>
+          <button type="button">Section</button>
+          <button type="button">Code postal</button>
+          <button type="button">Commune</button>
+        </div>
+
+        <div class="zone-row">
+          <label class="zone-toggle">
+            <input type="checkbox" checked />
+            <span class="switch" aria-hidden="true"></span>
+            <span>Afficher la zone sur la carte</span>
+          </label>
+          <input class="zone-color" type="range" min="0" max="360" step="2" value="170" aria-label="Couleur de la zone" />
+        </div>
+
+        <div class="radius-control slider-radius">
+          <div class="radius-head"><span>Rayon</span><strong>600 m</strong></div>
+          <input type="range" min="0" max="13" step="1" value="4" aria-label="Rayon de comparaison" />
+          <div class="radius-scale" aria-hidden="true"><span>100 m</span><span>20 km</span></div>
+        </div>
+
+        <div class="history-control slider-history">
+          <div class="radius-head"><span>Historique</span><strong>0 – 5 ans</strong></div>
+          <div class="dual-range">
+            <input type="range" min="0" max="5" step="1" value="0" aria-label="Âge minimum" />
+            <input type="range" min="0" max="5" step="1" value="5" aria-label="Âge maximum" />
+          </div>
+          <div class="radius-scale" aria-hidden="true"><span>0</span><span>5 ans</span></div>
+        </div>
+
+        <div class="toolbar">
+          <button id="estimate" type="button">Estimer</button>
+          <button id="reset" type="button">Reset</button>
+        </div>
+
+        <section class="result">
+          <div>
+            <span class="label">Prix médian estimé</span>
+            <strong id="estimatedPrice">287 400 €</strong>
+          </div>
+          <div class="metrics">
+            <span><b>3 980</b> €/m²</span>
+            <span><button class="scope-chip sales-chip" type="button"><b>72</b> ventes</button></span>
+            <span><button class="scope-chip" type="button">Rayon 600 m</button></span>
+          </div>
+          <div class="result-stats">
+            <div class="range">Fourchette 264 000 € – 312 000 € (P25–P75)</div>
+            <div class="range">Loyer médian ~13,5 €/m² · rendement brut ~3,9 %</div>
+          </div>
+          <div class="result-actions">
+            <button class="btn-export" type="button">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>
+              Exporter
+            </button>
+            <a class="btn-soft" href="observatoire.html">Ouvrir l'Observatoire</a>
+          </div>
+        </section>
+      </section>
+      <!-- Languette de rétraction du panneau (toujours disponible, comme l'Observatoire) -->
+      <button id="expandEstimation" class="expand-estimation" type="button" aria-label="Replier / ouvrir les paramètres">›</button>
+
+      <!-- Carte factice -->
+      <div id="map">
+        <div class="mq-layer" aria-hidden="true">
+          <span class="mq-zone"></span>
+          <span class="mq-marker"></span>
+          <span class="mq-dot gold" style="top:42%;left:60%"></span>
+          <span class="mq-dot" style="top:38%;left:46%"></span>
+          <span class="mq-dot" style="top:56%;left:62%"></span>
+          <span class="mq-dot" style="top:62%;left:48%"></span>
+          <span class="mq-dot" style="top:48%;left:66%"></span>
+          <span class="mq-dot" style="top:52%;left:42%"></span>
+          <span class="mq-dot" style="top:64%;left:58%"></span>
+        </div>
+      </div>
+
+      <!-- Frise temporelle -->
+      <div class="timeline" aria-label="Frise temporelle du marché">
+        <button class="timeline-play" type="button" aria-label="Lecture">
+          <svg class="icon-play" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M7 4.8c0-1 1.1-1.6 1.9-1.1l11 6.7c.8.5.8 1.7 0 2.2l-11 6.7c-.8.5-1.9-.1-1.9-1.1z"/></svg>
+        </button>
+        <div class="timeline-track">
+          <div class="mq-hist" aria-hidden="true">
+            <i style="height:30%"></i><i style="height:44%"></i><i style="height:38%"></i><i style="height:56%"></i><i style="height:62%"></i><i style="height:48%"></i><i style="height:70%"></i><i style="height:84%"></i><i style="height:66%"></i><i style="height:78%"></i><i style="height:58%"></i><i style="height:46%"></i><i style="height:52%"></i><i style="height:40%"></i><i style="height:34%"></i><i style="height:60%"></i><i style="height:72%"></i><i style="height:50%"></i>
+          </div>
+        </div>
+        <div class="timeline-meta">
+          <strong>janv. 2019 – déc. 2024</strong>
+          <span>72 ventes</span>
+        </div>
+        <button class="timeline-all" type="button">Tout</button>
+      </div>
+
+      <!-- Tiroir de résultats -->
+      <aside class="table-wrap has-results" aria-label="Résultats">
+        <div class="list-panel">
+          <div class="table-head">
+            <strong>Résultats</strong>
+            <div class="head-actions">
+              <div class="sort-menu">
+                <button type="button">Trier · Similarité</button>
+              </div>
+              <span>72 comparables</span>
+            </div>
+          </div>
+          <div class="comparables-list">
+            <div class="comparable-card selected">
+              <button class="comparable" type="button">
+                <b>295 000 €</b><b>3 933 €/m²</b>
+                <span>Maison 75 m² · 4 pièces · <span class="dpe-badge dpe-c">C</span></span>
+                <span class="result-date">mars 2024</span>
+              </button>
+            </div>
+            <div class="comparable-card">
+              <button class="comparable" type="button">
+                <b>312 000 €</b><b>3 950 €/m²</b>
+                <span>Maison 79 m² · 5 pièces · <span class="dpe-badge dpe-d">D</span></span>
+                <span class="result-date">nov. 2023</span>
+              </button>
+            </div>
+            <div class="comparable-card">
+              <button class="comparable" type="button">
+                <b>268 000 €</b><b>4 060 €/m²</b>
+                <span>Appartement 66 m² · 3 pièces · <span class="dpe-badge dpe-b">B</span></span>
+                <span class="result-date">sept. 2023</span>
+              </button>
+            </div>
+            <div class="comparable-card">
+              <button class="comparable" type="button">
+                <b>281 500 €</b><b>3 845 €/m²</b>
+                <span>Maison 73 m² · 4 pièces · <span class="dpe-badge dpe-e">E</span></span>
+                <span class="result-date">juin 2023</span>
+              </button>
+            </div>
+            <div class="comparable-card">
+              <button class="comparable" type="button">
+                <b>330 000 €</b><b>4 125 €/m²</b>
+                <span>Maison 80 m² · 5 pièces · <span class="dpe-badge dpe-c">C</span></span>
+                <span class="result-date">avr. 2023</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <button class="expand-comparables" type="button" aria-label="Replier / ouvrir les résultats">‹</button>
+      </aside>
+    </main>
+
+    <!-- Bascule de thème — CLAIR par défaut (D13), sans persistance -->
+    <script>
+      (function () {
+        var root = document.documentElement;
+        if (new URLSearchParams(location.search).get("theme") === "dark") root.setAttribute("data-theme", "dark");
+        document.getElementById("themeToggle").addEventListener("click", function () {
+          root.setAttribute("data-theme", root.getAttribute("data-theme") === "dark" ? "light" : "dark");
+        });
+      })();
+    </script>
+
+    <!-- Shell auto-masquant : se range pour libérer la carte, réapparaît quand
+         la souris revient en haut (ou au focus clavier). Aperçu au chargement. -->
+    <script>
+      (function () {
+        var shell = document.querySelector(".shell");
+        var root = document.documentElement;
+        function setShell(open) {
+          shell.classList.toggle("show", open);
+          root.style.setProperty("--shell-h", open ? "56px" : "0px");
+        }
+        document.addEventListener("pointermove", function (e) {
+          if (e.clientY <= 6) setShell(true);
+          else if (e.clientY > shell.offsetHeight + 10 && !shell.matches(":hover")) setShell(false);
+        });
+        setShell(true);
+        setTimeout(function () { setShell(false); }, 1900);
+
+        // Languettes de rétraction des panneaux (mêmes que l'Observatoire).
+        var panel = document.querySelector(".panel"), tw = document.querySelector(".table-wrap");
+        var ee = document.querySelector(".expand-estimation"), ec = document.querySelector(".expand-comparables");
+        if (ee) ee.addEventListener("click", function () { panel.classList.toggle("collapsed"); });
+        if (ec) ec.addEventListener("click", function () { tw.classList.toggle("collapsed"); });
+      })();
+    </script>
+  </body>
+</html>

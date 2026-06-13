@@ -148,3 +148,18 @@ jetables, direction tranchée sur pièces après itérations. Maquettes de trava
 - Anonyme : 5 crédits, 1 export offert, sans historique (pas de compte). Ferme
   la proposition « anonyme = 0 export » de D2 (désormais 1 export offert en
   anonyme). Termes « crédit » et « point d'analyse » à ajouter au CONTEXT.md.
+
+### Observatoire — graphiques (D3 figé)
+
+Rendu des graphiques en **D3.js** (zéro-build via CDN, conforme ADR 0008), pour le
+sur-mesure aérien et la durabilité ; ECharts a servi de jalon puis a été retiré. La
+bibliothèque est figée comme socle des graphiques produit (ferme la décision ouverte
+« lib de graphiques »). Référence visuelle canonique créée :
+[REFERENCES_VISUEL.md](REFERENCES_VISUEL.md) (Nadieh Bremer en tête).
+
+Observatoire (`web_poc/maquettes/observatoire.html`) : bento animé + 4 graphes D3.
+Médiane €/m² (aire + ruban P25–P75, ligne à dégradé le long du tracé, flux animé,
+bloom en couches, grain feTurbulence en sombre, crosshair). Comparaison multi-marchés
+(focus/estompe, « + Zone »). Ventes individuelles en beeswarm coloré par DPE, avec
+toggle gooey/métaballs. Prix vs taux (double axe). KPI propres à l'Observatoire (pas
+de redondance avec le panneau). Synthèse IA en bas, à la demande (pas d'auto-génération).
