@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="fr" data-theme="light">
+<html lang="fr">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -9,96 +9,17 @@
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" />
     <!-- On réutilise les composants et tokens du POC (mêmes valeurs que base.css). -->
     <link rel="stylesheet" href="../static/app.css" />
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="shell.css" />
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.14.0/dist/maplibre-gl.css" />
+    <script src="https://unpkg.com/maplibre-gl@5.14.0/dist/maplibre-gl.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
     <style>
       /* ── Refonte Atlas dans le shell commun ────────────────────────────────
          Clair par défaut (D13). Shell de navigation en haut, la carte et ses
          panneaux flottants (verre, D18) remplissent le reste. Bouton Exporter
          et compteur de crédits ajoutés. Carte factice (pas de MapLibre ici). */
-      /* Carte plein écran : le shell est un overlay qui s'auto-masque pour
-         maximiser la carte, et réapparaît quand la souris revient en haut.
-         Dessous concave (type macOS) : plein sur les côtés où vit le contenu,
-         creusé au milieu (vide) pour garder un maximum de carte visible même
-         déroulé. clip-path en unités objectBoundingBox => responsive sans JS,
-         et offsetHeight reste 56px donc la réactivité souris est identique. */
-      .shell {
-        position: fixed;
-        top: 0; left: 0; right: 0;
-        z-index: 20;
-        display: flex;
-        align-items: center;
-        gap: 22px;
-        height: 56px;
-        padding: 0 26px;
-        background: color-mix(in srgb, var(--surface-solid) 92%, transparent);
-        -webkit-backdrop-filter: var(--glass);
-        backdrop-filter: var(--glass);
-        clip-path: url(#shellClip);
-        /* 1er drop-shadow = liseré 1px qui épouse tout le bord (dont la courbe
-           concave) ; 2e = ombre portée douce sous le bandeau. */
-        filter: drop-shadow(0 1.2px 0 var(--hairline-strong)) drop-shadow(0 7px 16px rgba(10, 16, 24, 0.24));
-        transform: translateY(-100%);
-        transition: transform 0.28s var(--ease);
-      }
-      .shell.show, .shell:focus-within { transform: translateY(0); }
-      /* Sombre : le liseré devient une lueur teal (signature néon) et l'ombre
-         se creuse pour détacher le bandeau de la carte sombre. */
-      :root[data-theme="dark"] .shell {
-        filter: drop-shadow(0 1px 1px var(--accent-glow)) drop-shadow(0 9px 24px rgba(0, 0, 0, 0.55));
-      }
-      /* Onglet indicateur quand le shell est masqué. */
-      .shell-peek {
-        position: fixed; top: 0; left: 50%; transform: translateX(-50%);
-        width: 56px; height: 5px; border-radius: 0 0 7px 7px;
-        background: var(--hairline-strong); z-index: 18; opacity: 0.7;
-        transition: opacity 0.2s;
-      }
-      .shell.show ~ .shell-peek { opacity: 0; }
-      /* Exporter : unique CTA teal dans le shell, identique sur les deux pages.
-         Il se range avec le bandeau (export = action rare, de fin de parcours :
-         pas de rappel persistant qui encombrerait la carte). */
-      .shell-actions .shell-export { display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; border-radius: var(--r-sm); color: var(--accent-ink); background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 3px 16px var(--accent-glow); font-size: 13px; font-weight: 600; text-decoration: none; }
-      .shell-actions .shell-export:hover { filter: brightness(1.07); }
-
-      /* Les panneaux flottants se décalent EN DOUCEUR sous le shell quand il
-         descend (--shell-h : 0 → 56px, posé en JS). max-height ajustée pour que
-         le panneau ne déborde jamais : son bas reste à 14px du bord d'écran. */
-      :root { --shell-h: 0px; }
-      .panel {
-        top: calc(14px + var(--shell-h));
-        max-height: calc(100vh - 28px - var(--shell-h));
-        transition: top 0.28s var(--ease), max-height 0.28s var(--ease);
-      }
-      .table-wrap {
-        top: calc(14px + var(--shell-h));
-        transition: top 0.28s var(--ease);
-      }
-      .shell-brand {
-        display: flex; align-items: center; gap: 9px;
-        font-family: var(--font-display); font-size: 16px; font-weight: 600;
-        letter-spacing: 0.04em; text-transform: uppercase; color: var(--text);
-      }
-      .shell-nav { display: flex; gap: 6px; }
-      .shell-nav a {
-        padding: 7px 12px; border-radius: var(--r-sm); font-size: 13px;
-        color: var(--text-muted); text-decoration: none; transition: color .2s, background .2s;
-      }
-      .shell-nav a:hover { color: var(--text); background: var(--surface-2); }
-      .shell-nav a.active { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
-      .shell-spacer { flex: 1; }
-      .shell-actions { display: flex; align-items: center; gap: 12px; }
-      .credits {
-        display: inline-flex; align-items: center; gap: 7px;
-        padding: 5px 11px; border: 1px solid var(--hairline); border-radius: 99px;
-        background: var(--surface-2); font-size: 12px; color: var(--text-muted);
-      }
-      .credits b { color: var(--accent); font-variant-numeric: tabular-nums; }
-      :root[data-theme="dark"] .credits b { text-shadow: 0 0 10px var(--accent-glow); }
-      .shell-actions .ghost {
-        padding: 7px 13px; border: 1px solid var(--hairline-strong); border-radius: var(--r-sm);
-        background: transparent; color: var(--text); font-size: 13px; cursor: pointer;
-      }
-      .shell-actions .ghost:hover { border-color: var(--accent-line); color: var(--accent); }
+      /* Bandeau (shell) commun, sous-composants et CTA Exporter : voir shell.css. */
 
       /* La carte occupe tout l'écran ; le shell flotte par-dessus. */
       .app { height: 100%; }
@@ -131,23 +52,60 @@
 
       /* Bouton Exporter et ligne d'actions du résultat. */
       .result-actions { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 2px; }
-      .btn-export, .btn-soft {
+      .btn-soft {
         min-height: 36px; border-radius: var(--r-sm); cursor: pointer; font: inherit;
         font-size: 12.5px; font-weight: 600; display: inline-flex; align-items: center;
         justify-content: center; gap: 7px; text-decoration: none;
+        border: 1px solid var(--hairline-strong); background: var(--surface-2); color: var(--text);
       }
-      .btn-export {
-        border: 0; color: var(--accent-ink);
-        background: linear-gradient(135deg, var(--accent), var(--accent-2));
-        box-shadow: 0 3px 16px var(--accent-glow);
-      }
-      .btn-export:hover { filter: brightness(1.07); }
-      .btn-soft { border: 1px solid var(--hairline-strong); background: var(--surface-2); color: var(--text); }
       .btn-soft:hover { border-color: var(--accent-line); color: var(--accent); }
 
       /* Frise : histogramme D3 (volume par trimestre + fenêtre sélectionnée). */
       .tl-d3 { position: absolute; inset: 0; width: 100%; height: 100%; }
       .timeline { animation: none; }
+      /* Atlas câblé : suggestions d'adresse + marqueur cible MapLibre. */
+      .search-wrap { position: relative; }
+      .suggestions { position: absolute; z-index: 30; left: 0; right: 0; margin-top: 4px; background: var(--surface-solid); border: 1px solid var(--hairline); border-radius: var(--r-md); box-shadow: var(--shadow-pop); overflow: hidden; }
+      .suggestions .suggestion { display: block; width: 100%; text-align: left; padding: 9px 12px; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
+      .suggestions .suggestion:hover { background: var(--surface-2); color: var(--accent); }
+      .map-target { width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 2px solid #fff; box-shadow: 0 0 0 2px var(--accent-line), 0 2px 6px rgba(0,0,0,.4); }
+      .empty-list { padding: 18px 14px; font-size: 13px; color: var(--text-muted); }
+      /* Languettes : la flèche montre l'ACTION (rabattre si ouvert, ouvrir si replié). */
+      .expand-estimation::after { content: "‹"; }
+      .panel.collapsed ~ .expand-estimation::after { content: "›"; }
+      .expand-comparables::after { content: "›"; }
+      .table-wrap.collapsed .expand-comparables::after { content: "‹"; }
+      /* Contrôles carte dans le panneau : 2 boîtes (fond + cadastre), options au survol
+         (CSS .map-controls/.layer-menu héritée d'app.css). */
+      .panel .layer-menu-current { background: var(--surface); border-color: var(--hairline-strong); }
+      .zone-color { accent-color: var(--zone-color, var(--accent)); }
+      /* Détail d'un comparable (déplié dans la carte sélectionnée). Réutilise .detail-grid /
+         .detail-field / .dpe-badge d'app.css ; on style ici le conteneur + les collapsibles. */
+      .comparable-card .comparable-detail { padding: 2px 14px 14px; }
+      .comparable-detail .detail-title { display: flex; flex-direction: column; gap: 2px; margin: 6px 0 10px; }
+      .comparable-detail .detail-title strong { font-size: 15px; color: var(--text); }
+      .comparable-detail .detail-title span { font-size: 12px; color: var(--text-muted); }
+      .comparable-detail .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 14px; }
+      .comparable-detail .detail-field { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12.5px; color: var(--text-muted); }
+      .comparable-detail .detail-field b { color: var(--text); font-weight: 600; text-align: right; }
+      .comparable-detail .detail-section { margin-top: 11px; }
+      .comparable-detail .detail-section h4 { margin: 0 0 5px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); font-weight: 600; }
+      .comparable-detail .collapsible { margin-top: 9px; border-top: 1px solid var(--hairline); padding-top: 9px; }
+      .comparable-detail .collapsible summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--text); list-style: none; }
+      .comparable-detail .collapsible summary::-webkit-details-marker { display: none; }
+      .comparable-detail .collapsible summary::before { content: "▸ "; color: var(--text-faint); }
+      .comparable-detail .collapsible[open] summary::before { content: "▾ "; }
+      .comparable-detail .collapsible-body { padding-top: 9px; }
+      .comparable-detail .batiments-head { font-size: 11.5px; color: var(--text-muted); margin-bottom: 6px; }
+      .comparable-detail .detail-note { font-size: 11px; line-height: 1.45; color: var(--text-faint); margin: 7px 0 0; }
+      .comparable-detail .street-muted { font-size: 12px; color: var(--text-faint); }
+      .comparable-detail .dpe-panel-head { display: flex; gap: 16px; margin-bottom: 7px; }
+      .comparable-detail .dpe-pair { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-muted); }
+      .comparable-detail .adresse-tag { font-size: 10.5px; color: var(--text-faint); font-weight: 500; }
+      /* Menu de tri (même mécanique de survol que les menus carte) + survol synchronisé. */
+      .sort-menu .layer-menu-current { background: var(--surface); border-color: var(--hairline-strong); font-size: 12.5px; min-height: 30px; gap: 6px; }
+      .sort-menu .layer-menu-providers { left: auto; right: 0; }
+      .comparable-card.hover { border-color: var(--accent-line); }
     </style>
   </head>
   <body>
@@ -177,32 +135,51 @@
       <!-- Panneau d'analyse flottant (verre sur carte, D18) -->
       <section class="panel" aria-label="Analyse">
         <div class="mode-control" aria-label="Mode">
-          <button type="button" class="active">Estimation</button>
-          <button type="button">Exploration</button>
+          <button type="button" class="active" data-mode="estimation">Estimation</button>
+          <button type="button" data-mode="exploration">Exploration</button>
         </div>
 
         <div class="search-wrap">
           <label class="field search-field">
             <span>Adresse, zone ou ville</span>
-            <input value="12 cours de l'Intendance, Bordeaux" />
+            <input id="address" autocomplete="off" placeholder="Tapez une adresse" />
           </label>
+          <div id="suggestions" class="suggestions" hidden></div>
         </div>
 
         <div class="grid">
           <label class="field"><span>Type</span>
-            <select><option>Maison</option><option>Appartement</option></select>
+            <select id="type"><option>Maison</option><option>Appartement</option></select>
           </label>
-          <label class="field"><span>Surface</span><input type="number" value="92" /></label>
-          <label class="field"><span>Pièces</span><input type="number" value="4" /></label>
-          <label class="field"><span>Prix soumis</span><input type="number" placeholder="optionnel" /></label>
+          <label class="field"><span>Surface</span><input id="surface" type="number" value="92" /></label>
+          <label class="field"><span>Pièces</span><input id="rooms" type="number" value="4" /></label>
+          <label class="field"><span>Prix soumis</span><input id="askedPrice" type="number" placeholder="optionnel" /></label>
+        </div>
+
+        <!-- Filtres d'exploration : menu Type (corrélé à la grille des catégories du résultat) -->
+        <div id="explorationFilters" class="grid" aria-label="Filtres d'exploration" hidden>
+          <div class="field layer-select layer-menu type-menu" id="marketTypeMenu">
+            <span>Type</span>
+            <div class="layer-menu-trigger">
+              <button type="button" class="layer-menu-current"><span id="marketTypeLabel">Tous</span><span class="layer-menu-caret">▾</span></button>
+              <div class="layer-menu-providers">
+                <button type="button" data-market-type="" class="active">Tous</button>
+                <button type="button" data-market-type="Maison">Maison</button>
+                <button type="button" data-market-type="Appartement">Appartement</button>
+                <button type="button" data-market-type="Terrain">Terrain</button>
+                <button type="button" data-market-type="Dépendance">Dépendance</button>
+                <button type="button" data-market-type="Local">Local</button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="section-label">Emprise</div>
         <div class="scope-control" aria-label="Emprise de comparaison">
-          <button type="button" class="active">Rayon</button>
-          <button type="button">Section</button>
-          <button type="button">Code postal</button>
-          <button type="button">Commune</button>
+          <button type="button" class="active" data-scope="radius">Rayon</button>
+          <button type="button" data-scope="cadastre">Section</button>
+          <button type="button" data-scope="postcode">Code postal</button>
+          <button type="button" data-scope="city">Commune</button>
         </div>
 
         <div class="zone-row">
@@ -214,151 +191,165 @@
           <input class="zone-color" type="range" min="0" max="360" step="2" value="170" aria-label="Couleur de la zone" />
         </div>
 
-        <div class="radius-control slider-radius">
-          <div class="radius-head"><span>Rayon</span><strong>600 m</strong></div>
-          <input type="range" min="0" max="13" step="1" value="4" aria-label="Rayon de comparaison" />
+        <div class="radius-control slider-radius" id="radiusControl">
+          <div class="radius-head"><span>Rayon</span><strong id="radiusValue">600 m</strong></div>
+          <input id="radius" type="range" min="0" max="13" step="1" value="4" aria-label="Rayon de comparaison" />
           <div class="radius-scale" aria-hidden="true"><span>100 m</span><span>20 km</span></div>
         </div>
 
         <div class="history-control slider-history">
-          <div class="radius-head"><span>Historique</span><strong>0 – 5 ans</strong></div>
+          <div class="radius-head"><span>Historique</span><strong id="historyValue">0 – 5 ans</strong></div>
           <div class="dual-range">
-            <input type="range" min="0" max="5" step="1" value="0" aria-label="Âge minimum" />
-            <input type="range" min="0" max="5" step="1" value="5" aria-label="Âge maximum" />
+            <input id="historyMin" type="range" min="0" max="5" step="1" value="0" aria-label="Âge minimum" />
+            <input id="historyMax" type="range" min="0" max="5" step="1" value="5" aria-label="Âge maximum" />
           </div>
           <div class="radius-scale" aria-hidden="true"><span>0</span><span>5 ans</span></div>
+        </div>
+
+        <!-- Curseurs marché (exploration) : affichés/masqués selon le mode -->
+        <div id="priceControl" class="radius-control slider-price" hidden>
+          <div class="radius-head"><span>Prix</span><strong id="priceLabel">Tous</strong></div>
+          <div class="dual-range">
+            <input id="priceMin" type="range" min="0" max="1000000" step="10000" value="0" aria-label="Prix minimum" />
+            <input id="priceMax" type="range" min="0" max="1000000" step="10000" value="1000000" aria-label="Prix maximum" />
+          </div>
+          <div class="radius-scale" aria-hidden="true"><span id="priceScaleMin">0 €</span><span id="priceScaleMax">1 M€</span></div>
+        </div>
+
+        <div id="surfaceControl" class="radius-control slider-surface" hidden>
+          <div class="radius-head"><span>Surface</span><strong id="surfaceLabel">Toutes</strong></div>
+          <div class="dual-range">
+            <input id="surfaceMin" type="range" min="0" max="300" step="1" value="0" aria-label="Surface minimum" />
+            <input id="surfaceMax" type="range" min="0" max="300" step="1" value="300" aria-label="Surface maximum" />
+          </div>
+          <div class="radius-scale" aria-hidden="true"><span id="surfaceScaleMin">0 m²</span><span id="surfaceScaleMax">300 m²</span></div>
+        </div>
+
+        <div id="roomsControl" class="radius-control slider-rooms" hidden>
+          <div class="radius-head"><span>Pièces</span><strong id="roomsLabel">Non applicable</strong></div>
+          <div class="dual-range">
+            <input id="roomsMin" type="range" min="1" max="8" step="1" value="1" aria-label="Pièces minimum" />
+            <input id="roomsMax" type="range" min="1" max="8" step="1" value="8" aria-label="Pièces maximum" />
+          </div>
+          <div class="radius-scale" aria-hidden="true"><span id="roomsScaleMin">1</span><span id="roomsScaleMax">8+</span></div>
+        </div>
+
+        <div class="section-label">Carte</div>
+        <div class="map-controls" aria-label="Contrôles de carte">
+          <div class="layer-select layer-menu" id="baseLayerMenu">
+            <span>Fond de carte</span>
+            <div class="layer-menu-trigger">
+              <button type="button" class="layer-menu-current"><span id="baseLayerLabel">Positron</span><span class="layer-menu-caret">▾</span></button>
+              <div class="layer-menu-providers">
+                <div class="layer-provider"><button type="button" class="layer-provider-name">CARTO<span class="layer-menu-caret">›</span></button><div class="layer-submenu"><button type="button" data-layer="carto" class="active">Positron</button><button type="button" data-layer="cartodark">Dark Matter</button><button type="button" data-layer="voyager">Voyager</button></div></div>
+                <div class="layer-provider"><button type="button" class="layer-provider-name">IGN<span class="layer-menu-caret">›</span></button><div class="layer-submenu"><button type="button" data-layer="ignplan">IGN Plan</button></div></div>
+                <div class="layer-provider"><button type="button" class="layer-provider-name">OSM<span class="layer-menu-caret">›</span></button><div class="layer-submenu"><button type="button" data-layer="osm">OSM standard</button></div></div>
+                <div class="layer-provider"><button type="button" class="layer-provider-name">Stadia<span class="layer-menu-caret">›</span></button><div class="layer-submenu"><button type="button" data-layer="stadiasat">Stadia Satellite</button></div></div>
+              </div>
+            </div>
+          </div>
+          <div class="layer-select layer-menu" id="cadastreMenu">
+            <span>Grille cadastre</span>
+            <div class="layer-menu-trigger">
+              <button type="button" class="layer-menu-current"><span id="cadastreLabel">Masquée</span><span class="layer-menu-caret">▾</span></button>
+              <div class="layer-menu-providers">
+                <button type="button" data-cadastre="none" class="active">Masquée</button>
+                <button type="button" data-cadastre="biens">Biens affichés</button>
+                <button type="button" data-cadastre="all">Tout (zoom ≥ 14)</button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="toolbar">
           <button id="estimate" type="button">Estimer</button>
           <button id="reset" type="button">Reset</button>
         </div>
+        <div class="range" id="statusLine"></div>
 
-        <section class="result">
+        <section class="result" id="result" hidden>
           <div>
-            <span class="label">Prix médian estimé</span>
-            <strong id="estimatedPrice">287 400 €</strong>
+            <span class="label" id="resultLabel">Prix médian estimé</span>
+            <strong id="estimatedPrice">—</strong>
           </div>
           <div class="metrics">
-            <span><b>3 980</b> €/m²</span>
-            <span><button class="scope-chip sales-chip" type="button"><b>72</b> ventes</button></span>
-            <span><button class="scope-chip" type="button">Rayon 600 m</button></span>
+            <span><b id="medianM2">—</b> €/m²</span>
+            <span id="salesChipWrap"><button class="scope-chip" type="button" disabled><b id="count">—</b> ventes</button></span>
+            <span><button class="scope-chip" type="button" id="scopeChip">Rayon</button></span>
           </div>
+          <div id="scopeDetails" class="scope-details" hidden></div>
           <div class="result-stats">
-            <div class="range">Fourchette 264 000 € – 312 000 € (P25–P75)</div>
-            <div class="range">Loyer médian ~13,5 €/m² · rendement brut ~3,9 %</div>
+            <div class="range" id="range">Tapez une adresse pour lancer une estimation.</div>
+            <div class="range" id="askedPosition"></div>
+            <div class="range" id="loyerContext"></div>
           </div>
+          <div id="marketStats" class="market-stats"></div>
           <div class="result-actions">
             <a class="btn-soft" href="observatoire.html">Ouvrir l'Observatoire</a>
           </div>
         </section>
       </section>
       <!-- Languette de rétraction du panneau (toujours disponible, comme l'Observatoire) -->
-      <button id="expandEstimation" class="expand-estimation" type="button" aria-label="Replier / ouvrir les paramètres">›</button>
+      <button id="expandEstimation" class="expand-estimation" type="button" aria-label="Replier / ouvrir les paramètres"></button>
 
       <!-- Carte factice -->
-      <div id="map">
-        <svg class="mq-layer" id="mapFx" aria-hidden="true"></svg>
-      </div>
+      <div id="map"></div>
 
-      <!-- Frise temporelle -->
-      <div class="timeline" aria-label="Frise temporelle du marché">
-        <button class="timeline-play" type="button" aria-label="Lecture">
+      <!-- Frise temporelle (réelle) : histogramme des ventes + sélection de période qui filtre la carte.
+           Masquée tant qu'il n'y a pas assez de données ; alimentée par estimate()/runMarket(). -->
+      <div id="timeline" class="timeline" hidden aria-label="Frise temporelle du marché" title="Double-clic : réduire / agrandir">
+        <button id="timelinePlay" class="timeline-play" type="button" aria-label="Lecture">
           <svg class="icon-play" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M7 4.8c0-1 1.1-1.6 1.9-1.1l11 6.7c.8.5.8 1.7 0 2.2l-11 6.7c-.8.5-1.9-.1-1.9-1.1z"/></svg>
+          <svg class="icon-pause" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><rect x="5.5" y="4" width="4.4" height="16" rx="1.4"/><rect x="14.1" y="4" width="4.4" height="16" rx="1.4"/></svg>
         </button>
         <div class="timeline-track">
-          <svg class="tl-d3" id="tl" aria-hidden="true"></svg>
+          <canvas id="timelineCanvas" class="timeline-canvas" aria-hidden="true"></canvas>
+          <input id="timelineStart" type="range" min="0" max="0" step="1" value="0" aria-label="Début de période" />
+          <input id="timelineEnd" type="range" min="0" max="0" step="1" value="0" aria-label="Fin de période" />
         </div>
         <div class="timeline-meta">
-          <strong>janv. 2019 – déc. 2024</strong>
-          <span>72 ventes</span>
+          <strong id="timelineWindow">—</strong>
+          <span id="timelineTicker"></span>
         </div>
-        <button class="timeline-all" type="button">Tout</button>
+        <button id="timelineAll" class="timeline-all" type="button" hidden>Tout</button>
       </div>
 
       <!-- Tiroir de résultats -->
-      <aside class="table-wrap has-results" aria-label="Résultats">
+      <!-- Rangé par défaut (hors écran à droite, languette visible) ; atlas.js le
+           déploie quand une recherche a renvoyé. -->
+      <aside class="table-wrap collapsed" aria-label="Résultats">
         <div class="list-panel">
           <div class="table-head">
             <strong>Résultats</strong>
             <div class="head-actions">
-              <div class="sort-menu">
-                <button type="button">Trier · Similarité</button>
+              <div class="sort-menu layer-menu" id="sortMenu">
+                <div class="layer-menu-trigger">
+                  <button type="button" class="layer-menu-current">Trier · <span id="sortLabel">Similarité</span><span class="layer-menu-caret">▾</span></button>
+                  <div class="layer-menu-providers">
+                    <button type="button" data-sort="similarity" class="active">Similarité</button>
+                    <button type="button" data-sort="price">Prix</button>
+                    <button type="button" data-sort="date">Date</button>
+                    <button type="button" data-sort="surface">Surface</button>
+                    <button type="button" data-sort="dpe">DPE</button>
+                    <button type="button" data-sort="distance">Distance</button>
+                  </div>
+                </div>
               </div>
-              <span>72 comparables</span>
+              <span id="tableCount">—</span>
             </div>
           </div>
-          <div class="comparables-list">
-            <div class="comparable-card selected">
-              <button class="comparable" type="button">
-                <b>295 000 €</b><b>3 933 €/m²</b>
-                <span>Maison 75 m² · 4 pièces · <span class="dpe-badge dpe-c">C</span></span>
-                <span class="result-date">mars 2024</span>
-              </button>
-            </div>
-            <div class="comparable-card">
-              <button class="comparable" type="button">
-                <b>312 000 €</b><b>3 950 €/m²</b>
-                <span>Maison 79 m² · 5 pièces · <span class="dpe-badge dpe-d">D</span></span>
-                <span class="result-date">nov. 2023</span>
-              </button>
-            </div>
-            <div class="comparable-card">
-              <button class="comparable" type="button">
-                <b>268 000 €</b><b>4 060 €/m²</b>
-                <span>Appartement 66 m² · 3 pièces · <span class="dpe-badge dpe-b">B</span></span>
-                <span class="result-date">sept. 2023</span>
-              </button>
-            </div>
-            <div class="comparable-card">
-              <button class="comparable" type="button">
-                <b>281 500 €</b><b>3 845 €/m²</b>
-                <span>Maison 73 m² · 4 pièces · <span class="dpe-badge dpe-e">E</span></span>
-                <span class="result-date">juin 2023</span>
-              </button>
-            </div>
-            <div class="comparable-card">
-              <button class="comparable" type="button">
-                <b>330 000 €</b><b>4 125 €/m²</b>
-                <span>Maison 80 m² · 5 pièces · <span class="dpe-badge dpe-c">C</span></span>
-                <span class="result-date">avr. 2023</span>
-              </button>
-            </div>
-          </div>
+          <div class="comparables-list" id="comparablesList"></div>
         </div>
-        <button class="expand-comparables" type="button" aria-label="Replier / ouvrir les résultats">‹</button>
+        <button class="expand-comparables" type="button" aria-label="Replier / ouvrir les résultats"></button>
       </aside>
     </main>
 
-    <!-- Bascule de thème — CLAIR par défaut (D13), sans persistance -->
+    <!-- Bandeau commun : bascule de thème (clair par défaut, D13) + auto-masquage. -->
+    <script src="shell.js"></script>
+
+    <!-- Languettes de rétraction des panneaux (page-specific). -->
     <script>
       (function () {
-        var root = document.documentElement;
-        if (new URLSearchParams(location.search).get("theme") === "dark") root.setAttribute("data-theme", "dark");
-        document.getElementById("themeToggle").addEventListener("click", function () {
-          root.setAttribute("data-theme", root.getAttribute("data-theme") === "dark" ? "light" : "dark");
-        });
-      })();
-    </script>
-
-    <!-- Shell auto-masquant : se range pour libérer la carte, réapparaît quand
-         la souris revient en haut (ou au focus clavier). Aperçu au chargement. -->
-    <script>
-      (function () {
-        var shell = document.querySelector(".shell");
-        var root = document.documentElement;
-        function setShell(open) {
-          shell.classList.toggle("show", open);
-          root.style.setProperty("--shell-h", open ? "56px" : "0px");
-        }
-        document.addEventListener("pointermove", function (e) {
-          if (e.clientY <= 6) setShell(true);
-          else if (e.clientY > shell.offsetHeight + 10 && !shell.matches(":hover")) setShell(false);
-        });
-        setShell(true);
-        setTimeout(function () { setShell(false); }, 1900);
-
-        // Languettes de rétraction des panneaux (mêmes que l'Observatoire).
         var panel = document.querySelector(".panel"), tw = document.querySelector(".table-wrap");
         var ee = document.querySelector(".expand-estimation"), ec = document.querySelector(".expand-comparables");
         if (ee) ee.addEventListener("click", function () { panel.classList.toggle("collapsed"); });
@@ -413,8 +404,11 @@
         function render() { drawMap(); drawTimeline(); }
         render();
         window.addEventListener("resize", function () { clearTimeout(window._tlr); window._tlr = setTimeout(render, 150); });
-        var tt = document.getElementById("themeToggle"); if (tt) tt.addEventListener("click", function () { setTimeout(render, 0); });
+        window.addEventListener("themechange", render);
       })();
     </script>
+
+    <!-- Atlas câblé : carte MapLibre + recherche d'adresse + estimation. -->
+    <script type="module" src="atlas.js"></script>
   </body>
 </html>
