@@ -1,0 +1,196 @@
+/* ============================================================================
+   neon.css — couche SIGNATURE néon (thème sombre) + composants démo-first.
+   À charger APRÈS base.css.
+
+   D13 respecté : thème CLAIR reste le défaut (scandinave, net). Cette couche
+   n'enrichit QUE le sombre — qui devient la signature néon PLEIN ÉCRAN (pas un
+   simple bandeau). Discipline D18 conservée : verre uniquement sur la carte ;
+   ici le néon vient de lueurs, dégradés et accents, pas de glassmorphism diffus.
+   Tokens/valeurs hérités de base.css (teal deux tons D16, Inter+Space Grotesk D17).
+   ============================================================================ */
+
+/* ----------------------------------------------------------------------------
+   1. Canvas néon — tout le site, thème sombre
+---------------------------------------------------------------------------- */
+:root[data-theme="dark"] body {
+  background:
+    radial-gradient(72% 55% at 78% -8%, rgba(45, 212, 191, 0.13), transparent 60%),
+    radial-gradient(60% 45% at 6% -6%, rgba(34, 211, 238, 0.10), transparent 55%),
+    var(--bg);
+  background-attachment: fixed;
+}
+/* Grille « data » très discrète, fondue vers le bas. */
+:root[data-theme="dark"] body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, transparent 0 63px, rgba(255, 255, 255, 0.02) 63px 64px),
+    repeating-linear-gradient(90deg, transparent 0 63px, rgba(255, 255, 255, 0.02) 63px 64px);
+  -webkit-mask-image: radial-gradient(125% 90% at 50% 0%, #000, transparent 72%);
+  mask-image: radial-gradient(125% 90% at 50% 0%, #000, transparent 72%);
+}
+:root[data-theme="dark"] body > * { position: relative; z-index: 1; }
+
+/* ----------------------------------------------------------------------------
+   2. Lueurs sur les accents (sombre)
+---------------------------------------------------------------------------- */
+:root[data-theme="dark"] .eyebrow { text-shadow: 0 0 18px var(--accent-glow); }
+:root[data-theme="dark"] .brand-dot { box-shadow: 0 0 18px var(--accent-glow); }
+:root[data-theme="dark"] .btn-primary {
+  box-shadow: 0 4px 26px var(--accent-glow), inset 0 0 0 1px rgba(45, 212, 191, 0.25);
+}
+:root[data-theme="dark"] .btn-primary:hover { box-shadow: 0 6px 34px var(--accent-glow); }
+
+/* ----------------------------------------------------------------------------
+   3. Titres signature : dégradé teal + halo (utilitaire .glow-title)
+---------------------------------------------------------------------------- */
+.glow-title em,
+.glow-title .hl {
+  font-style: normal;
+  background: linear-gradient(100deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+/* Le halo est un text-shadow à couleur explicite : il rend même si le glyphe
+   est transparent (dégradé clippé). Visible surtout en sombre. */
+:root[data-theme="dark"] .glow-title em,
+:root[data-theme="dark"] .glow-title .hl {
+  text-shadow: 0 0 44px rgba(45, 212, 191, 0.45);
+}
+
+/* Filet de séparation lumineux (utilitaire). */
+.glow-rule {
+  height: 1px;
+  margin: 0;
+  border: 0;
+  background: linear-gradient(90deg, transparent, var(--accent-line), transparent);
+  opacity: 0.55;
+}
+
+/* Halo décoratif réutilisable (cercle flou) — à positionner par le variant. */
+.halo {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(34px);
+  pointer-events: none;
+  background: radial-gradient(circle, var(--accent-glow), transparent 62%);
+  opacity: 0;
+}
+:root[data-theme="dark"] .halo { opacity: 1; }
+
+/* ----------------------------------------------------------------------------
+   4. Barre d'adresse démo-first (réutilisable par les variantes)
+---------------------------------------------------------------------------- */
+.addressbar {
+  display: flex;
+  gap: 10px;
+  max-width: 480px;
+}
+.addressbar .fauxinput {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 0 16px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--text-faint);
+  font-size: 15px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.addressbar .fauxinput svg { color: var(--text-faint); flex: 0 0 auto; }
+:root[data-theme="dark"] .addressbar .fauxinput {
+  box-shadow: 0 0 0 1px transparent, 0 0 28px rgba(45, 212, 191, 0.06);
+}
+.addressbar .fauxinput:focus-within,
+.addressbar.lit .fauxinput {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.addressbar .caret {
+  width: 1.5px;
+  height: 20px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+  animation: caret-blink 1.1s steps(1) infinite;
+}
+@keyframes caret-blink { 50% { opacity: 0; } }
+
+/* ----------------------------------------------------------------------------
+   5. Chiffres clés lumineux (bandeau stats + gros chiffres signature)
+---------------------------------------------------------------------------- */
+.stats {
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--bg-2);
+}
+.stats .container {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 18px;
+  padding-top: 26px;
+  padding-bottom: 26px;
+}
+.stat .n,
+.bignum .n {
+  font-family: var(--font-display);
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+.bignum .n { font-size: 38px; }
+.stat .l,
+.bignum .l { font-size: 13px; color: var(--text-muted); margin-top: 6px; }
+.bignum .l { color: var(--text-faint); max-width: 18ch; }
+:root[data-theme="dark"] .stat .n,
+:root[data-theme="dark"] .bignum .n {
+  text-shadow: 0 0 24px var(--accent-glow);
+}
+.bignums { display: flex; flex-wrap: wrap; gap: 36px; }
+
+/* ----------------------------------------------------------------------------
+   6. Surfaces : liseré néon au survol / mise en avant (sombre)
+---------------------------------------------------------------------------- */
+:root[data-theme="dark"] .pillar { transition: border-color 0.25s, box-shadow 0.25s, transform 0.25s var(--ease); }
+:root[data-theme="dark"] .pillar:hover {
+  border-color: var(--accent-line);
+  box-shadow: var(--shadow-card), 0 0 34px rgba(45, 212, 191, 0.09);
+  transform: translateY(-2px);
+}
+:root[data-theme="dark"] .pillar .ico { box-shadow: 0 0 22px rgba(45, 212, 191, 0.18); }
+
+:root[data-theme="dark"] .plan.featured {
+  box-shadow: 0 0 0 1px var(--accent-line), 0 0 44px rgba(45, 212, 191, 0.15), var(--shadow-pop);
+}
+:root[data-theme="dark"] .plan-tag { box-shadow: 0 0 16px var(--accent-glow); }
+
+/* Liseré supérieur lumineux pour une carte « vitrine » (utilitaire .lit-top). */
+.lit-top { position: relative; }
+.lit-top::after {
+  content: "";
+  position: absolute;
+  top: 0; left: 16%; right: 16%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent-line), transparent);
+}
+
+/* ----------------------------------------------------------------------------
+   7. Navigation : voile + lueur de base en sombre
+---------------------------------------------------------------------------- */
+:root[data-theme="dark"] .site-nav {
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  box-shadow: 0 1px 0 rgba(45, 212, 191, 0.06);
+}
+
+@media (max-width: 860px) {
+  .stats .container { grid-template-columns: repeat(2, 1fr); }
+  .bignums { gap: 24px; }
+}

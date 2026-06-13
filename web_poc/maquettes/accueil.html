@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Primmobilier — Accueil</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" />
+    <link rel="stylesheet" href="base.css" />
+    <link rel="stylesheet" href="neon.css" />
+    <style>
+      /* ── Hero CENTRÉ sous lampadaire fixe + bandeau carte large/bas (option G) ──
+         Le lampadaire est ancré au centre (sur la barre) ; seule son intensité
+         --int monte à l'approche. Sombre : il s'illumine et diffuse au milieu.
+         Clair : il assombrit pour creuser le relief de la barre. */
+      .hero-lamp { --int: 0; position: relative; isolation: isolate; overflow: hidden; }
+      .hero-lamp__inner {
+        position: relative;
+        z-index: 2;
+        max-width: 760px;
+        margin: 0 auto;
+        padding: clamp(78px, 13vh, 158px) 28px 60px;
+        text-align: center;
+      }
+      .hero-lamp h1 { font-size: clamp(36px, 5.4vw, 60px); line-height: 1.04; }
+      .hero-lamp .lead {
+        margin: 22px auto 0;
+        max-width: 58ch;
+        font-size: 18px;
+        color: var(--text-muted);
+      }
+
+      /* Barre d'adresse pleine largeur (centrée), sans bouton à côté. */
+      .hero-lamp .addressbar { position: relative; margin: 34px auto 0; max-width: 560px; }
+      .hero-lamp .addressbar .fauxinput { min-height: 56px; font-size: 16px; }
+      .hero-lamp .addressbar .fauxinput { transition: box-shadow 0.25s var(--ease), border-color 0.25s; }
+
+      /* Halo du lampadaire ANCRÉ sur la barre (fixe), intensité ∝ --int. */
+      .hero-lamp .addressbar::before {
+        content: "";
+        position: absolute;
+        z-index: -1;
+        left: 50%;
+        top: 50%;
+        width: 520px;
+        max-width: 160%;
+        height: 260px;
+        transform: translate(-50%, -50%);
+        border-radius: 50%;
+        pointer-events: none;
+        opacity: 0;
+      }
+      :root[data-theme="dark"] .hero-lamp .addressbar::before {
+        background: radial-gradient(ellipse at center, rgba(45, 212, 191, calc(0.06 + 0.20 * var(--int))), transparent 62%);
+        filter: blur(22px);
+        opacity: 1;
+      }
+      /* Rampe lumineuse sous la barre (sombre seulement). */
+      .hero-lamp .addressbar::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        bottom: -16px;
+        width: 72%;
+        height: 1px;
+        transform: translateX(-50%);
+        background: linear-gradient(90deg, transparent, var(--accent), transparent);
+        opacity: 0;
+      }
+      :root[data-theme="dark"] .hero-lamp .addressbar::after { opacity: calc(0.18 + 0.6 * var(--int)); }
+
+      /* Deux actions À POIDS ÉGAL sous la barre (estimation ≠ priorité). */
+      .hero-lamp__cta { display: flex; gap: 12px; justify-content: center; margin-top: 22px; flex-wrap: wrap; }
+      .hero-lamp__cta .btn {
+        min-height: 48px;
+        min-width: 168px;
+        border: 1px solid var(--accent-line);
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-family: var(--font-display);
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      .hero-lamp__cta .btn:hover {
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        color: var(--accent-ink);
+        box-shadow: 0 4px 22px var(--accent-glow);
+      }
+
+      .hero-lamp__caps { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 26px; }
+      .hero-lamp__caps span {
+        display: inline-flex; align-items: center; gap: 7px;
+        padding: 6px 12px; border: 1px solid var(--hairline); border-radius: 99px;
+        background: var(--surface); font-size: 12.5px; color: var(--text-muted);
+      }
+      .hero-lamp__caps span::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+      :root[data-theme="dark"] .hero-lamp__caps span::before { box-shadow: 0 0 8px var(--accent-glow); }
+      .hero-lamp__trust { margin-top: 16px; font-size: 13px; color: var(--text-faint); }
+
+      /* ── Couche d'effets centrée (sous le contenu) ─────────────────────────── */
+      .hero-lamp__fx { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+      .hero-lamp__fx > * { position: absolute; }
+      /* Diffusion large au milieu de la page (sombre). */
+      .hero-lamp__wash { inset: 0; }
+      :root[data-theme="dark"] .hero-lamp__wash {
+        background: radial-gradient(58% 52% at 50% 24%, rgba(45, 212, 191, calc(0.04 + 0.11 * var(--int))), transparent 72%);
+      }
+      /* G2 — version « lampadaire / scène » : deux faisceaux depuis les coins
+         hauts, qui s'évasent vers le bas en éclairant un peu vers l'extérieur
+         (effet scène) ; le central reste la vedette. Sources hors-champ. */
+      .hero-lamp__beam {
+        top: -4%;
+        bottom: auto;
+        left: 50%;
+        width: min(520px, 72%);
+        height: 80%;
+        clip-path: polygon(42% 0, 58% 0, 76% 100%, 24% 100%);
+        filter: blur(12px);
+        transform-origin: center;
+        transform: translateX(-50%);
+      }
+      .hero-lamp__beam-l,
+      .hero-lamp__beam-r {
+        top: -10%;
+        bottom: auto;
+        width: min(280px, 30%);
+        height: 126%;
+        clip-path: polygon(43% 0, 57% 0, 84% 100%, 16% 100%);
+        filter: blur(13px);
+        transform-origin: top center;
+      }
+      .hero-lamp__beam-l { left: 4%; transform: rotate(27deg); }
+      .hero-lamp__beam-r { right: 4%; transform: rotate(-27deg); }
+      /* Sombre : ça s'allume (néon). */
+      :root[data-theme="dark"] .hero-lamp__beam {
+        background: linear-gradient(180deg, transparent, var(--accent-glow) 16%, transparent 74%);
+        opacity: calc(0.28 + 0.44 * var(--int));
+      }
+      :root[data-theme="dark"] .hero-lamp__beam-l,
+      :root[data-theme="dark"] .hero-lamp__beam-r {
+        background: linear-gradient(180deg, transparent, var(--accent-glow) 14%, transparent 72%);
+        opacity: calc(0.22 + 0.40 * var(--int));
+      }
+      /* Clair : ça assombrit pour le relief. Intensité pilotée par OPACITY (comme
+         le sombre) — dégradé fixe — pour un repaint fiable au survol (sinon la
+         couche multiply ne se rafraîchit pas tant qu'un toggle de thème ne force
+         pas un repaint). */
+      :root:not([data-theme="dark"]) .hero-lamp__beam {
+        background: linear-gradient(180deg, rgba(17, 23, 31, 0.16), transparent 74%);
+        mix-blend-mode: multiply;
+        opacity: calc(0.45 + 0.55 * var(--int));
+      }
+      :root:not([data-theme="dark"]) .hero-lamp__beam-l,
+      :root:not([data-theme="dark"]) .hero-lamp__beam-r {
+        background: linear-gradient(180deg, rgba(17, 23, 31, 0.18), transparent 72%);
+        mix-blend-mode: multiply;
+        opacity: calc(0.5 + 0.5 * var(--int));
+      }
+      :root[data-theme="dark"] .hero-lamp .addressbar .fauxinput {
+        box-shadow: 0 0 0 3px var(--accent-soft),
+          0 0 calc(18px + 34px * var(--int)) rgba(45, 212, 191, calc(0.08 + 0.30 * var(--int)));
+      }
+      :root:not([data-theme="dark"]) .hero-lamp .addressbar .fauxinput {
+        box-shadow: 0 0 0 3px var(--accent-soft),
+          0 calc(5px + 13px * var(--int)) calc(16px + 30px * var(--int)) rgba(17, 23, 31, calc(0.05 + 0.15 * var(--int)));
+      }
+
+      /* ── Bandeau carte : large, peu haut, JUSTE EN DESSOUS du hero (option G) ── */
+      .mapband { padding: 0 0 8px; }
+      .mapband__wrap { max-width: 1280px; margin: 0 auto; padding: 0 28px; }
+      .mapband .demo-map { aspect-ratio: auto; height: clamp(240px, 34vh, 340px); }
+
+      /* Toute la page centrée : en-têtes de section, chiffres, piliers, tarifs,
+         et les petites boxes (cartes piliers/tarifs, panneau d'aperçu). */
+      .section-head { margin-left: auto; margin-right: auto; text-align: center; }
+      .stat { text-align: center; }
+      .pillar { text-align: center; }
+      .pillar .ico { margin-left: auto; margin-right: auto; }
+      .plan { text-align: center; }
+      .plan-name { justify-content: center; }
+      .plan ul { justify-items: center; }
+      .plan li { justify-content: center; }
+      .demo-card { text-align: center; }
+      .demo-card .metrics { justify-content: center; }
+
+      @media (prefers-reduced-motion: reduce) { .hero-lamp { --int: 0.4; } }
+      @media (max-width: 560px) { .hero-lamp__cta .btn { flex: 1; min-width: 0; } }
+    </style>
+  </head>
+  <body>
+    <!-- Navigation -->
+    <nav class="site-nav">
+      <a class="brand" href="#"><span class="brand-dot" aria-hidden="true"></span>Primmobilier</a>
+      <div class="nav-links">
+        <a href="#">Atlas du marché</a>
+        <a href="#">Observatoire</a>
+        <a href="#tarifs">Tarifs</a>
+      </div>
+      <div class="nav-spacer"></div>
+      <div class="nav-actions">
+        <button class="theme-toggle" type="button" aria-label="Basculer le thème">
+          <svg class="icon-sun" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5.2 5.2l1.7 1.7M17.1 17.1l1.7 1.7M18.8 5.2l-1.7 1.7M6.9 17.1l-1.7 1.7"/></svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/></svg>
+        </button>
+        <a class="btn btn-quiet" href="#">Se connecter</a>
+        <a class="btn btn-primary" href="#">Essayer sans compte</a>
+      </div>
+    </nav>
+
+    <!-- ===== HÉROS centré sous lampadaire ===== -->
+    <header class="hero-lamp">
+      <div class="hero-lamp__fx" aria-hidden="true">
+        <span class="hero-lamp__wash"></span>
+        <span class="hero-lamp__beam"></span>
+        <span class="hero-lamp__beam-l"></span>
+        <span class="hero-lamp__beam-r"></span>
+      </div>
+      <div class="hero-lamp__inner">
+        <div class="eyebrow">Estimation, marché, rapports · données publiques</div>
+        <h1 class="glow-title" style="margin-top:16px">Tapez une adresse, <em>éclairez tout le marché</em>.</h1>
+        <p class="lead">
+          Estimez un bien, étudiez son marché et générez des rapports à partir des vraies
+          ventes (DVF), du cadastre et des DPE. Sans modèle opaque, sans inscription pour commencer.
+        </p>
+        <div class="addressbar lit">
+          <div class="fauxinput">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 21l-4.3-4.3M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z"/></svg>
+            <span>12 cours de l'Intendance, Bordeaux</span>
+            <span class="caret"></span>
+          </div>
+        </div>
+        <div class="hero-lamp__cta">
+          <a class="btn" href="#">Estimer</a>
+          <a class="btn" href="#">Explorer</a>
+        </div>
+        <div class="hero-lamp__caps">
+          <span>Estimation au prix réel</span>
+          <span>Atlas du marché</span>
+          <span>Observatoire &amp; tendances</span>
+          <span>Rapports PDF</span>
+        </div>
+        <p class="hero-lamp__trust">5 crédits offerts · sans carte bancaire · export CSV, XLSX, GeoJSON, PDF.</p>
+      </div>
+    </header>
+
+    <!-- Bandeau carte : large, peu haut, juste sous le hero (verre = D18) -->
+    <section class="mapband">
+      <div class="mapband__wrap">
+        <div class="demo-map" role="img" aria-label="Aperçu de l'Atlas : carte, comparables et estimation">
+          <div class="demo-card">
+            <span class="label">Estimation · maison 92 m²</span>
+            <span class="price">287 400 €</span>
+            <div class="metrics"><span>≈ <b>3 980 €</b>/m²</span><span><b>72</b> comparables</span><span>fourchette <b>±8 %</b></span></div>
+          </div>
+          <span class="demo-marker" style="top:46%;left:50%"></span>
+          <span class="demo-dot" style="top:30%;left:62%"></span>
+          <span class="demo-dot" style="top:54%;left:54%"></span>
+          <span class="demo-dot" style="top:64%;left:40%"></span>
+          <span class="demo-dot" style="top:42%;left:72%"></span>
+          <span class="demo-dot" style="top:36%;left:30%"></span>
+          <span class="demo-dot" style="top:68%;left:64%"></span>
+          <span class="demo-chip">Rayon <b>600 m</b> · <b>2019–2024</b></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Chiffres clés -->
+    <section class="stats">
+      <div class="container">
+        <div class="stat"><div class="n">4,1 M</div><div class="l">ventes DVF analysables</div></div>
+        <div class="stat"><div class="n">61 %</div><div class="l">de comparables avec DPE (33)</div></div>
+        <div class="stat"><div class="n">5 ans</div><div class="l">d'historique, étendu &lt; 2021</div></div>
+        <div class="stat"><div class="n">0 €</div><div class="l">pour vos 5 premières adresses</div></div>
+      </div>
+    </section>
+
+    <!-- Piliers -->
+    <section class="section">
+      <div class="container">
+        <div class="section-head">
+          <div class="eyebrow">Bien plus qu'une estimation</div>
+          <h2 class="glow-title">Estimez, explorez, <em>générez</em>.</h2>
+          <p>L'essentiel par défaut, la profondeur à la demande. Une seule interface, pas de « mode pro ».</p>
+        </div>
+        <div class="pillars">
+          <article class="pillar">
+            <div class="ico"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6"/></svg></div>
+            <h3>Estimer</h3>
+            <p>Le prix s'appuie sur les ventes réellement enregistrées autour de l'adresse, fourchette et comparables à l'appui.</p>
+          </article>
+          <article class="pillar">
+            <div class="ico"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18M7 15l4-5 3 3 5-7"/></svg></div>
+            <h3>Étudier le marché</h3>
+            <p>Prix, volumes, évolution de la médiane et corrélation aux taux d'emprunt sur la zone, via l'Observatoire en continu.</p>
+          </article>
+          <article class="pillar">
+            <div class="ico"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v5h5M14 3l5 5v11a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM9 13h6M9 17h4"/></svg></div>
+            <h3>Générer un rapport</h3>
+            <p>Une synthèse rédigée et un PDF mis en page (plusieurs modèles), plus l'export CSV, XLSX, GeoJSON de votre sélection.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tarifs -->
+    <section class="section section-tight" id="tarifs" style="background:var(--bg-2)">
+      <div class="container">
+        <div class="section-head">
+          <div class="eyebrow">Tarifs</div>
+          <h2 class="glow-title">Commencez <em>gratuitement</em>.</h2>
+          <p>Un crédit = un point d'analyse : une adresse, une zone (double-clic sur la carte) ou une ville. Une fois le point choisi, tous vos réglages (rayon, type de bien, nombre de pièces, historique comparatif...) restent illimités jusqu'à ce que vous changiez de point, avec un export par adresse.</p>
+        </div>
+        <div class="pricing-grid">
+          <article class="plan">
+            <div class="plan-name">Anonyme</div>
+            <div class="plan-price">0 €</div>
+            <div class="plan-quota"><b>5</b> crédits · à vie</div>
+            <ul><li>Adresse, zone ou ville</li><li>Réglages illimités par point</li><li>1 export offert</li><li>Sans compte ni historique</li></ul>
+            <a class="btn btn-ghost" href="#">Essayer sans compte</a>
+          </article>
+          <article class="plan">
+            <div class="plan-name">Gratuit</div>
+            <div class="plan-price">0 €</div>
+            <div class="plan-quota"><b>10</b> crédits / mois</div>
+            <ul><li>Compte requis</li><li>Analyses sauvegardées</li><li>1 export par adresse</li></ul>
+            <a class="btn btn-ghost" href="#">Créer un compte</a>
+          </article>
+          <article class="plan featured">
+            <div class="plan-name">Pro <span class="plan-tag">populaire</span></div>
+            <div class="plan-price">12 €<small> /mois</small></div>
+            <div class="plan-quota"><b>50</b> crédits / mois</div>
+            <ul><li>Export CSV, XLSX, GeoJSON</li><li>Rapport PDF</li><li>Observatoire complet</li></ul>
+            <a class="btn btn-primary" href="#">Choisir Pro</a>
+          </article>
+          <article class="plan">
+            <div class="plan-name">Cabinet</div>
+            <div class="plan-price">39 €<small> /mois</small></div>
+            <div class="plan-quota"><b>200</b> crédits / mois</div>
+            <ul><li>Tout Pro</li><li>Templates PDF au choix</li><li>Volumes et priorité</li></ul>
+            <a class="btn btn-ghost" href="#">Choisir Cabinet</a>
+          </article>
+        </div>
+        <p class="pricing-note">Noms et tarifs des paliers payants provisoires. L'offre payante n'est pas encore ouverte.</p>
+      </div>
+    </section>
+
+    <!-- Pied -->
+    <footer class="site-foot">
+      <div class="container">
+        <a class="brand" href="#"><span class="brand-dot" aria-hidden="true"></span>Primmobilier</a>
+        <div class="foot-links">
+          <a href="#">Données &amp; sources</a>
+          <a href="#">Mentions légales</a>
+          <a href="#">Contact</a>
+        </div>
+        <span class="faint">Maquette Accueil · design 2028</span>
+      </div>
+    </footer>
+
+    <!-- Bascule de thème — CLAIR par défaut (D13) -->
+    <script>
+      (function () {
+        var root = document.documentElement;
+        // Thème CLAIR par défaut (D13) à CHAQUE ouverture : aucune persistance.
+        // ?theme=dark force le sombre (vue comparateur) ; le toggle agit le temps de la session.
+        if (new URLSearchParams(location.search).get("theme") === "dark") root.setAttribute("data-theme", "dark");
+        document.querySelector(".theme-toggle").addEventListener("click", function () {
+          if (root.getAttribute("data-theme") === "dark") root.removeAttribute("data-theme");
+          else root.setAttribute("data-theme", "dark");
+        });
+      })();
+    </script>
+
+    <!-- Lampadaire fixe : --int monte avec la proximité souris → barre -->
+    <script>
+      (function () {
+        var hero = document.querySelector(".hero-lamp");
+        if (!hero) return;
+        var bar = hero.querySelector(".addressbar");
+        // Ancre la base des faisceaux (le point de convergence) au centre vertical
+        // de la barre, quel que soit le layout — il tombe ainsi derrière la barre
+        // opaque, qui masque le croisement.
+        function anchor() {
+          var hr = hero.getBoundingClientRect(), br = bar.getBoundingClientRect();
+          hero.style.setProperty("--bar-y", (((br.top + br.height / 2) - hr.top) / hr.height * 100).toFixed(1) + "%");
+        }
+        anchor();
+        window.addEventListener("resize", anchor);
+        var params = new URLSearchParams(location.search);
+        if (params.has("int")) { hero.style.setProperty("--int", params.get("int")); return; }
+        if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+        var tInt = 0, cInt = 0, raf = 0;
+        function tick() {
+          cInt += (tInt - cInt) * 0.12;
+          hero.style.setProperty("--int", cInt.toFixed(3));
+          if (Math.abs(tInt - cInt) > 0.002) raf = requestAnimationFrame(tick); else raf = 0;
+        }
+        function schedule() { if (!raf) raf = requestAnimationFrame(tick); }
+        hero.addEventListener("pointermove", function (e) {
+          var hr = hero.getBoundingClientRect();
+          var br = bar.getBoundingClientRect();
+          var d = Math.hypot(e.clientX - (br.left + br.width / 2), e.clientY - (br.top + br.height / 2));
+          var maxD = Math.min(680, Math.hypot(hr.width, hr.height) * 0.6);
+          var p = Math.max(0, 1 - d / maxD);
+          tInt = p * p;
+          schedule();
+        });
+        hero.addEventListener("pointerleave", function () { tInt = 0; schedule(); });
+      })();
+    </script>
+  </body>
+</html>

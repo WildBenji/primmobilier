@@ -106,3 +106,45 @@
 - **Phase 0 (cadrage) : terminée.** Prochaine étape = phase 1, recherche
   design : explorations visuelles comparées (maquettes HTML statiques sur les
   tokens actés D13/D16-D18) pour l'Accueil, l'Atlas refondu et l'Observatoire.
+
+## 2026-06-13
+
+Phase 1 (recherche design) lancée. Accueil exploré en maquettes HTML statiques
+jetables, direction tranchée sur pièces après itérations. Maquettes de travail
+élaguées : une seule conservée,
+[../web_poc/maquettes/accueil.html](../web_poc/maquettes/accueil.html), avec
+`base.css` (tokens) et `neon.css` (couche signature sombre).
+
+### Accueil : direction retenue (verrouillée)
+
+- Hero centré sous « lampadaire » : trois faisceaux (un central plus deux
+  partant des coins hauts, effet scène) qui s'intensifient quand la souris
+  approche de la barre de recherche. En sombre ils s'allument en néon ; en clair
+  ils assombrissent pour créer du relief. Intensité pilotée par `opacity` dans
+  les deux thèmes (repaint fiable). La lumière diffuse au centre.
+- Thème clair par défaut confirmé (D13), sans persistance : clair à chaque
+  ouverture, sombre = signature au toggle.
+- Démo-first : grande barre d'adresse en vedette, puis deux actions à poids égal
+  Estimer / Explorer (pas de focus sur l'estimation, c'est aussi un outil
+  d'exploration).
+- Carte en bandeau large et bas, juste sous le hero (plus au même niveau que le
+  texte). Verre réservé à la carte (D18).
+- À décliner ensuite sur l'Atlas refondu et l'Observatoire (même signature).
+
+### Règles de copie (transverses, actées)
+
+- Vouvoiement de rigueur partout.
+- Vendre au-delà de l'estimation : estimer, étudier le marché, générer des
+  rapports.
+- Pas de tirets longs ni de gras dans la copie produit.
+
+### Modèle de crédits (raffine D2, à reporter au CONTEXT.md)
+
+- 1 crédit = un point d'analyse : une adresse, une zone (double-clic sur la
+  carte), ou une ville / code postal.
+- Une fois le point choisi, tous les réglages fins (rayon, type de bien, nombre
+  de pièces, historique comparatif…) restent illimités tant qu'on ne change pas
+  de point. Un export par adresse.
+- Anonyme : 5 crédits, 1 export offert, sans historique (pas de compte). Ferme
+  la proposition « anonyme = 0 export » de D2 (désormais 1 export offert en
+  anonyme). Termes « crédit » et « point d'analyse » à ajouter au CONTEXT.md.
