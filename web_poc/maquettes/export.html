@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Exporter — Primmobilier</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" />
+    <link rel="stylesheet" href="../static/app.css" />
+    <style>
+      /* Page d'export : hors carte et hors graphes. Le bandeau commun reste en
+         haut mais NON auto-masquant ici (pas de vue a liberer) et plein (pas de
+         dessous concave, qui n'a de sens que sur la carte). Marque + nav + actions
+         identiques aux autres pages ; l'entree Exporter y est en etat courant. */
+      body { min-height: 100vh; }
+      .topbar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 22px; height: 56px; padding: 0 26px; background: color-mix(in srgb, var(--surface-solid) 94%, transparent); -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass); border-bottom: 1px solid var(--hairline); }
+      .shell-brand { display: flex; align-items: center; gap: 9px; font-family: var(--font-display); font-size: 16px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text); text-decoration: none; }
+      .shell-nav { display: flex; gap: 6px; }
+      .shell-nav a { padding: 7px 12px; border-radius: var(--r-sm); font-size: 13px; color: var(--text-muted); text-decoration: none; transition: color .2s, background .2s; }
+      .shell-nav a:hover { color: var(--text); background: var(--surface-2); }
+      .shell-spacer { flex: 1; }
+      .shell-actions { display: flex; align-items: center; gap: 12px; }
+      .credits { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border: 1px solid var(--hairline); border-radius: 99px; background: var(--surface-2); font-size: 12px; color: var(--text-muted); }
+      .credits b { color: var(--accent); font-variant-numeric: tabular-nums; }
+      :root[data-theme="dark"] .credits b { text-shadow: 0 0 10px var(--accent-glow); }
+      .shell-actions .ghost { padding: 7px 13px; border: 1px solid var(--hairline-strong); border-radius: var(--r-sm); background: transparent; color: var(--text); font-size: 13px; cursor: pointer; }
+      .shell-actions .ghost:hover { border-color: var(--accent-line); color: var(--accent); }
+      /* Entree Exporter en etat courant (on est sur la page) : meme teal, inerte. */
+      .shell-here { display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; border-radius: var(--r-sm); color: var(--accent-ink); background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 3px 16px var(--accent-glow); font-size: 13px; font-weight: 600; cursor: default; }
+      .shell-here::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-ink); opacity: .85; }
+
+      .export { max-width: 1160px; margin: 0 auto; padding: 30px 26px 90px; }
+      .export-head h1 { margin: 0; font-family: var(--font-display); font-size: 27px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+      .export-sub { margin: 9px 0 0; font-size: 14px; line-height: 1.6; color: var(--text-muted); max-width: 72ch; }
+      .analyse-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; }
+      .a-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--hairline); border-radius: 99px; background: var(--surface-2); font-size: 12.5px; color: var(--text-muted); }
+      .a-chip svg { color: var(--text-faint); }
+      .a-chip .strong { color: var(--text); }
+      .modify-link { margin-left: 4px; display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--accent); text-decoration: none; }
+      .modify-link:hover { text-decoration: underline; }
+
+      .export-grid { display: grid; grid-template-columns: 1fr 326px; gap: 24px; margin-top: 26px; align-items: start; }
+      .export-pick { display: flex; flex-direction: column; gap: 16px; }
+
+      .presets { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+      .presets-label { font-size: 12.5px; color: var(--text-faint); margin-right: 2px; }
+      .preset { padding: 8px 15px; border: 1px solid var(--hairline-strong); border-radius: 99px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; transition: border-color .2s, color .2s, background .2s; }
+      .preset:hover { border-color: var(--accent-line); color: var(--accent); }
+      .preset.active { border-color: transparent; color: var(--accent-ink); background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 3px 14px var(--accent-glow); }
+      .presets-hint { width: 100%; margin: 2px 0 0; font-size: 12px; color: var(--text-faint); }
+
+      .pick-group { border: 1px solid var(--hairline); border-radius: var(--r-md); background: var(--surface-solid); overflow: hidden; }
+      .pick-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--hairline); background: var(--surface-2); }
+      .pick-head h2 { margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+      .refine-link { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--accent); text-decoration: none; }
+      .refine-link:hover { text-decoration: underline; }
+      .pick-item { display: flex; gap: 12px; padding: 13px 16px; border-top: 1px solid var(--hairline); cursor: pointer; align-items: flex-start; }
+      .pick-list .pick-item:first-child { border-top: 0; }
+      .pick-item input { accent-color: var(--accent); width: 17px; height: 17px; margin: 1px 0 0; flex: 0 0 auto; cursor: pointer; }
+      .pi-text { display: flex; flex-direction: column; gap: 3px; }
+      .pi-title { font-size: 13.5px; color: var(--text); }
+      .pi-meta { font-size: 12px; line-height: 1.5; color: var(--text-faint); }
+      .pick-item.disabled { cursor: default; opacity: 0.75; }
+      .pick-item.disabled input { cursor: default; }
+      .pi-meta a { color: var(--accent); text-decoration: none; }
+      .pi-meta a:hover { text-decoration: underline; }
+
+      .export-format { position: sticky; top: 78px; border: 1px solid var(--hairline); border-radius: var(--r-md); background: var(--surface-solid); padding: 16px 16px 18px; display: flex; flex-direction: column; gap: 13px; box-shadow: 0 1px 2px rgba(20,30,40,0.05), 0 14px 36px rgba(20,30,40,0.07); }
+      :root[data-theme="dark"] .export-format { box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 18px 46px rgba(0,0,0,0.5); }
+      .ef-title { margin: 0; font-family: var(--font-display); font-size: 15px; font-weight: 600; color: var(--text); }
+      .fmt-list { display: flex; flex-direction: column; gap: 8px; }
+      .fmt { display: flex; gap: 11px; padding: 10px 12px; border: 1px solid var(--hairline); border-radius: var(--r-sm); cursor: pointer; align-items: flex-start; transition: border-color .2s, background .2s; }
+      .fmt:hover { border-color: var(--hairline-strong); }
+      .fmt input { accent-color: var(--accent); width: 16px; height: 16px; margin: 1px 0 0; flex: 0 0 auto; cursor: pointer; }
+      .f-text { display: flex; flex-direction: column; gap: 2px; }
+      .f-name { font-size: 13px; font-weight: 600; color: var(--text); }
+      .f-desc { font-size: 11.5px; line-height: 1.45; color: var(--text-faint); }
+      .pdf-template { margin: 2px 0 0 27px; display: none; }
+      .pdf-template.on { display: block; }
+      .pdf-template label { display: block; font-size: 11.5px; color: var(--text-faint); margin-bottom: 4px; }
+      .pdf-template select { width: 100%; padding: 7px 9px; border: 1px solid var(--hairline-strong); border-radius: var(--r-sm); background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px; }
+
+      .export-recap { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding-top: 11px; border-top: 1px solid var(--hairline); font-size: 12.5px; color: var(--text-muted); }
+      .recap-count { font-variant-numeric: tabular-nums; color: var(--text); }
+      .btn-generate { min-height: 46px; border: 0; border-radius: var(--r-md); color: var(--accent-ink); background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 4px 22px var(--accent-glow); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; transition: filter .2s; }
+      .btn-generate:hover { filter: brightness(1.07); }
+      .btn-generate:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
+      .anon-note { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--text-faint); text-align: center; }
+
+      @media (max-width: 980px) {
+        .export-grid { grid-template-columns: 1fr; }
+        .export-format { position: static; }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="shell-brand" href="accueil.html"><span class="brand-dot" aria-hidden="true"></span>Primmobilier</a>
+      <nav class="shell-nav">
+        <a href="atlas.html">Atlas du marché</a>
+        <a href="observatoire.html">Observatoire</a>
+        <a href="#">Tarifs</a>
+      </nav>
+      <div class="shell-spacer"></div>
+      <div class="shell-actions">
+        <span class="credits" title="Crédits restants ce mois"><b>5</b> crédits</span>
+        <button class="theme-toggle" id="themeToggle" type="button" aria-label="Basculer le thème">
+          <svg class="icon-sun" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5.2 5.2l1.7 1.7M17.1 17.1l1.7 1.7M18.8 5.2l-1.7 1.7M6.9 17.1l-1.7 1.7"/></svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/></svg>
+        </button>
+        <span class="shell-here" aria-current="page">Exporter</span>
+        <button class="ghost" type="button">Se connecter</button>
+      </div>
+    </header>
+
+    <main class="export">
+      <header class="export-head">
+        <h1>Votre export</h1>
+        <p class="export-sub">Tout ce que vous avez paramétré dans l'Atlas du marché et dans l'Observatoire est déjà sélectionné. Vous n'avez plus qu'à retirer ou ajouter ce que vous voulez, puis à générer vos fichiers. Pour modifier les données elles-mêmes, revenez sur la page concernée.</p>
+        <div class="analyse-chips">
+          <span class="a-chip"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s7-6.3 7-11a7 7 0 0 0-14 0c0 4.7 7 11 7 11z"/><circle cx="12" cy="10" r="2.4"/></svg><span class="strong">12 cours de l'Intendance, Bordeaux</span></span>
+          <span class="a-chip">Mode Estimation</span>
+          <span class="a-chip">Rayon 600 m</span>
+          <span class="a-chip">janv. 2019 à déc. 2024</span>
+          <span class="a-chip"><span class="strong">72</span> comparables</span>
+          <a class="modify-link" href="atlas.html"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l10-10-4-4L4 16zM13.5 6.5l4 4"/></svg>Modifier les paramètres</a>
+        </div>
+      </header>
+
+      <div class="export-grid">
+        <section class="export-pick" aria-label="Contenu de l'export">
+          <div class="presets">
+            <span class="presets-label">Préréglage</span>
+            <button class="preset active" type="button" data-preset="essentiel">Essentiel</button>
+            <button class="preset" type="button" data-preset="complet">Complet</button>
+            <button class="preset" type="button" data-preset="brut">Données brutes</button>
+            <p class="presets-hint">Un préréglage recoche les cases pour vous. Vous restez libre d'ajuster ligne par ligne ensuite.</p>
+          </div>
+
+          <div class="pick-group">
+            <div class="pick-head">
+              <h2>Depuis l'Atlas du marché</h2>
+              <a class="refine-link" href="atlas.html">Affiner sur l'Atlas<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+            </div>
+            <div class="pick-list">
+              <label class="pick-item"><input type="checkbox" class="pick-cb" id="a1" checked /><span class="pi-text"><span class="pi-title">Estimation de la cible</span><span class="pi-meta">Prix médian estimé 287 400 €, soit 3 980 €/m². Fourchette P25 à P75 : 264 000 € à 312 000 €.</span></span></label>
+              <label class="pick-item"><input type="checkbox" class="pick-cb" id="a2" checked /><span class="pi-text"><span class="pi-title">Indicateurs locatifs</span><span class="pi-meta">Loyer médian 13,5 €/m², rendement brut 3,9 %.</span></span></label>
+              <label class="pick-item"><input type="checkbox" class="pick-cb" id="a3" checked /><span class="pi-text"><span class="pi-title">Comparables (72 ventes)</span><span class="pi-meta">Prix, prix au m², type, surface, pièces, DPE et date de mutation.</span></span></label>
+              <label class="pick-item"><input type="checkbox" class="pick-cb" id="a4" checked /><span class="pi-text"><span class="pi-title">Emprise de comparaison</span><span class="pi-meta">Type (rayon, section, code postal, commune) et valeur : rayon 600 m.</span></span></label>
+              <label class="pick-item"><input type="checkbox" class="pick-cb" id="a5" checked /><span class="pi-text"><span class="pi-title">Filtres appliqués</span><span class="pi-meta">Maison, 92 m², 4 pièces, historique 0 à 5 ans. Utile pour reproduire l'analyse.</span></span></label>
+              <label class="pick-item"><input type="checkbox" class="pick-cb" id="a6" checked /><span class="pi-text"><span class="pi-title">Géométrie de la zone</span><span class="pi-meta">Cercle de l'emprise et point cible, pour le GeoJSON.</span></span></label>
+              <label class="pick-item"><input type="checkbox" class="pick-cb" id="a7" /><span class="pi-text"><span class="pi-title">Points des comparables géolocalisés</span><span class="pi-meta">Un point par vente, pour un SIG. Export géographique plus lourd, décoché par défaut.</span></span></label>
+            </div>
+          </div>
+
+          <div class="pick-group">
+            <div class="pick-head">
+              <h2>Depuis l'Observatoire</h2>
+              <a class="refine-link" href="observatoire.html">Affiner sur l'Observatoire<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+            </div>
+            <div class="pick-list">
+              <label class="pick-item"><input type="checkbox" class="pick-cb" id="o1" checked /><span class="pi-text"><span class="pi-title">Indicateurs de marché</span><span class="pi-meta">Évolution sur 5 ans +14 %, dispersion P25 à P75 ±6,2 %, prime sur la médiane communale +8 %, part de passoires DPE F et G 17 %.</span></span></label>
+              <label class="pick-item"><input type="checkbox" class="pick-cb" id="o2" checked /><span class="pi-text"><span class="pi-title">Graphique médiane €/m² dans le temps</span><span class="pi-meta">Médiane, ruban P25 à P75 et volume. Image pour le PDF, série de données pour CSV et XLSX.</span></span></label>
+              <label class="pick-item"><input type="checkbox" class="pick-cb" id="o3" checked /><span class="pi-text"><span class="pi-title">Graphique prix contre taux d'emprunt</span><span class="pi-meta">Double axe, contexte macro. Image pour le PDF, données en option.</span></span></label>
+              <label class="pick-item"><input type="checkbox" class="pick-cb" id="o4" /><span class="pi-text"><span class="pi-title">Graphique comparaison de marchés</span><span class="pi-meta">Bordeaux, Paris et les zones ajoutées sur l'Observatoire. Décoché par défaut.</span></span></label>
+              <label class="pick-item"><input type="checkbox" class="pick-cb" id="o5" /><span class="pi-text"><span class="pi-title">Graphique des ventes individuelles</span><span class="pi-meta">Nuage par DPE. Redondant avec la table des comparables, décoché par défaut.</span></span></label>
+              <label class="pick-item disabled"><input type="checkbox" class="pick-cb" id="o6" disabled /><span class="pi-text"><span class="pi-title">Synthèse rédigée</span><span class="pi-meta">Disponible une fois générée. <a href="observatoire.html">Générer sur l'Observatoire</a> (1 crédit).</span></span></label>
+              <label class="pick-item"><input type="checkbox" class="pick-cb" id="o7" /><span class="pi-text"><span class="pi-title">Séries temporelles brutes</span><span class="pi-meta">Trimestre, médiane, P25, P75, volume et taux, derrière chaque graphique. Pour CSV et XLSX.</span></span></label>
+            </div>
+          </div>
+        </section>
+
+        <aside class="export-format" aria-label="Format et génération">
+          <h2 class="ef-title">Format</h2>
+          <div class="fmt-list">
+            <label class="fmt"><input type="checkbox" class="fmt-cb" id="fCsv" /><span class="f-text"><span class="f-name">CSV</span><span class="f-desc">Tables à plat, encodé pour Excel français.</span></span></label>
+            <label class="fmt"><input type="checkbox" class="fmt-cb" id="fXlsx" /><span class="f-text"><span class="f-name">XLSX</span><span class="f-desc">Feuilles Estimation, Comparables, Indicateurs, Séries, Paramètres.</span></span></label>
+            <label class="fmt"><input type="checkbox" class="fmt-cb" id="fGeo" /><span class="f-text"><span class="f-name">GeoJSON</span><span class="f-desc">Emprise, point cible et comparables géolocalisés avec prix et DPE.</span></span></label>
+            <label class="fmt"><input type="checkbox" class="fmt-cb" id="fPdf" checked /><span class="f-text"><span class="f-name">Rapport PDF mis en page</span><span class="f-desc">Estimation, indicateurs, graphiques et synthèse si cochée.</span></span></label>
+          </div>
+          <div class="pdf-template on" id="pdfTemplate">
+            <label for="pdfTpl">Modèle du rapport</label>
+            <select id="pdfTpl">
+              <option>Note d'estimation</option>
+              <option>Étude de marché</option>
+              <option>Synthèse une page</option>
+            </select>
+          </div>
+          <div class="export-recap">
+            <span>1 format coché vaut 1 fichier, soit 1 crédit, pour cette adresse.</span>
+            <span class="recap-count" id="recapCount">1 fichier</span>
+          </div>
+          <button class="btn-generate" id="generate" type="button"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>Générer l'export</button>
+          <p class="anon-note">Sans compte : 1 export offert. Connectez-vous pour générer les fichiers suivants et conserver votre analyse.</p>
+        </aside>
+      </div>
+    </main>
+
+    <script>
+      var root = document.documentElement;
+      if (new URLSearchParams(location.search).get("theme") === "dark") root.setAttribute("data-theme", "dark");
+      document.getElementById("themeToggle").addEventListener("click", function () {
+        root.setAttribute("data-theme", root.getAttribute("data-theme") === "dark" ? "light" : "dark");
+      });
+
+      // Prereglages (D9) : recochent en masse contenu + formats. Le tri fin reste libre.
+      var PRESETS = {
+        essentiel: { items: ["a1","a2","a3","a4","a5","a6","o1","o2","o3"], formats: ["fPdf"] },
+        complet:   { items: ["a1","a2","a3","a4","a5","a6","a7","o1","o2","o3","o4","o5","o7"], formats: ["fPdf","fCsv","fXlsx"] },
+        brut:      { items: ["a3","a4","a5","a6","a7","o1","o2","o3","o7"], formats: ["fCsv","fXlsx","fGeo"] }
+      };
+      var presetBtns = Array.prototype.slice.call(document.querySelectorAll(".preset"));
+      var itemCbs = Array.prototype.slice.call(document.querySelectorAll(".pick-cb"));
+      var fmtCbs = Array.prototype.slice.call(document.querySelectorAll(".fmt-cb"));
+
+      function applyPreset(name) {
+        var p = PRESETS[name]; if (!p) return;
+        itemCbs.forEach(function (c) { if (!c.disabled) c.checked = p.items.indexOf(c.id) !== -1; });
+        fmtCbs.forEach(function (c) { c.checked = p.formats.indexOf(c.id) !== -1; });
+        presetBtns.forEach(function (b) { b.classList.toggle("active", b.dataset.preset === name); });
+        sync();
+      }
+      function clearPresetHighlight() { presetBtns.forEach(function (b) { b.classList.remove("active"); }); }
+      function sync() {
+        var n = fmtCbs.filter(function (c) { return c.checked; }).length;
+        document.getElementById("recapCount").textContent = n <= 1 ? n + " fichier" : n + " fichiers";
+        document.getElementById("generate").disabled = n === 0;
+        document.getElementById("pdfTemplate").classList.toggle("on", document.getElementById("fPdf").checked);
+      }
+
+      presetBtns.forEach(function (b) { b.addEventListener("click", function () { applyPreset(b.dataset.preset); }); });
+      itemCbs.forEach(function (c) { c.addEventListener("change", clearPresetHighlight); });
+      fmtCbs.forEach(function (c) { c.addEventListener("change", function () { clearPresetHighlight(); sync(); }); });
+      sync();
+    </script>
+  </body>
+</html>

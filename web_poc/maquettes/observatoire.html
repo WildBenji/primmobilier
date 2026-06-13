@@ -15,11 +15,15 @@
          les côtés (contenu), creusé au milieu (vide) pour libérer la vue.
          clip-path en objectBoundingBox => responsive sans JS ; offsetHeight reste
          56px donc la réactivité souris est identique. */
-      .shell { position: fixed; top: 0; left: 0; right: 0; z-index: 20; display: flex; align-items: center; gap: 22px; height: 56px; padding: 0 26px; background: color-mix(in srgb, var(--surface) 90%, transparent); -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass); clip-path: url(#shellClip); filter: drop-shadow(0 1.2px 0 var(--hairline-strong)) drop-shadow(0 7px 16px rgba(10, 16, 24, 0.24)); transform: translateY(-100%); transition: transform 0.28s var(--ease); }
+      .shell { position: fixed; top: 0; left: 0; right: 0; z-index: 20; display: flex; align-items: center; gap: 22px; height: 56px; padding: 0 26px; background: color-mix(in srgb, var(--surface-solid) 92%, transparent); -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass); clip-path: url(#shellClip); filter: drop-shadow(0 1.2px 0 var(--hairline-strong)) drop-shadow(0 7px 16px rgba(10, 16, 24, 0.24)); transform: translateY(-100%); transition: transform 0.28s var(--ease); }
       .shell.show, .shell:focus-within { transform: translateY(0); }
-      :root[data-theme="dark"] .shell { background: color-mix(in srgb, var(--surface) 82%, transparent); filter: drop-shadow(0 1px 1px var(--accent-glow)) drop-shadow(0 9px 24px rgba(0, 0, 0, 0.55)); }
+      :root[data-theme="dark"] .shell { filter: drop-shadow(0 1px 1px var(--accent-glow)) drop-shadow(0 9px 24px rgba(0, 0, 0, 0.55)); }
       .shell-peek { position: fixed; top: 0; left: 50%; transform: translateX(-50%); width: 56px; height: 5px; border-radius: 0 0 7px 7px; background: var(--hairline-strong); z-index: 18; opacity: 0.7; transition: opacity 0.2s; }
       .shell.show ~ .shell-peek { opacity: 0; }
+      /* Exporter : unique CTA teal dans le shell, identique à l'Atlas. Il se range
+         avec le bandeau (export = action rare : pas de rappel persistant). */
+      .shell-actions .shell-export { display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; border-radius: var(--r-sm); color: var(--accent-ink); background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 3px 16px var(--accent-glow); font-size: 13px; font-weight: 600; text-decoration: none; }
+      .shell-actions .shell-export:hover { filter: brightness(1.07); }
       .shell-brand { display: flex; align-items: center; gap: 9px; font-family: var(--font-display); font-size: 16px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text); }
       .shell-nav { display: flex; gap: 6px; }
       .shell-nav a { padding: 7px 12px; border-radius: var(--r-sm); font-size: 13px; color: var(--text-muted); text-decoration: none; transition: color .2s, background .2s; }
@@ -39,7 +43,7 @@
       .panel { top: calc(14px + var(--shell-h)); max-height: calc(100vh - 28px - var(--shell-h)); transition: top 0.28s var(--ease), max-height 0.28s var(--ease); }
       .table-wrap { top: calc(14px + var(--shell-h)); transition: top 0.28s var(--ease); }
 
-      .result-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 2px; }
+      .result-actions { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 2px; }
       .btn-export, .btn-soft { min-height: 36px; border-radius: var(--r-sm); cursor: pointer; font: inherit; font-size: 12.5px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 7px; text-decoration: none; }
       .btn-export { border: 0; color: var(--accent-ink); background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 3px 16px var(--accent-glow); }
       .btn-export:hover { filter: brightness(1.07); }
@@ -118,6 +122,7 @@
           <svg class="icon-sun" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5.2 5.2l1.7 1.7M17.1 17.1l1.7 1.7M18.8 5.2l-1.7 1.7M6.9 17.1l-1.7 1.7"/></svg>
           <svg class="icon-moon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/></svg>
         </button>
+        <a class="shell-export" href="export.html"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>Exporter</a>
         <button class="ghost" type="button">Se connecter</button>
       </div>
     </nav>
@@ -142,7 +147,7 @@
           <div><span class="label">Prix médian estimé</span><strong id="estimatedPrice">287 400 €</strong></div>
           <div class="metrics"><span><b>3 980</b> €/m²</span><span><button class="scope-chip sales-chip" type="button"><b>72</b> ventes</button></span><span><button class="scope-chip" type="button">Rayon 600 m</button></span></div>
           <div class="result-stats"><div class="range">Fourchette 264 000 € – 312 000 € (P25–P75)</div><div class="range">Loyer médian ~13,5 €/m² · rendement brut ~3,9 %</div></div>
-          <div class="result-actions"><button class="btn-export" type="button"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>Exporter</button><a class="btn-soft" href="atlas.html">Voir sur la carte</a></div>
+          <div class="result-actions"><a class="btn-soft" href="atlas.html">Voir sur la carte</a></div>
         </section>
       </section>
       <button id="expandEstimation" class="expand-estimation" type="button" aria-label="Replier / ouvrir les paramètres">›</button>
