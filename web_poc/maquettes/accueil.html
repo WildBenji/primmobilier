@@ -378,15 +378,6 @@
         var hero = document.querySelector(".hero-lamp");
         if (!hero) return;
         var bar = hero.querySelector(".addressbar");
-        // Ancre la base des faisceaux (le point de convergence) au centre vertical
-        // de la barre, quel que soit le layout — il tombe ainsi derrière la barre
-        // opaque, qui masque le croisement.
-        function anchor() {
-          var hr = hero.getBoundingClientRect(), br = bar.getBoundingClientRect();
-          hero.style.setProperty("--bar-y", (((br.top + br.height / 2) - hr.top) / hr.height * 100).toFixed(1) + "%");
-        }
-        anchor();
-        window.addEventListener("resize", anchor);
         var params = new URLSearchParams(location.search);
         if (params.has("int")) { hero.style.setProperty("--int", params.get("int")); return; }
         if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;

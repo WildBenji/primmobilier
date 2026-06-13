@@ -62,26 +62,6 @@
   text-shadow: 0 0 44px rgba(45, 212, 191, 0.45);
 }
 
-/* Filet de séparation lumineux (utilitaire). */
-.glow-rule {
-  height: 1px;
-  margin: 0;
-  border: 0;
-  background: linear-gradient(90deg, transparent, var(--accent-line), transparent);
-  opacity: 0.55;
-}
-
-/* Halo décoratif réutilisable (cercle flou) — à positionner par le variant. */
-.halo {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(34px);
-  pointer-events: none;
-  background: radial-gradient(circle, var(--accent-glow), transparent 62%);
-  opacity: 0;
-}
-:root[data-theme="dark"] .halo { opacity: 1; }
-
 /* ----------------------------------------------------------------------------
    4. Barre d'adresse démo-first (réutilisable par les variantes)
 ---------------------------------------------------------------------------- */
@@ -137,8 +117,7 @@
   padding-top: 26px;
   padding-bottom: 26px;
 }
-.stat .n,
-.bignum .n {
+.stat .n {
   font-family: var(--font-display);
   font-size: 30px;
   font-weight: 700;
@@ -146,15 +125,10 @@
   font-variant-numeric: tabular-nums;
   color: var(--accent);
 }
-.bignum .n { font-size: 38px; }
-.stat .l,
-.bignum .l { font-size: 13px; color: var(--text-muted); margin-top: 6px; }
-.bignum .l { color: var(--text-faint); max-width: 18ch; }
-:root[data-theme="dark"] .stat .n,
-:root[data-theme="dark"] .bignum .n {
+.stat .l { font-size: 13px; color: var(--text-muted); margin-top: 6px; }
+:root[data-theme="dark"] .stat .n {
   text-shadow: 0 0 24px var(--accent-glow);
 }
-.bignums { display: flex; flex-wrap: wrap; gap: 36px; }
 
 /* ----------------------------------------------------------------------------
    6. Surfaces : liseré néon au survol / mise en avant (sombre)
@@ -171,16 +145,6 @@
   box-shadow: 0 0 0 1px var(--accent-line), 0 0 44px rgba(45, 212, 191, 0.15), var(--shadow-pop);
 }
 :root[data-theme="dark"] .plan-tag { box-shadow: 0 0 16px var(--accent-glow); }
-
-/* Liseré supérieur lumineux pour une carte « vitrine » (utilitaire .lit-top). */
-.lit-top { position: relative; }
-.lit-top::after {
-  content: "";
-  position: absolute;
-  top: 0; left: 16%; right: 16%;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--accent-line), transparent);
-}
 
 /* ----------------------------------------------------------------------------
    7. Navigation : voile + lueur de base en sombre
