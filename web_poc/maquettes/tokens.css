@@ -1,0 +1,85 @@
+/* ============================================================================
+   tokens.css — socle UNIQUE de tokens des maquettes 2028 (phase 1).
+   Source de vérité des couleurs/typo/rayons/ombres. Clair par DÉFAUT (D13) :
+   `:root` = clair, `:root[data-theme="dark"]` = sombre (signature néon au toggle).
+
+   Convention unifiée pour TOUTES les maquettes : aucun attribut = clair,
+   data-theme="dark" = sombre. Sur l'Atlas / l'Observatoire / l'Export, ce
+   fichier est chargé APRÈS app.css : ses `:root` priment sur ceux d'app.css
+   (même spécificité, déclaré plus tard) et basculent le défaut en clair sans
+   toucher au POC vivant (qui, lui, ne charge pas tokens.css).
+
+   Valeurs reprises telles quelles de web_poc/static/app.css (teal deux tons
+   D16, Inter + Space Grotesk D17). Throwaway : sert à trancher, pas du prod.
+   ============================================================================ */
+:root {
+  color-scheme: light;
+  --font-ui: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Space Grotesk", Inter, ui-sans-serif, system-ui, sans-serif;
+
+  --bg: #edefeb;
+  --bg-2: #e4e7e1;
+  --surface: #fbfcfb;
+  --surface-solid: #fbfcfb;
+  --surface-2: #f3f5f1;
+  --surface-3: rgba(18, 26, 35, 0.05);
+
+  --text: #151a21;
+  --text-muted: #5b6573;
+  --text-faint: #8b95a3;
+
+  --hairline: rgba(18, 26, 35, 0.1);
+  --hairline-strong: rgba(18, 26, 35, 0.18);
+
+  --accent: #0d9488;
+  --accent-2: #0891b2;
+  --accent-ink: #f4fffd;
+  --accent-soft: rgba(13, 148, 136, 0.1);
+  --accent-glow: rgba(13, 148, 136, 0.28);
+  --accent-line: rgba(13, 148, 136, 0.5);
+
+  --gold: #b45309;
+  --danger: #dc2626;
+
+  --shadow-card: 0 1px 2px rgba(24, 33, 31, 0.05), 0 12px 32px rgba(24, 33, 31, 0.07);
+  --shadow-pop: 0 14px 40px rgba(24, 33, 31, 0.18);
+  --glass: saturate(160%) blur(22px);
+
+  --r-xl: 24px;
+  --r-lg: 18px;
+  --r-md: 12px;
+  --r-sm: 8px;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  --maxw: 1120px;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0a0d12;
+  --bg-2: #070a0e;
+  --surface: #11161f;
+  --surface-solid: #11161f;
+  --surface-2: rgba(255, 255, 255, 0.045);
+  --surface-3: rgba(255, 255, 255, 0.085);
+
+  --text: #e9edf3;
+  --text-muted: #9aa4b4;
+  --text-faint: #667182;
+
+  --hairline: rgba(255, 255, 255, 0.09);
+  --hairline-strong: rgba(255, 255, 255, 0.17);
+
+  --accent: #2dd4bf;
+  --accent-2: #22d3ee;
+  --accent-ink: #052a24;
+  --accent-soft: rgba(45, 212, 191, 0.13);
+  --accent-glow: rgba(45, 212, 191, 0.4);
+  --accent-line: rgba(45, 212, 191, 0.55);
+
+  --gold: #fbbf24;
+  --danger: #f87171;
+
+  --shadow-card: 0 1px 2px rgba(2, 4, 8, 0.4), 0 16px 44px rgba(2, 4, 8, 0.5);
+  --shadow-pop: 0 14px 44px rgba(2, 4, 8, 0.6);
+}

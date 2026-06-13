@@ -10,78 +10,9 @@
    Valeurs de couleur reprises telles quelles de web_poc/static/app.css.
    ============================================================================ */
 
-/* ----------------------------------------------------------------------------
-   1. Tokens — clair par DÉFAUT (inverse de l'app actuelle, cf. D13)
----------------------------------------------------------------------------- */
-:root {
-  color-scheme: light;
-  --font-ui: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-display: "Space Grotesk", Inter, ui-sans-serif, system-ui, sans-serif;
-
-  --bg: #edefeb;
-  --bg-2: #e4e7e1;
-  --surface: #fbfcfb;
-  --surface-2: #f3f5f1;
-  --surface-3: rgba(18, 26, 35, 0.05);
-
-  --text: #151a21;
-  --text-muted: #5b6573;
-  --text-faint: #8b95a3;
-
-  --hairline: rgba(18, 26, 35, 0.1);
-  --hairline-strong: rgba(18, 26, 35, 0.18);
-
-  --accent: #0d9488;
-  --accent-2: #0891b2;
-  --accent-ink: #f4fffd;
-  --accent-soft: rgba(13, 148, 136, 0.1);
-  --accent-glow: rgba(13, 148, 136, 0.28);
-  --accent-line: rgba(13, 148, 136, 0.5);
-
-  --gold: #b45309;
-  --danger: #dc2626;
-
-  --shadow-card: 0 1px 2px rgba(24, 33, 31, 0.05), 0 12px 32px rgba(24, 33, 31, 0.07);
-  --shadow-pop: 0 14px 40px rgba(24, 33, 31, 0.18);
-  --glass: saturate(160%) blur(22px);
-
-  --r-xl: 24px;
-  --r-lg: 18px;
-  --r-md: 12px;
-  --r-sm: 8px;
-  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
-
-  --maxw: 1120px;
-}
-
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --bg: #0a0d12;
-  --bg-2: #070a0e;
-  --surface: #11161f;
-  --surface-2: rgba(255, 255, 255, 0.045);
-  --surface-3: rgba(255, 255, 255, 0.085);
-
-  --text: #e9edf3;
-  --text-muted: #9aa4b4;
-  --text-faint: #667182;
-
-  --hairline: rgba(255, 255, 255, 0.09);
-  --hairline-strong: rgba(255, 255, 255, 0.17);
-
-  --accent: #2dd4bf;
-  --accent-2: #22d3ee;
-  --accent-ink: #052a24;
-  --accent-soft: rgba(45, 212, 191, 0.13);
-  --accent-glow: rgba(45, 212, 191, 0.4);
-  --accent-line: rgba(45, 212, 191, 0.55);
-
-  --gold: #fbbf24;
-  --danger: #f87171;
-
-  --shadow-card: 0 1px 2px rgba(2, 4, 8, 0.4), 0 16px 44px rgba(2, 4, 8, 0.5);
-  --shadow-pop: 0 14px 44px rgba(2, 4, 8, 0.6);
-}
+/* Tokens (couleurs, typo, rayons, ombres, verre) : déplacés dans tokens.css,
+   le socle UNIQUE partagé par toutes les maquettes, chargé avant base.css.
+   base.css ne porte plus que les composants de la page d'accueil. */
 
 /* ----------------------------------------------------------------------------
    2. Base

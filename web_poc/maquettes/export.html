@@ -7,6 +7,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" />
     <link rel="stylesheet" href="../static/app.css" />
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="shell.css" />
     <style>
       /* Page d'export : hors carte et hors graphes. Le bandeau commun reste en
          haut mais NON auto-masquant ici (pas de vue a liberer) et plein (pas de
@@ -14,17 +16,7 @@
          identiques aux autres pages ; l'entree Exporter y est en etat courant. */
       body { min-height: 100vh; }
       .topbar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 22px; height: 56px; padding: 0 26px; background: color-mix(in srgb, var(--surface-solid) 94%, transparent); -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass); border-bottom: 1px solid var(--hairline); }
-      .shell-brand { display: flex; align-items: center; gap: 9px; font-family: var(--font-display); font-size: 16px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text); text-decoration: none; }
-      .shell-nav { display: flex; gap: 6px; }
-      .shell-nav a { padding: 7px 12px; border-radius: var(--r-sm); font-size: 13px; color: var(--text-muted); text-decoration: none; transition: color .2s, background .2s; }
-      .shell-nav a:hover { color: var(--text); background: var(--surface-2); }
-      .shell-spacer { flex: 1; }
-      .shell-actions { display: flex; align-items: center; gap: 12px; }
-      .credits { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border: 1px solid var(--hairline); border-radius: 99px; background: var(--surface-2); font-size: 12px; color: var(--text-muted); }
-      .credits b { color: var(--accent); font-variant-numeric: tabular-nums; }
-      :root[data-theme="dark"] .credits b { text-shadow: 0 0 10px var(--accent-glow); }
-      .shell-actions .ghost { padding: 7px 13px; border: 1px solid var(--hairline-strong); border-radius: var(--r-sm); background: transparent; color: var(--text); font-size: 13px; cursor: pointer; }
-      .shell-actions .ghost:hover { border-color: var(--accent-line); color: var(--accent); }
+      /* Marque, nav, actions, crédits, ghost : voir shell.css. */
       /* Entree Exporter en etat courant (on est sur la page) : meme teal, inerte. */
       .shell-here { display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; border-radius: var(--r-sm); color: var(--accent-ink); background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 3px 16px var(--accent-glow); font-size: 13px; font-weight: 600; cursor: default; }
       .shell-here::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-ink); opacity: .85; }
@@ -196,13 +188,8 @@
       </div>
     </main>
 
+    <script src="shell.js"></script>
     <script>
-      var root = document.documentElement;
-      if (new URLSearchParams(location.search).get("theme") === "dark") root.setAttribute("data-theme", "dark");
-      document.getElementById("themeToggle").addEventListener("click", function () {
-        root.setAttribute("data-theme", root.getAttribute("data-theme") === "dark" ? "light" : "dark");
-      });
-
       // Prereglages (D9) : recochent en masse contenu + formats. Le tri fin reste libre.
       var PRESETS = {
         essentiel: { items: ["a1","a2","a3","a4","a5","a6","o1","o2","o3"], formats: ["fPdf"] },
