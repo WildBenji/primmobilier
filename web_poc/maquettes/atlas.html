@@ -9,13 +9,18 @@
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" />
     <!-- On réutilise les composants et tokens du POC (mêmes valeurs que base.css). -->
     <link rel="stylesheet" href="../static/app.css" />
+    <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
     <style>
       /* ── Refonte Atlas dans le shell commun ────────────────────────────────
          Clair par défaut (D13). Shell de navigation en haut, la carte et ses
          panneaux flottants (verre, D18) remplissent le reste. Bouton Exporter
          et compteur de crédits ajoutés. Carte factice (pas de MapLibre ici). */
       /* Carte plein écran : le shell est un overlay qui s'auto-masque pour
-         maximiser la carte, et réapparaît quand la souris revient en haut. */
+         maximiser la carte, et réapparaît quand la souris revient en haut.
+         Dessous concave (type macOS) : plein sur les côtés où vit le contenu,
+         creusé au milieu (vide) pour garder un maximum de carte visible même
+         déroulé. clip-path en unités objectBoundingBox => responsive sans JS,
+         et offsetHeight reste 56px donc la réactivité souris est identique. */
       .shell {
         position: fixed;
         top: 0; left: 0; right: 0;
@@ -24,16 +29,24 @@
         align-items: center;
         gap: 22px;
         height: 56px;
-        padding: 0 18px;
-        background: color-mix(in srgb, var(--surface-solid) 90%, transparent);
+        padding: 0 26px;
+        background: color-mix(in srgb, var(--surface) 90%, transparent);
         -webkit-backdrop-filter: var(--glass);
         backdrop-filter: var(--glass);
-        border-bottom: 1px solid var(--hairline);
-        box-shadow: var(--shadow-pop);
+        clip-path: url(#shellClip);
+        /* 1er drop-shadow = liseré 1px qui épouse tout le bord (dont la courbe
+           concave) ; 2e = ombre portée douce sous le bandeau. */
+        filter: drop-shadow(0 1.2px 0 var(--hairline-strong)) drop-shadow(0 7px 16px rgba(10, 16, 24, 0.24));
         transform: translateY(-100%);
         transition: transform 0.28s var(--ease);
       }
       .shell.show, .shell:focus-within { transform: translateY(0); }
+      /* Sombre : le liseré devient une lueur teal (signature néon) et l'ombre
+         se creuse pour détacher le bandeau de la carte sombre. */
+      :root[data-theme="dark"] .shell {
+        background: color-mix(in srgb, var(--surface) 82%, transparent);
+        filter: drop-shadow(0 1px 1px var(--accent-glow)) drop-shadow(0 9px 24px rgba(0, 0, 0, 0.55));
+      }
       /* Onglet indicateur quand le shell est masqué. */
       .shell-peek {
         position: fixed; top: 0; left: 50%; transform: translateX(-50%);
@@ -109,28 +122,8 @@
       }
 
       /* Marqueurs factices sur la carte. */
-      .mq-layer { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
-      .mq-zone {
-        position: absolute; top: 50%; left: 54%; width: 360px; height: 360px;
-        transform: translate(-50%, -50%); border-radius: 50%;
-        border: 1.5px solid var(--accent-line);
-        background: radial-gradient(circle, var(--accent-soft), transparent 70%);
-      }
-      .mq-marker {
-        position: absolute; top: 50%; left: 54%; width: 18px; height: 18px;
-        transform: translate(-50%, -50%);
-      }
-      .mq-marker::after {
-        content: ""; position: absolute; inset: 3px; border-radius: 50%;
-        background: linear-gradient(135deg, var(--accent), var(--accent-2));
-        border: 2px solid #fff; box-shadow: 0 0 12px var(--accent-glow), 0 2px 6px rgba(0, 0, 0, 0.4);
-      }
-      .mq-dot {
-        position: absolute; width: 11px; height: 11px; border-radius: 50%;
-        background: var(--accent); box-shadow: 0 0 8px var(--accent-glow);
-        transform: translate(-50%, -50%); opacity: 0.85;
-      }
-      .mq-dot.gold { background: var(--gold); box-shadow: 0 0 10px color-mix(in srgb, var(--gold) 50%, transparent); }
+      /* Overlay carte dessiné en D3 (zone, comparables, cible) avec lueur. */
+      .mq-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
 
       /* Bouton Exporter et ligne d'actions du résultat. */
       .result-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 2px; }
@@ -148,18 +141,14 @@
       .btn-soft { border: 1px solid var(--hairline-strong); background: var(--surface-2); color: var(--text); }
       .btn-soft:hover { border-color: var(--accent-line); color: var(--accent); }
 
-      /* Frise : histogramme factice (pas de canvas JS ici). */
-      .mq-hist { position: absolute; inset: 0; display: flex; align-items: flex-end; gap: 2px; padding: 6px 2px; }
-      .mq-hist i {
-        flex: 1; border-radius: 2px 2px 0 0;
-        background: linear-gradient(180deg, var(--accent-line), var(--surface-3));
-        opacity: 0.5;
-      }
+      /* Frise : histogramme D3 (volume par trimestre + fenêtre sélectionnée). */
+      .tl-d3 { position: absolute; inset: 0; width: 100%; height: 100%; }
       .timeline { animation: none; }
     </style>
   </head>
   <body>
     <!-- Shell de navigation commun -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><clipPath id="shellClip" clipPathUnits="objectBoundingBox"><path d="M0,0 L1,0 L1,1 C0.68,1 0.6,0.14 0.5,0.14 C0.4,0.14 0.32,1 0,1 Z" /></clipPath></defs></svg>
     <nav class="shell">
       <a class="shell-brand" href="accueil.html"><span class="brand-dot" aria-hidden="true"></span>Primmobilier</a>
       <div class="shell-nav">
@@ -268,17 +257,7 @@
 
       <!-- Carte factice -->
       <div id="map">
-        <div class="mq-layer" aria-hidden="true">
-          <span class="mq-zone"></span>
-          <span class="mq-marker"></span>
-          <span class="mq-dot gold" style="top:42%;left:60%"></span>
-          <span class="mq-dot" style="top:38%;left:46%"></span>
-          <span class="mq-dot" style="top:56%;left:62%"></span>
-          <span class="mq-dot" style="top:62%;left:48%"></span>
-          <span class="mq-dot" style="top:48%;left:66%"></span>
-          <span class="mq-dot" style="top:52%;left:42%"></span>
-          <span class="mq-dot" style="top:64%;left:58%"></span>
-        </div>
+        <svg class="mq-layer" id="mapFx" aria-hidden="true"></svg>
       </div>
 
       <!-- Frise temporelle -->
@@ -287,9 +266,7 @@
           <svg class="icon-play" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M7 4.8c0-1 1.1-1.6 1.9-1.1l11 6.7c.8.5.8 1.7 0 2.2l-11 6.7c-.8.5-1.9-.1-1.9-1.1z"/></svg>
         </button>
         <div class="timeline-track">
-          <div class="mq-hist" aria-hidden="true">
-            <i style="height:30%"></i><i style="height:44%"></i><i style="height:38%"></i><i style="height:56%"></i><i style="height:62%"></i><i style="height:48%"></i><i style="height:70%"></i><i style="height:84%"></i><i style="height:66%"></i><i style="height:78%"></i><i style="height:58%"></i><i style="height:46%"></i><i style="height:52%"></i><i style="height:40%"></i><i style="height:34%"></i><i style="height:60%"></i><i style="height:72%"></i><i style="height:50%"></i>
-          </div>
+          <svg class="tl-d3" id="tl" aria-hidden="true"></svg>
         </div>
         <div class="timeline-meta">
           <strong>janv. 2019 – déc. 2024</strong>
@@ -385,6 +362,57 @@
         var ee = document.querySelector(".expand-estimation"), ec = document.querySelector(".expand-comparables");
         if (ee) ee.addEventListener("click", function () { panel.classList.toggle("collapsed"); });
         if (ec) ec.addEventListener("click", function () { tw.classList.toggle("collapsed"); });
+      })();
+    </script>
+
+    <!-- Accents D3 : overlay carte (zone, comparables, cible) + frise (histogramme du volume) -->
+    <script>
+      (function () {
+        if (!window.d3) return;
+        var rootEl = document.documentElement;
+        function isDark() { return rootEl.getAttribute("data-theme") === "dark"; }
+        function colors() { var s = getComputedStyle(rootEl), g = function (n) { return s.getPropertyValue(n).trim(); }; return { accent: g("--accent"), accent2: g("--accent-2"), accentLine: g("--accent-line"), gold: g("--gold") }; }
+        function bloom(defs, id, sd) { var f = defs.append("filter").attr("id", id).attr("x", "-60%").attr("y", "-60%").attr("width", "220%").attr("height", "220%"); f.append("feGaussianBlur").attr("stdDeviation", sd).attr("result", "b"); var m = f.append("feMerge"); m.append("feMergeNode").attr("in", "b"); m.append("feMergeNode").attr("in", "SourceGraphic"); }
+
+        var TL = [];
+        for (var i = 0; i < 24; i++) { TL.push({ vol: Math.max(2, Math.round(8 + 5 * Math.sin(i * 0.7) + 3 * Math.cos(i * 0.3) + (i < 19 ? i * 0.2 : (24 - i) * 0.8))) }); }
+        var DOTS = [[0.60, 0.42, 1], [0.46, 0.38, 0], [0.62, 0.56, 0], [0.48, 0.62, 0], [0.66, 0.48, 0], [0.42, 0.52, 0], [0.58, 0.64, 0]];
+
+        function drawMap() {
+          var el = document.getElementById("mapFx"); if (!el) return;
+          var W = el.clientWidth, H = el.clientHeight; if (!W || !H) return;
+          var c = colors(), svg = d3.select(el); svg.selectAll("*").remove();
+          var defs = svg.append("defs"); bloom(defs, "mapGlow", isDark() ? 4 : 1.4);
+          var dg = defs.append("radialGradient").attr("id", "dotG"); dg.append("stop").attr("offset", "0%").attr("stop-color", c.accent).attr("stop-opacity", isDark() ? 0.9 : 0.7); dg.append("stop").attr("offset", "100%").attr("stop-color", c.accent).attr("stop-opacity", 0);
+          var dgg = defs.append("radialGradient").attr("id", "dotGGold"); dgg.append("stop").attr("offset", "0%").attr("stop-color", c.gold).attr("stop-opacity", 0.85); dgg.append("stop").attr("offset", "100%").attr("stop-color", c.gold).attr("stop-opacity", 0);
+          var zx = 0.54 * W, zy = 0.50 * H, zr = Math.min(W, H) * 0.24;
+          svg.append("circle").attr("cx", zx).attr("cy", zy).attr("r", zr).attr("fill", c.accent).attr("opacity", 0.05);
+          svg.append("circle").attr("cx", zx).attr("cy", zy).attr("r", zr).attr("fill", "none").attr("stroke", c.accentLine).attr("stroke-width", 1.4).attr("filter", "url(#mapGlow)");
+          DOTS.forEach(function (d) { var dx = d[0] * W, dy = d[1] * H, gold = d[2]; svg.append("circle").attr("cx", dx).attr("cy", dy).attr("r", 11).attr("fill", gold ? "url(#dotGGold)" : "url(#dotG)"); svg.append("circle").attr("cx", dx).attr("cy", dy).attr("r", 3.4).attr("fill", gold ? c.gold : c.accent).attr("filter", "url(#mapGlow)"); });
+          svg.append("circle").attr("cx", zx).attr("cy", zy).attr("r", 5.2).attr("fill", c.accent).attr("stroke", "#fff").attr("stroke-width", 2).attr("filter", "url(#mapGlow)");
+          var ring = svg.append("circle").attr("cx", zx).attr("cy", zy).attr("r", 6).attr("fill", "none").attr("stroke", c.accentLine);
+          ring.append("animate").attr("attributeName", "r").attr("values", "6;20").attr("dur", "2.4s").attr("repeatCount", "indefinite");
+          ring.append("animate").attr("attributeName", "opacity").attr("values", "0.8;0").attr("dur", "2.4s").attr("repeatCount", "indefinite");
+        }
+
+        function drawTimeline() {
+          var el = document.getElementById("tl"); if (!el) return;
+          var W = el.clientWidth, H = el.clientHeight; if (!W || !H) return;
+          var c = colors(), svg = d3.select(el); svg.selectAll("*").remove();
+          var defs = svg.append("defs"); bloom(defs, "tlGlow", isDark() ? 2.4 : 0.0001);
+          var bg = defs.append("linearGradient").attr("id", "tlBar").attr("x1", 0).attr("y1", 0).attr("x2", 0).attr("y2", 1); bg.append("stop").attr("offset", "0%").attr("stop-color", c.accent2); bg.append("stop").attr("offset", "100%").attr("stop-color", c.accent).attr("stop-opacity", 0.45);
+          var n = TL.length, x = d3.scaleLinear().domain([0, n]).range([0, W]), bw = W / n;
+          var yV = d3.scaleLinear().domain([0, d3.max(TL, function (d) { return d.vol; })]).range([H - 2, H * 0.32]);
+          var s0 = 6, s1 = 19, x0 = x(s0), x1 = x(s1 + 1);
+          svg.append("rect").attr("x", x0).attr("y", 0).attr("width", x1 - x0).attr("height", H).attr("fill", c.accent).attr("opacity", 0.07);
+          TL.forEach(function (d, i) { var inw = i >= s0 && i <= s1; svg.append("rect").attr("x", x(i) + 1.6).attr("width", bw - 3.2).attr("y", yV(d.vol)).attr("height", (H - 2) - yV(d.vol)).attr("rx", 1.5).attr("fill", "url(#tlBar)").attr("opacity", inw ? 0.95 : 0.28); });
+          [x0, x1].forEach(function (hx) { svg.append("rect").attr("x", hx - 1).attr("y", 0).attr("width", 2).attr("height", H).attr("rx", 1).attr("fill", c.accent).attr("filter", "url(#tlGlow)"); });
+        }
+
+        function render() { drawMap(); drawTimeline(); }
+        render();
+        window.addEventListener("resize", function () { clearTimeout(window._tlr); window._tlr = setTimeout(render, 150); });
+        var tt = document.getElementById("themeToggle"); if (tt) tt.addEventListener("click", function () { setTimeout(render, 0); });
       })();
     </script>
   </body>

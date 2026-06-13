@@ -11,8 +11,13 @@
     <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
     <style>
       :root { --mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace; }
-      .shell { position: fixed; top: 0; left: 0; right: 0; z-index: 20; display: flex; align-items: center; gap: 22px; height: 56px; padding: 0 18px; background: color-mix(in srgb, var(--surface-solid) 90%, transparent); -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass); border-bottom: 1px solid var(--hairline); box-shadow: var(--shadow-pop); transform: translateY(-100%); transition: transform 0.28s var(--ease); }
+      /* Bandeau à dessous concave (type macOS), identique à l'Atlas : plein sur
+         les côtés (contenu), creusé au milieu (vide) pour libérer la vue.
+         clip-path en objectBoundingBox => responsive sans JS ; offsetHeight reste
+         56px donc la réactivité souris est identique. */
+      .shell { position: fixed; top: 0; left: 0; right: 0; z-index: 20; display: flex; align-items: center; gap: 22px; height: 56px; padding: 0 26px; background: color-mix(in srgb, var(--surface) 90%, transparent); -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass); clip-path: url(#shellClip); filter: drop-shadow(0 1.2px 0 var(--hairline-strong)) drop-shadow(0 7px 16px rgba(10, 16, 24, 0.24)); transform: translateY(-100%); transition: transform 0.28s var(--ease); }
       .shell.show, .shell:focus-within { transform: translateY(0); }
+      :root[data-theme="dark"] .shell { background: color-mix(in srgb, var(--surface) 82%, transparent); filter: drop-shadow(0 1px 1px var(--accent-glow)) drop-shadow(0 9px 24px rgba(0, 0, 0, 0.55)); }
       .shell-peek { position: fixed; top: 0; left: 50%; transform: translateX(-50%); width: 56px; height: 5px; border-radius: 0 0 7px 7px; background: var(--hairline-strong); z-index: 18; opacity: 0.7; transition: opacity 0.2s; }
       .shell.show ~ .shell-peek { opacity: 0; }
       .shell-brand { display: flex; align-items: center; gap: 9px; font-family: var(--font-display); font-size: 16px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text); }
@@ -102,6 +107,7 @@
     </style>
   </head>
   <body>
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><clipPath id="shellClip" clipPathUnits="objectBoundingBox"><path d="M0,0 L1,0 L1,1 C0.68,1 0.6,0.14 0.5,0.14 C0.4,0.14 0.32,1 0,1 Z" /></clipPath></defs></svg>
     <nav class="shell">
       <a class="shell-brand" href="accueil.html"><span class="brand-dot" aria-hidden="true"></span>Primmobilier</a>
       <div class="shell-nav"><a href="atlas.html">Atlas du marché</a><a class="active" href="#">Observatoire</a><a href="#">Tarifs</a></div>
