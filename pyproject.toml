@@ -1,13 +1,15 @@
 [project]
 name = "primmobilier"
-version = "1.9.0"
+version = "1.10.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "duckdb>=1.5.3",
+    "fastapi>=0.136.3",
     "polars>=1.41.2",
     "pyarrow>=24.0.0",
+    "uvicorn[standard]>=0.49.0",
 ]
 
 [dependency-groups]

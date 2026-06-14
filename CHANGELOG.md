@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.10.0 - 2026-06-14
+
+Portage intégral du POC monolithique sur la maquette Atlas en **modules ES natifs** (zéro build, ADR 0008), servie par un nouveau backend FastAPI. L'Atlas atteint la parité fonctionnelle du POC, vérifiée en pilotant un vrai navigateur (zéro exception sur tous les flux).
+
+- **Backend FastAPI** (`web_poc/app.py`) : sert la page Atlas et les statiques, et expose les endpoints `/api/*` en réutilisant les service-functions du POC (`web_poc/server.py`). ADR 0007.
+- **Atlas en modules ES natifs** (`web_poc/maquettes/atlas/`, 12 modules : `state`, `map`, `address`, `comparables`, `detail`, `estimate`, `explore`, `scope`, `timeline`, `format`, `api` + entrée `atlas.js`). Architecture anti-cycle via créneaux `S.*`. Couvre tous les flux du POC : estimation et exploration, filtres marché (types, curseurs prix/surface/pièces), tri directionnel, survol synchronisé liste↔carte, puce d'emprise interactive (commune↔CP), frise temporelle réelle, recadrage carte, Reset complet, liste virtualisée (dizaines de milliers de biens → une trentaine de cartes DOM), infobulles, survol bâti↔carte, suivi du thème.
+- **Shell commun** (`shell.js`, `shell.css`, `tokens.css`) : bandeau de navigation et bascule de thème partagés, design tokens communs aux pages maquette.
+- **Flux d'export** (`export.html`) : page dédiée et entrée dans le bandeau.
+- **Pipeline** : préparation DPE découplée de `lancer_pipeline.py`.
+
 ## v1.9.0 - 2026-06-13
 
 Phase 1 (recherche design) du **Site 2028** : explorations visuelles tranchées « sur pièces » sous forme de maquettes HTML statiques jetables (`web_poc/maquettes/`, hors POC livré), sur les tokens actés (clair par défaut D13, teal deux tons D16, Inter + Space Grotesk D17). Direction verrouillée sur les trois écrans clés.
